@@ -63,12 +63,10 @@ func ParseDKIM(raw string) (*DKIMKey, error) {
 	return out, nil
 }
 
-// Common selector names probed when nothing else is known. Order matters for
-// determinism but not correctness — every found selector is reported.
-var commonDKIMSelectors = []string{
-	"default", "google", "selector1", "selector2", "mail",
-	"dkim", "k1", "mx", "s1", "s2",
-}
+// The default selector list is constructed per-run by selectorList(env),
+// which combines commonSelectors with ESP-specific extras inferred from SPF
+// (see dkim_selectors.go). Order is deterministic; every found selector is
+// reported regardless of position.
 
 type dkimCheck struct{}
 
@@ -77,9 +75,10 @@ func (dkimCheck) Category() string { return category }
 
 func (dkimCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 	refs := []string{"RFC 6376 §3.6.1", "RFC 6376 §3.6.2"}
-	var results []report.Result
+	selectors := selectorList(env)
+	results := make([]report.Result, 0, len(selectors))
 
-	for _, sel := range commonDKIMSelectors {
+	for _, sel := range selectors {
 		results = append(results, probeDKIMSelector(ctx, env, sel, refs))
 	}
 
@@ -100,7 +99,7 @@ func (dkimCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 			Category: category,
 			Title:    "DKIM key discoverable on a common selector",
 			Status:   report.Fail,
-			Evidence: "no DKIM key found at any of: " + strings.Join(commonDKIMSelectors, ", "),
+			Evidence: "no DKIM key found at any of: " + strings.Join(selectors, ", "),
 			Remediation: fmt.Sprintf(
 				`<selector>._domainkey.%s. IN TXT "v=DKIM1; k=rsa; p=<base64-public-key>"`,
 				env.Target,

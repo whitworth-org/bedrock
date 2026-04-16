@@ -1,0 +1,302 @@
+.\" granite-scan(1) man page
+.\" Section 1: user commands.
+.\" Source: man/granite-scan.1 in the granite-scan repository.
+.TH GRANITE-SCAN 1 "April 2026" "granite-scan 0.1" "User Commands"
+.SH NAME
+granite-scan \- audit a domain's DNS, Email, and WWW security posture
+.SH SYNOPSIS
+.B granite-scan
+.RI [ flags ]
+.I domain
+.SH DESCRIPTION
+.B granite-scan
+inspects a target domain against IETF and vendor (Gmail) requirements
+across DNS, DNSSEC, Email, and WWW
+and emits a verdict per check.
+BIMI checks (BIMI Group draft + Gmail requirements) are reported under
+the Email category.
+Each result cites the RFC section that defines the requirement,
+and every failure is accompanied by a copy-pasteable record, header,
+or configuration string the operator can publish to fix it.
+.PP
+The tool is a single static binary with no runtime dependencies,
+suitable for CI pipelines and ad-hoc audits.
+By default it performs active probes
+(HTTPS GETs, SMTP STARTTLS handshakes, MTA-STS and BIMI VMC fetches);
+pass
+.B \-\-no\-active
+to confine the run to DNS lookups.
+.PP
+.I domain
+may be an internationalised domain name; it is normalised to ASCII
+(Punycode), lowercased, and any trailing dot is stripped.
+.SH OPTIONS
+.TP
+.B \-\-version
+Print the version line and exit.
+.TP
+.B \-\-json
+Emit the report as JSON on standard output.
+The schema is
+.RI { target ", " results []} ,
+where each result has
+.IR id ", " category ", " title ", " status ", " evidence ", " remediation ", " rfc_refs .
+Mutually exclusive with
+.BR \-\-md .
+.TP
+.B \-\-md
+Emit the report as GitHub-flavoured Markdown on standard output.
+Mutually exclusive with
+.BR \-\-json .
+.TP
+.B \-\-no\-active
+Skip active probes.
+No SMTP STARTTLS handshakes, no HTTPS GETs, no MTA-STS policy fetch,
+no BIMI VMC fetch, no QUIC dials.
+Checks that require a connection are reported as
+.B N/A
+so the result schema remains stable.
+.TP
+.BI \-\-resolver " spec"
+Use the specified recursive DNS resolver. Accepted forms:
+.RS
+.IP \(bu 2
+.B host
+or
+.B host:port
+\(em UDP plaintext
+.IP \(bu 2
+.BR cloudflare ", " google ", " quad9 ", " opendns
+\(em named preset over UDP
+.IP \(bu 2
+.BR cloudflare\-dot ", " google\-dot ", " quad9\-dot ", " opendns\-dot
+\(em named preset over DNS-over-TLS (port 853)
+.IP \(bu 2
+.BR cloudflare\-doh ", " google\-doh ", " quad9\-doh ", " opendns\-doh
+\(em named preset over DNS-over-HTTPS (RFC 8484)
+.IP \(bu 2
+.BI tls:// host[:port]
+\(em explicit DoT to a custom server
+.IP \(bu 2
+.BI https:// host/path
+\(em explicit DoH to a custom server
+.RE
+.TP
+.BI \-\-resolvers " csv"
+Comma-separated list of resolver specs (same syntax as
+.BR \-\-resolver ).
+Each query is sent to every listed resolver in parallel; the first answer is
+used for normal lookups and the full set is exposed to the propagation check.
+Mutually preferred over
+.B \-\-resolver
+when both are supplied.
+.TP
+.BI \-\-timeout " duration"
+Per-operation timeout for DNS queries, HTTPS GETs, and TLS handshakes.
+Accepts any Go duration string
+.RB ( 500ms ", " 5s ", " 1m ).
+Default:
+.BR 5s .
+.TP
+.BI \-\-config " path"
+Read defaults from a JSON config file at
+.IR path .
+Keys mirror the long-form flag names with hyphens replaced by underscores.
+Flag values supplied on the command line override config values.
+.TP
+.BI \-\-only " csv"
+Comma-separated list of categories to include in output
+(e.g.\&
+.BR Email,WWW ).
+Other categories are still executed but suppressed at render time.
+.TP
+.BI \-\-exclude " csv"
+Comma-separated list of categories to exclude from output.
+.TP
+.BI \-\-ids " csv"
+Comma-separated list of specific check IDs to include
+(e.g.\&
+.BR email.dmarc.record,web.hsts ).
+.TP
+.BI \-\-severity " level"
+Minimum severity to include in output. One of
+.BR info ", " pass ", " warn ", " fail .
+.B N/A
+results are always shown so the schema remains stable.
+.TP
+.B \-\-enable\-ct
+Enable Certificate Transparency lookups via the crt.sh search API
+(third-party). Off by default.
+.TP
+.B \-\-enable\-rbl
+Enable DNSBL/RBL queries against Spamhaus, Barracuda, SpamCop, SORBS,
+and Surriel PSBL. Listings are reported as
+.B WARN ,
+not
+.B FAIL ,
+since false positives and stale entries are common. Off by default.
+.TP
+.B \-\-subdomains
+Enumerate subdomains via passive sources
+.RB ( hackertarget ,
+.BR anubis ,
+.BR threatcrowd ,
+.BR wayback )
+and probe each discovered host for TLS reachability and certificate
+hygiene. Off by default.
+.TP
+.BI \-\-baseline " path"
+Path to a previously-saved JSON report. Results are diffed against the
+baseline and any check that is now
+.B FAIL
+but was previously
+.BR PASS ", " WARN ", or " INFO
+is reported as a regression.
+.TP
+.B \-\-regression\-only
+With
+.BR \-\-baseline :
+exit non-zero only on NEW failures versus the baseline.
+Pre-existing failures that have not changed are ignored.
+Useful as a CI gate that won't fail on legacy issues you've consciously
+deferred.
+.SH OUTPUT
+By default the tool writes a colourised text report to standard output
+when standard output is a terminal; colour is suppressed when redirected.
+Each result line shows category, status, check ID, and a one-line evidence
+string.
+Failures additionally show a remediation block.
+.PP
+The JSON output is the canonical projection; the text and Markdown
+formats are derived from the same
+.I [ ]Result
+view.
+.SH SEVERITY
+Each check returns one of five statuses:
+.TP
+.B PASS
+The check satisfied its requirement.
+.TP
+.B WARN
+A non-fatal observation. Does
+.I not
+affect the exit code.
+.TP
+.B FAIL
+The requirement was not met. Affects the exit code.
+A remediation snippet is always provided.
+.TP
+.B INFO
+A purely informational observation (e.g.\& detected software, profile match).
+.TP
+.B N/A
+The check was not applicable to this target
+(e.g.\& BIMI checks against a domain with no MX, or any active probe with
+.B \-\-no\-active
+in effect).
+.SH EXIT STATUS
+.TP
+.B 0
+The report contained no
+.B FAIL
+results.
+.B WARN
+and
+.B INFO
+do not affect exit status.
+.TP
+.B 1
+The report contained at least one
+.B FAIL .
+.TP
+.B 2
+Usage error, invalid target, render failure, or unreachable resolver.
+.SH EXAMPLES
+.TP
+Basic audit, human-readable text:
+.EX
+$ granite\-scan whitworth.org
+.EE
+.TP
+Pin a recursive resolver for reproducibility:
+.EX
+$ granite\-scan \-\-resolver 1.1.1.1:53 example.org
+.EE
+.TP
+Emit JSON, then filter to just failures with
+.BR jq (1):
+.EX
+$ granite\-scan \-\-json example.org | \\
+    jq '.results[] | select(.status == "FAIL")'
+.EE
+.TP
+Generate a Markdown report for review:
+.EX
+$ granite\-scan \-\-md example.org > example.org.report.md
+.EE
+.TP
+DNS-only audit of a third-party domain (no outbound TCP beyond DNS):
+.EX
+$ granite\-scan \-\-no\-active partner.example.com
+.EE
+.TP
+Use in a CI pipeline; non-zero exit fails the job on any
+.B FAIL :
+.EX
+$ granite\-scan \-\-json prod.example.com > posture.json || \\
+    { cat posture.json; exit 1; }
+.EE
+.SH FILES
+.TP
+.I /etc/resolv.conf
+Consulted when
+.B \-\-resolver
+is not supplied.
+.SH ENVIRONMENT
+.B granite-scan
+ignores all environment variables other than those consulted by the
+Go runtime
+.RB ( SSL_CERT_FILE ", " SSL_CERT_DIR )
+for system root certificates and any standard OS resolver configuration.
+.SH STANDARDS
+.B granite-scan
+checks reference, among others:
+.RS
+.IP \(bu 2
+RFC 1034, 1035, 1912, 2181, 2308, 3596, 3597, 5936 (DNS)
+.IP \(bu 2
+RFC 4033, 4034, 4035, 4509, 5011, 5155, 6605, 6781, 8624 (DNSSEC)
+.IP \(bu 2
+RFC 5321, 3207, 7505 (SMTP / STARTTLS / Null MX)
+.IP \(bu 2
+RFC 7208 (SPF), 6376 (DKIM), 7489 (DMARC),
+8460 (TLS-RPT), 8461 (MTA-STS), 7672 (DANE-SMTP)
+.IP \(bu 2
+RFC 5280, 6797 (HSTS), 7525 / BCP 195 (TLS), 8659 (CAA)
+.IP \(bu 2
+BIMI Group draft and Gmail vendor BIMI requirements
+.RE
+.SH LIMITATIONS
+The Go standard library does not expose the negotiated TLS elliptic curve;
+TLS profile scoring uses protocol version, negotiated cipher suite, and
+the served certificate's key as discriminators.
+.PP
+DKIM selector probing is limited to a fixed list
+.RB ( default ", " google ", " selector1 ", " selector2 ", " mail ", " dkim );
+custom selectors are not auto-discovered.
+.PP
+VMC chain validation uses
+.B ExtKeyUsageAny
+because the BIMI EKU OID is not present in the Go standard library's
+root usage table.
+The logotype extension is matched by SHA-256 byte search inside the
+.B 1.3.6.1.5.5.7.1.12
+extension value; full RFC 3709 ASN.1 decoding is not yet performed.
+.SH BUGS
+Report issues against the source repository.
+.SH SEE ALSO
+.BR dig (1),
+.BR drill (1),
+.BR openssl (1),
+.BR jq (1),
+.BR curl (1)

@@ -10,7 +10,9 @@ package bimi
 
 import "granite-scan/internal/registry"
 
-const category = "BIMI"
+// BIMI lives under the broader Email security category in user-facing
+// output rather than as a top-level category of its own.
+const category = "Email"
 
 func init() {
 	registry.Register(recordCheck{})

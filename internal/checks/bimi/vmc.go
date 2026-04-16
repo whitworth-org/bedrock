@@ -3,9 +3,12 @@ package bimi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/pem"
 	"fmt"
+	"strings"
 
 	"granite-scan/internal/probe"
 	"granite-scan/internal/report"
@@ -14,6 +17,49 @@ import (
 // logotypeOID is the LogotypeExtension identifier (RFC 3709) that BIMI Group
 // reuses to bind the logo bytes to the certificate.
 var logotypeOID = []int{1, 3, 6, 1, 5, 5, 7, 1, 12}
+
+// Mark Verifying / Common Mark Certificates carry distinct ExtKeyUsage OIDs.
+// Stdlib x509 doesn't recognize either, so they end up as UnknownExtKeyUsage
+// entries on the parsed cert.
+var (
+	vmcEKUOID = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 3, 31} // id-kp-BrandIndicatorforMessageIdentification
+	cmcEKUOID = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 3, 32} // id-kp-CommonMarkCertificate
+)
+
+// sha256OID is the algorithm identifier the BIMI guidance mandates for the
+// LogotypeData hash. Other algorithms decode fine but are flagged so the
+// operator knows the cert may not satisfy mailbox-provider gates.
+var sha256OID = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 1}
+
+// markCertType describes what flavor of mark certificate we're looking at.
+type markCertType string
+
+const (
+	markCertVMC   markCertType = "VMC"
+	markCertCMC   markCertType = "CMC"
+	markCertOther markCertType = "Other"
+)
+
+// classifyMarkCert returns VMC / CMC / Other based on the cert's
+// ExtKeyUsage / UnknownExtKeyUsage fields. VMC takes precedence when both
+// OIDs are unexpectedly present (defensive — shouldn't happen in real
+// issuance).
+func classifyMarkCert(cert *x509.Certificate) markCertType {
+	if cert == nil {
+		return markCertOther
+	}
+	for _, oid := range cert.UnknownExtKeyUsage {
+		if oid.Equal(vmcEKUOID) {
+			return markCertVMC
+		}
+	}
+	for _, oid := range cert.UnknownExtKeyUsage {
+		if oid.Equal(cmcEKUOID) {
+			return markCertCMC
+		}
+	}
+	return markCertOther
+}
 
 type vmcFetchCheck struct{}
 
@@ -153,7 +199,7 @@ func (vmcChainCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 	return []report.Result{{
 		ID: id, Category: category, Title: title,
 		Status:   report.Pass,
-		Evidence: fmt.Sprintf("subject=%q issuer=%q", leaf.Subject.String(), leaf.Issuer.String()),
+		Evidence: fmt.Sprintf("certificate type: %s; subject=%q issuer=%q", classifyMarkCert(leaf), leaf.Subject.String(), leaf.Issuer.String()),
 		RFCRefs:  refs,
 	}}
 }
@@ -201,54 +247,108 @@ func (vmcLogotypeCheck) Run(ctx context.Context, env *probe.Env) []report.Result
 			break
 		}
 	}
+	certType := classifyMarkCert(leaf)
 	if ext == nil {
 		return []report.Result{{
 			ID: id, Category: category, Title: title,
 			Status:      report.Fail,
-			Evidence:    "logotype extension (1.3.6.1.5.5.7.1.12) absent from VMC leaf",
+			Evidence:    fmt.Sprintf("certificate type: %s; logotype extension (1.3.6.1.5.5.7.1.12) absent from leaf", certType),
 			Remediation: vmcLogotypeRemediation(),
 			RFCRefs:     refs,
 		}}
 	}
 
-	// Best-effort hash binding. Full ASN.1 parsing of LogotypeData (RFC 3709
-	// §4.1) is non-trivial; we settle for confirming the SVG digest appears
-	// somewhere in the extension bytes. False negatives are possible if the
-	// CA stored the digest of a transformed SVG (e.g. minified) but the
-	// common path — hashing the bytes the publisher serves — is covered.
-	digestV, ok := env.CacheGet(cacheKeyBIMISVGSHA256)
-	if !ok {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:   report.Warn,
-			Evidence: "logotype extension present, but no SVG digest cached to compare",
-			RFCRefs:  refs,
-		}}
-	}
-	digest, ok := digestV.([]byte)
-	if !ok || len(digest) != 32 {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:   report.Warn,
-			Evidence: "logotype extension present, but cached SVG digest is malformed",
-			RFCRefs:  refs,
-		}}
-	}
-	if !bytes.Contains(ext, digest) {
+	// Decode RFC 3709 LogotypeExtn properly so we surface the bound media
+	// type and URI as evidence and so we compare the SVG digest against the
+	// signed hash bytes — not just any byte sequence in the extension.
+	images, err := DecodeLogotypeExtn(ext)
+	if err != nil {
 		return []report.Result{{
 			ID: id, Category: category, Title: title,
 			Status:      report.Fail,
-			Evidence:    fmt.Sprintf("SVG sha256=%x not found in logotype extension (%d bytes)", digest[:8], len(ext)),
+			Evidence:    fmt.Sprintf("certificate type: %s; LogotypeExtn decode failed: %s", certType, err.Error()),
 			Remediation: vmcLogotypeRemediation(),
 			RFCRefs:     refs,
 		}}
 	}
+
+	// Recompute the SVG digest from the cached body when possible (we always
+	// recompute defensively so a stale or wrong-typed cache entry can't
+	// spoof a Pass), and fall back to the cached digest if the SVG bytes
+	// aren't around (--no-active was set after the SVG fetch, etc.).
+	var svgDigest []byte
+	if body, ok := getSVGBytes(env); ok {
+		sum := sha256.Sum256(body)
+		svgDigest = sum[:]
+	} else if d, ok := env.CacheGet(cacheKeyBIMISVGSHA256); ok {
+		if b, ok := d.([]byte); ok && len(b) == 32 {
+			svgDigest = b
+		}
+	}
+	if svgDigest == nil {
+		return []report.Result{{
+			ID: id, Category: category, Title: title,
+			Status:   report.Warn,
+			Evidence: fmt.Sprintf("certificate type: %s; logotype extension parsed (%d image entries) but no SVG digest available to compare", certType, len(images)),
+			RFCRefs:  refs,
+		}}
+	}
+
+	// Walk every (image, hash) pair the cert binds. Pass on the first match;
+	// remember the URI(s) and media types we saw for evidence either way.
+	var uriList []string
+	var mediaSet = map[string]struct{}{}
+	for _, img := range images {
+		if img.URI != "" {
+			uriList = append(uriList, img.URI)
+		}
+		if img.MediaType != "" {
+			mediaSet[img.MediaType] = struct{}{}
+		}
+		if !isSVGMediaType(img.MediaType) {
+			continue
+		}
+		if !img.HashAlg.Equal(sha256OID) {
+			// Non-SHA-256 hash; we can't verify without rehashing under the
+			// CA's chosen algorithm. Skip — if no SHA-256 entry matches we
+			// still surface this in the failure evidence.
+			continue
+		}
+		if bytes.Equal(img.HashValue, svgDigest) {
+			return []report.Result{{
+				ID: id, Category: category, Title: title,
+				Status:   report.Pass,
+				Evidence: fmt.Sprintf("certificate type: %s; logotype extension binds %s sha256=%x at %s", certType, img.MediaType, svgDigest[:8], img.URI),
+				RFCRefs:  refs,
+			}}
+		}
+	}
+
+	mediaList := make([]string, 0, len(mediaSet))
+	for m := range mediaSet {
+		mediaList = append(mediaList, m)
+	}
 	return []report.Result{{
 		ID: id, Category: category, Title: title,
-		Status:   report.Pass,
-		Evidence: fmt.Sprintf("logotype extension contains SVG sha256=%x", digest[:8]),
-		RFCRefs:  refs,
+		Status: report.Fail,
+		Evidence: fmt.Sprintf(
+			"certificate type: %s; SVG sha256=%x does not match any LogotypeImage hash (images=%d media=%v uris=%v)",
+			certType, svgDigest[:8], len(images), mediaList, uriList,
+		),
+		Remediation: vmcLogotypeRemediation(),
+		RFCRefs:     refs,
 	}}
+}
+
+// isSVGMediaType reports whether the LogotypeDetails mediaType matches one
+// of the SVG forms BIMI may bind. Comparison is case-insensitive and
+// tolerant of optional parameters (e.g. "image/svg+xml; charset=utf-8").
+func isSVGMediaType(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if i := strings.IndexByte(s, ';'); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	return s == "image/svg+xml" || s == "image/svg+xml+gzip"
 }
 
 // parsePEMChain pulls every CERTIFICATE block out of the PEM blob and

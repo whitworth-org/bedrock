@@ -11,6 +11,11 @@ rfc*.md
 # Hardenize reference screenshot
 Screenshot*.png
 
+# Reference source trees (read-only inspiration; not part of this module)
+/subfinder/
+/sunlight/
+/certificate-transparency-go/
+
 # Go
 /granite-scan
 /dist/

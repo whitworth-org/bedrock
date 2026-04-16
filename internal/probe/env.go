@@ -19,6 +19,14 @@ type Env struct {
 	Timeout time.Duration
 	Active  bool // when false, skip outbound TCP beyond DNS
 
+	// Subdomains is true when the operator passed --subdomains and the
+	// discovery package should enumerate hosts to scan in addition to apex+www.
+	Subdomains bool
+	// EnableRBL gates the optional DNSBL/RBL check (third-party queries).
+	EnableRBL bool
+	// EnableCT gates the Certificate Transparency lookup (queries crt.sh).
+	EnableCT bool
+
 	DNS  *DNS
 	HTTP *HTTP
 
@@ -26,6 +34,8 @@ type Env struct {
 	cache   map[string]any
 }
 
+// NewEnv builds an Env using a single resolver spec (or the system resolver
+// when spec is empty). For multi-resolver mode call NewEnvMulti.
 func NewEnv(target string, timeout time.Duration, active bool, resolver string) *Env {
 	return &Env{
 		Target:  target,
@@ -35,6 +45,24 @@ func NewEnv(target string, timeout time.Duration, active bool, resolver string) 
 		HTTP:    NewHTTP(timeout),
 		cache:   map[string]any{},
 	}
+}
+
+// NewEnvMulti builds an Env that talks to several upstreams in parallel.
+// Single-shot lookups still use the first upstream; the full set is exposed
+// via DNS.ExchangeAll for the propagation check.
+func NewEnvMulti(target string, timeout time.Duration, active bool, resolvers []string) (*Env, error) {
+	d, err := NewMultiDNS(resolvers, timeout)
+	if err != nil {
+		return nil, err
+	}
+	return &Env{
+		Target:  target,
+		Timeout: timeout,
+		Active:  active,
+		DNS:     d,
+		HTTP:    NewHTTP(timeout),
+		cache:   map[string]any{},
+	}, nil
 }
 
 // CacheGet / CachePut let checks share parsed records.

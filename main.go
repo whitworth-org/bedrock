@@ -1,6 +1,7 @@
 // granite-scan: a Hardenize-inspired CLI that audits a domain's
-// DNS, Email, WWW, and BIMI security posture against IETF and vendor
-// requirements. See CLAUDE.md for the architecture and the approved plan.
+// DNS, Email, and WWW security posture against IETF and vendor
+// requirements. (BIMI checks live under the Email category in output.)
+// See CLAUDE.md for the architecture and the approved plan.
 package main
 
 import (
@@ -13,9 +14,12 @@ import (
 
 	"golang.org/x/net/idna"
 
+	"granite-scan/internal/baseline"
+	"granite-scan/internal/cli"
 	"granite-scan/internal/probe"
 	"granite-scan/internal/registry"
 	"granite-scan/internal/report"
+	"granite-scan/internal/version"
 
 	// Side-effect imports register checks with the global registry.
 	_ "granite-scan/internal/checks/bimi"
@@ -23,9 +27,10 @@ import (
 	_ "granite-scan/internal/checks/dnssec"
 	_ "granite-scan/internal/checks/email"
 	_ "granite-scan/internal/checks/web"
+	_ "granite-scan/internal/discover"
 )
 
-const usage = `granite-scan: audit DNS, Email, WWW, and BIMI security posture for a domain.
+const usage = `granite-scan: audit DNS, Email, and WWW security posture for a domain.
 
 usage: granite-scan [flags] <domain>
 
@@ -34,17 +39,47 @@ flags:
 
 func main() {
 	var (
-		jsonOut  = flag.Bool("json", false, "emit JSON report to stdout")
-		mdOut    = flag.Bool("md", false, "emit Markdown report to stdout")
-		noActive = flag.Bool("no-active", false, "skip active probes (SMTP STARTTLS, HTTPS GETs, VMC fetch)")
-		resolver = flag.String("resolver", "", "DNS resolver address host:port (default: system resolver)")
-		timeout  = flag.Duration("timeout", 5*time.Second, "per-operation timeout")
+		jsonOut        = flag.Bool("json", false, "emit JSON report to stdout")
+		mdOut          = flag.Bool("md", false, "emit Markdown report to stdout")
+		noActive       = flag.Bool("no-active", false, "skip active probes (SMTP STARTTLS, HTTPS GETs, VMC fetch)")
+		resolver       = flag.String("resolver", "", "DNS resolver: host:port, preset (cloudflare|google|quad9|opendns), or <preset>-dot/-doh, tls://host, https://url")
+		resolversCSV   = flag.String("resolvers", "", "CSV of multiple resolvers for cross-resolver propagation check (e.g. cloudflare,google,quad9)")
+		timeout        = flag.Duration("timeout", 5*time.Second, "per-operation timeout")
+		configPath     = flag.String("config", "", "path to JSON config file (flag values override config values)")
+		showVersion    = flag.Bool("version", false, "print version and exit")
+		onlyCSV        = flag.String("only", "", "CSV of categories to include (e.g. Email,WWW)")
+		excludeCSV     = flag.String("exclude", "", "CSV of categories to exclude")
+		severity       = flag.String("severity", "", "minimum severity to include in output: info|pass|warn|fail")
+		idsCSV         = flag.String("ids", "", "CSV of specific check IDs to include")
+		subdomains     = flag.Bool("subdomains", false, "enumerate subdomains and run a subset of checks against each (uses passive sources; off by default)")
+		enableRBL      = flag.Bool("enable-rbl", false, "enable optional DNSBL/RBL lookups (queries third-party services; off by default)")
+		enableCT       = flag.Bool("enable-ct", false, "enable Certificate Transparency lookups via crt.sh (third-party; off by default)")
+		baselinePath   = flag.String("baseline", "", "path to a previous JSON report; surface regressions vs that baseline")
+		regressionOnly = flag.Bool("regression-only", false, "with --baseline: exit non-zero only on NEW failures vs baseline (pre-existing fails are ignored)")
 	)
 	flag.Usage = func() {
 		fmt.Fprint(os.Stderr, usage)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version.String())
+		os.Exit(0)
+	}
+
+	cfg, err := cli.LoadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	mergeConfig(cfg, &mergeArgs{
+		jsonOut: jsonOut, mdOut: mdOut, noActive: noActive,
+		resolver: resolver, resolversCSV: resolversCSV, timeout: timeout,
+		onlyCSV: onlyCSV, excludeCSV: excludeCSV, severity: severity, idsCSV: idsCSV,
+		subdomains: subdomains, enableRBL: enableRBL, enableCT: enableCT,
+		baselinePath: baselinePath, regressionOnly: regressionOnly,
+	})
 
 	if flag.NArg() != 1 {
 		flag.Usage()
@@ -62,10 +97,48 @@ func main() {
 		os.Exit(2)
 	}
 
-	env := probe.NewEnv(target, *timeout, !*noActive, *resolver)
+	resolvers := cli.SplitCSV(*resolversCSV)
+	var env *probe.Env
+	if len(resolvers) > 0 {
+		env, err = probe.NewEnvMulti(target, *timeout, !*noActive, resolvers)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "resolver:", err)
+			os.Exit(2)
+		}
+	} else {
+		env = probe.NewEnv(target, *timeout, !*noActive, *resolver)
+	}
+	env.Subdomains = *subdomains
+	env.EnableRBL = *enableRBL
+	env.EnableCT = *enableCT
 
 	results := registry.Run(context.Background(), env)
+
+	minSeverity, severitySet, err := cli.ParseSeverity(*severity)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	filter := cli.Filter{
+		Only:        cli.SplitCSV(*onlyCSV),
+		Exclude:     cli.SplitCSV(*excludeCSV),
+		MinSeverity: minSeverity,
+		SeveritySet: severitySet,
+		IDs:         cli.SplitCSV(*idsCSV),
+	}
+	results = filter.Apply(results)
+
 	rep := report.Report{Target: target, Results: results}
+
+	var regressions []report.Result
+	if *baselinePath != "" {
+		base, berr := baseline.Load(*baselinePath)
+		if berr != nil {
+			fmt.Fprintln(os.Stderr, "baseline:", berr)
+			os.Exit(2)
+		}
+		regressions = baseline.Diff(base, rep)
+	}
 
 	format := report.FormatText
 	if *jsonOut {
@@ -78,9 +151,90 @@ func main() {
 		fmt.Fprintln(os.Stderr, "render error:", err)
 		os.Exit(2)
 	}
+	if format == report.FormatText && len(regressions) > 0 {
+		fmt.Fprintf(os.Stdout, "\n== Regressions vs baseline (%s) ==\n", *baselinePath)
+		for _, r := range regressions {
+			fmt.Fprintf(os.Stdout, "  [REGRESSION] %s — %s\n", r.ID, r.Title)
+		}
+		fmt.Fprintln(os.Stdout)
+	}
 
+	if *regressionOnly {
+		if len(regressions) > 0 {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if rep.HasFailures() {
 		os.Exit(1)
+	}
+}
+
+type mergeArgs struct {
+	jsonOut, mdOut, noActive              *bool
+	resolver, resolversCSV                *string
+	timeout                               *time.Duration
+	onlyCSV, excludeCSV, severity, idsCSV *string
+	subdomains, enableRBL, enableCT       *bool
+	baselinePath                          *string
+	regressionOnly                        *bool
+}
+
+// mergeConfig fills in unset flag values from the config. Flags explicitly
+// set on the command line take precedence (we detect this with flag.Visit).
+func mergeConfig(cfg *cli.Config, m *mergeArgs) {
+	if cfg == nil {
+		return
+	}
+	set := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	if !set["json"] && cfg.JSON {
+		*m.jsonOut = true
+	}
+	if !set["md"] && cfg.Markdown {
+		*m.mdOut = true
+	}
+	if !set["no-active"] && cfg.NoActive {
+		*m.noActive = true
+	}
+	if !set["resolver"] && cfg.Resolver != "" {
+		*m.resolver = cfg.Resolver
+	}
+	if !set["resolvers"] && len(cfg.Resolvers) > 0 {
+		*m.resolversCSV = strings.Join(cfg.Resolvers, ",")
+	}
+	if !set["timeout"] {
+		if d, err := cfg.Duration(*m.timeout); err == nil {
+			*m.timeout = d
+		}
+	}
+	if !set["only"] && len(cfg.Only) > 0 {
+		*m.onlyCSV = strings.Join(cfg.Only, ",")
+	}
+	if !set["exclude"] && len(cfg.Exclude) > 0 {
+		*m.excludeCSV = strings.Join(cfg.Exclude, ",")
+	}
+	if !set["severity"] && cfg.Severity != "" {
+		*m.severity = cfg.Severity
+	}
+	if !set["ids"] && len(cfg.IDs) > 0 {
+		*m.idsCSV = strings.Join(cfg.IDs, ",")
+	}
+	if !set["subdomains"] && cfg.Subdomains {
+		*m.subdomains = true
+	}
+	if !set["enable-rbl"] && cfg.EnableRBL {
+		*m.enableRBL = true
+	}
+	if !set["enable-ct"] && cfg.EnableCT {
+		*m.enableCT = true
+	}
+	if !set["baseline"] && cfg.Baseline != "" {
+		*m.baselinePath = cfg.Baseline
+	}
+	if !set["regression-only"] && cfg.RegressionOnly {
+		*m.regressionOnly = true
 	}
 }
 
