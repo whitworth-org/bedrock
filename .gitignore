@@ -1,0 +1,25 @@
+# Local-only Claude instructions (never commit)
+CLAUDE.md
+
+# No Markdown in source control except README.md
+*.md
+!README.md
+
+# RFC reference corpus (large, reference-only — not source)
+rfc*.md
+
+# Hardenize reference screenshot
+Screenshot*.png
+
+# Go
+/granite-scan
+/dist/
+*.test
+*.out
+coverage.*
+*.prof
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
