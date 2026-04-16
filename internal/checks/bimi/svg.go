@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // Cache keys for the SVG body and its SHA-256 digest. The VMC check needs

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 type daneCheck struct{}

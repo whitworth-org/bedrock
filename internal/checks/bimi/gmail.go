@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"strings"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // dmarcView is the minimal projection of the email package's DMARC struct

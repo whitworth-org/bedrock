@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // aaaaApexCheck: RFC 3596 — AAAA on the apex. Many production zones still

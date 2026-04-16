@@ -1,9 +1,9 @@
-# granite-scan
+# bedrock
 
 A single-binary command-line auditor for a domain's **DNS**, **DNSSEC**, **Email**, and **WWW (TLS/headers/cookies)** posture. Inspired by [Hardenize](https://www.hardenize.com), but local: no upload, no account, no third-party telemetry. Every failed check ships a copy-pasteable record/header to fix it, and every result cites the RFC section that defines the requirement.
 
 ```
-$ granite-scan example.org
+$ bedrock example.org
 DNS
   PASS  dns.zone.serial          SOA serial monotonically advances
   PASS  dns.ns.count             3 authoritative NSes (>= 2 required)
@@ -34,31 +34,31 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 
 ## Install
 
-`granite-scan` is a single static binary built from this repository. Requires **Go 1.26** or newer.
+`bedrock` is a single static binary built from this repository. Requires **Go 1.26** or newer.
 
 ```bash
-git clone <this repo> granite-scan
-cd granite-scan
-go build -o granite-scan .
-./granite-scan example.org
+git clone <this repo> bedrock
+cd bedrock
+go build -o bedrock .
+./bedrock example.org
 ```
 
 To install the binary on `$PATH`:
 
 ```bash
-go build -o "$(go env GOPATH)/bin/granite-scan" .
+go build -o "$(go env GOPATH)/bin/bedrock" .
 ```
 
 To install the man page (macOS / Linux):
 
 ```bash
-sudo install -m 644 man/granite-scan.1 /usr/local/share/man/man1/
+sudo install -m 644 man/bedrock.1 /usr/local/share/man/man1/
 ```
 
 ## Usage
 
 ```
-granite-scan [flags] <domain>
+bedrock [flags] <domain>
 ```
 
 | Flag                | Default            | Effect                                                                                                |
@@ -86,11 +86,11 @@ granite-scan [flags] <domain>
 ### Resolver examples
 
 ```bash
-granite-scan --resolver cloudflare example.org           # 1.1.1.1:53 (UDP)
-granite-scan --resolver cloudflare-dot example.org       # 1.1.1.1:853 (DoT)
-granite-scan --resolver cloudflare-doh example.org       # https://cloudflare-dns.com/dns-query (DoH)
-granite-scan --resolver tls://1.1.1.1:853 example.org    # explicit DoT
-granite-scan --resolvers cloudflare,google,quad9 example.org  # propagation check
+bedrock --resolver cloudflare example.org           # 1.1.1.1:53 (UDP)
+bedrock --resolver cloudflare-dot example.org       # 1.1.1.1:853 (DoT)
+bedrock --resolver cloudflare-doh example.org       # https://cloudflare-dns.com/dns-query (DoH)
+bedrock --resolver tls://1.1.1.1:853 example.org    # explicit DoT
+bedrock --resolvers cloudflare,google,quad9 example.org  # propagation check
 ```
 
 ### JSON config example
@@ -106,7 +106,7 @@ granite-scan --resolvers cloudflare,google,quad9 example.org  # propagation chec
 ```
 
 ```bash
-granite-scan --config audit.json example.org
+bedrock --config audit.json example.org
 ```
 
 ## Output formats
@@ -133,13 +133,13 @@ The JSON output is the source of truth — text and Markdown are projections of 
 Pipe through `jq` for ad-hoc filtering:
 
 ```bash
-granite-scan --json example.org | jq '.results[] | select(.status == "FAIL")'
+bedrock --json example.org | jq '.results[] | select(.status == "FAIL")'
 ```
 
 Render to a file for review:
 
 ```bash
-granite-scan --md example.org > example.org.report.md
+bedrock --md example.org > example.org.report.md
 ```
 
 ## Exit codes
@@ -150,11 +150,11 @@ granite-scan --md example.org > example.org.report.md
 | 1    | At least one `FAIL`.                                             |
 | 2    | Usage error, invalid target, unreachable resolver, render error. |
 
-This makes `granite-scan` safe to drop into CI:
+This makes `bedrock` safe to drop into CI:
 
 ```yaml
 - name: Audit production domain
-  run: granite-scan --json example.org > posture.json
+  run: bedrock --json example.org > posture.json
 ```
 
 ## Active vs passive
@@ -168,8 +168,8 @@ By default the tool performs **active probes**: HTTPS GETs against the apex and 
 DNS answers vary by recursive resolver (split-horizon DNS, NXDOMAIN rewriting, geo-routed CDNs). For deterministic output, pin the resolver:
 
 ```bash
-granite-scan --resolver 1.1.1.1:53 example.org
-granite-scan --resolver 9.9.9.9:53 example.org
+bedrock --resolver 1.1.1.1:53 example.org
+bedrock --resolver 9.9.9.9:53 example.org
 ```
 
 The check ordering and category groupings are deterministic; categories run in parallel but results are sorted by `(category, id)` before rendering.
@@ -178,32 +178,32 @@ The check ordering and category groupings are deterministic; categories run in p
 
 ```bash
 # Basic audit, terminal output (color when stdout is a TTY)
-granite-scan whitworth.org
+bedrock whitworth.org
 
 # JSON for piping into jq, dashboards, or alerting
-granite-scan --json whitworth.org | jq '.results | group_by(.category) | map({category: .[0].category, fails: map(select(.status=="FAIL")) | length})'
+bedrock --json whitworth.org | jq '.results | group_by(.category) | map({category: .[0].category, fails: map(select(.status=="FAIL")) | length})'
 
 # DNS-only mode for a third-party domain you don't want to probe
-granite-scan --no-active partner.example.com
+bedrock --no-active partner.example.com
 
 # Loosen the timeout for a slow nameserver
-granite-scan --timeout 15s slow.example.com
+bedrock --timeout 15s slow.example.com
 
 # Write a Markdown report to disk
-granite-scan --md example.org > posture.md
+bedrock --md example.org > posture.md
 
 # Pin a recursive resolver, then check that 3 resolvers agree on what they serve
-granite-scan --resolvers cloudflare,google,quad9 example.org
+bedrock --resolvers cloudflare,google,quad9 example.org
 
 # Enumerate subdomains via passive sources, probe each
-granite-scan --subdomains example.org
+bedrock --subdomains example.org
 
 # Enable Certificate Transparency lookups (third-party crt.sh API)
-granite-scan --enable-ct example.org
+bedrock --enable-ct example.org
 
 # Compare against yesterday's report; exit non-zero only on NEW failures
-granite-scan --json example.org > today.json
-granite-scan --baseline yesterday.json --regression-only example.org
+bedrock --json example.org > today.json
+bedrock --baseline yesterday.json --regression-only example.org
 ```
 
 ### CI/CD regression gate (GitHub Actions example)
@@ -229,9 +229,9 @@ jobs:
           key: granite-baseline-${{ github.repository }}
       - name: Audit
         run: |
-          granite-scan --json example.org > current.json
+          bedrock --json example.org > current.json
           if [ -f baseline.json ]; then
-            granite-scan --baseline baseline.json --regression-only example.org
+            bedrock --baseline baseline.json --regression-only example.org
           fi
           mv current.json baseline.json
 ```

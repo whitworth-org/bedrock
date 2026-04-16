@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"granite-scan/internal/probe"
+	"bedrock/internal/probe"
 )
 
 func TestParseCrtShJSON_Array(t *testing.T) {

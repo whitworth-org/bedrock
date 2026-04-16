@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"granite-scan/internal/report"
+	"bedrock/internal/report"
 )
 
 func TestClassifyHTTP2ALPN(t *testing.T) {

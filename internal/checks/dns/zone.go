@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // SOA negative-cache TTL bounds. RFC 2308 §5 recommends "1 hour to 1 day"

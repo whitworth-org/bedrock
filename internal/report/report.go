@@ -109,7 +109,7 @@ func groupByCategory(results []Result) ([]string, map[string][]Result) {
 }
 
 func renderText(w io.Writer, r Report, color bool) error {
-	fmt.Fprintf(w, "granite-scan report for %s\n\n", r.Target)
+	fmt.Fprintf(w, "bedrock report for %s\n\n", r.Target)
 	cats, g := groupByCategory(r.Results)
 	for _, c := range cats {
 		fmt.Fprintf(w, "== %s ==\n", c)
@@ -133,7 +133,7 @@ func renderText(w io.Writer, r Report, color bool) error {
 }
 
 func renderMarkdown(w io.Writer, r Report) error {
-	fmt.Fprintf(w, "# granite-scan report — `%s`\n\n", r.Target)
+	fmt.Fprintf(w, "# bedrock report — `%s`\n\n", r.Target)
 	cats, g := groupByCategory(r.Results)
 	for _, c := range cats {
 		fmt.Fprintf(w, "## %s\n\n", c)

@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/registry"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/registry"
+	"bedrock/internal/report"
 )
 
 // TestFailResultsCarryRemediation enforces the project-wide invariant that

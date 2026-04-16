@@ -9,9 +9,9 @@ import (
 	"strings"
 	"sync"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/registry"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/registry"
+	"bedrock/internal/report"
 )
 
 // rblZones is the fixed set of public DNS-based blocklists we query when

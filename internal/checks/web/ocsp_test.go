@@ -19,8 +19,8 @@ import (
 
 	"golang.org/x/crypto/ocsp"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // testPKI is a tiny issuer/leaf pair used to forge OCSP responses and CRLs
@@ -43,7 +43,7 @@ func newTestPKI(t *testing.T) *testPKI {
 	}
 	issuerTmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "granite-scan test issuer"},
+		Subject:               pkix.Name{CommonName: "bedrock test issuer"},
 		NotBefore:             now.Add(-time.Hour),
 		NotAfter:              now.Add(24 * time.Hour),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,

@@ -4,7 +4,7 @@ import (
 	"net/url"
 	"testing"
 
-	"granite-scan/internal/probe"
+	"bedrock/internal/probe"
 )
 
 func TestSameApexOrWWW(t *testing.T) {

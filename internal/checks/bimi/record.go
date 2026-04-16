@@ -7,8 +7,8 @@ import (
 	"net/url"
 	"strings"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // Record is a parsed BIMI assertion record. Tag syntax mirrors DMARC: a

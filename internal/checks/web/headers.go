@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // headersCheck inspects the security headers on the apex's HTTPS root.

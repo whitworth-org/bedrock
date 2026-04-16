@@ -2,9 +2,9 @@
 //
 // Values are baked in via -ldflags at release build time:
 //
-//	go build -ldflags "-X granite-scan/internal/version.Version=0.2.0 \
-//	                   -X granite-scan/internal/version.Commit=$(git rev-parse --short HEAD) \
-//	                   -X granite-scan/internal/version.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" .
+//	go build -ldflags "-X bedrock/internal/version.Version=0.2.0 \
+//	                   -X bedrock/internal/version.Commit=$(git rev-parse --short HEAD) \
+//	                   -X bedrock/internal/version.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" .
 //
 // When unset, the package falls back to runtime/debug.ReadBuildInfo so a
 // `go install` build still reports a meaningful version (the module
@@ -46,7 +46,7 @@ func String() string {
 		}
 	}
 
-	out := fmt.Sprintf("granite-scan %s", v)
+	out := fmt.Sprintf("bedrock %s", v)
 	if commit != "" {
 		out += " (" + commit
 		if date != "" {

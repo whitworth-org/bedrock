@@ -7,8 +7,8 @@ import (
 
 	mdns "github.com/miekg/dns"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // algorithmsCheck scores DNSKEY algorithms and DS digest types against

@@ -127,7 +127,7 @@ func (h *HTTP) fetch(ctx context.Context, cli *http.Client, u *url.URL) (*Respon
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "granite-scan/0.1 (+https://example.invalid/)")
+	req.Header.Set("User-Agent", "bedrock/0.1 (+https://example.invalid/)")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
 	r, err := cli.Do(req)

@@ -7,8 +7,8 @@ import (
 	"net/url"
 	"strings"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // redirectCheck verifies HTTP→HTTPS redirect hygiene for both apex and www.

@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/registry"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/registry"
+	"bedrock/internal/report"
 )
 
 // ecCurveCheck probes which TLS named groups (elliptic curves) the server

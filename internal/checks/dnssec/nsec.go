@@ -8,8 +8,8 @@ import (
 
 	mdns "github.com/miekg/dns"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // nsecCheck queries a definitely-non-existent name beneath the apex and
@@ -141,7 +141,7 @@ func nonexistentName(apex string) string {
 	if _, err := rand.Read(b[:]); err != nil {
 		// Extremely unlikely; fall back to a fixed string so we still emit
 		// a check rather than crashing.
-		return "granite-scan-nx." + apex
+		return "bedrock-nx." + apex
 	}
 	return "nonexistent-" + hex.EncodeToString(b[:]) + "." + apex
 }

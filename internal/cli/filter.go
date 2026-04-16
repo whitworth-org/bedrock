@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"granite-scan/internal/report"
+	"bedrock/internal/report"
 )
 
 // Filter is applied to []report.Result after every check has run, before the

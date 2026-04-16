@@ -6,8 +6,8 @@ import (
 	"regexp"
 	"strings"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // mixedContentCheck does a lightweight scan of the HTTPS root body for

@@ -1,15 +1,15 @@
-.\" granite-scan(1) man page
+.\" bedrock(1) man page
 .\" Section 1: user commands.
-.\" Source: man/granite-scan.1 in the granite-scan repository.
-.TH GRANITE-SCAN 1 "April 2026" "granite-scan 0.1" "User Commands"
+.\" Source: man/bedrock.1 in the bedrock repository.
+.TH BEDROCK 1 "April 2026" "bedrock 0.1" "User Commands"
 .SH NAME
-granite-scan \- audit a domain's DNS, Email, and WWW security posture
+bedrock \- audit a domain's DNS, Email, and WWW security posture
 .SH SYNOPSIS
-.B granite-scan
+.B bedrock
 .RI [ flags ]
 .I domain
 .SH DESCRIPTION
-.B granite-scan
+.B bedrock
 inspects a target domain against IETF and vendor (Gmail) requirements
 across DNS, DNSSEC, Email, and WWW
 and emits a verdict per check.
@@ -253,13 +253,13 @@ Consulted when
 .B \-\-resolver
 is not supplied.
 .SH ENVIRONMENT
-.B granite-scan
+.B bedrock
 ignores all environment variables other than those consulted by the
 Go runtime
 .RB ( SSL_CERT_FILE ", " SSL_CERT_DIR )
 for system root certificates and any standard OS resolver configuration.
 .SH STANDARDS
-.B granite-scan
+.B bedrock
 checks reference, among others:
 .RS
 .IP \(bu 2

@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // maxConcurrentDials caps how many TLS handshakes we run in parallel

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 func TestSOATimers_PassWhenAllInRange(t *testing.T) {

@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // SPF holds a parsed v=spf1 record.

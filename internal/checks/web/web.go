@@ -14,7 +14,7 @@
 // CSP, cookie attributes, etc.
 package web
 
-import "granite-scan/internal/registry"
+import "bedrock/internal/registry"
 
 const category = "WWW"
 

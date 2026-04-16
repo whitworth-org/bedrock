@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // cookiesCheck enforces Secure / HttpOnly / SameSite on all Set-Cookie

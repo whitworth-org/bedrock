@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/registry"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/registry"
+	"bedrock/internal/report"
 )
 
 // arcCheck audits a domain's *prerequisites* for participating in ARC

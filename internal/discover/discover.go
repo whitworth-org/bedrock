@@ -17,9 +17,9 @@ import (
 	"context"
 	"fmt"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/registry"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/registry"
+	"bedrock/internal/report"
 )
 
 // Category is the report category under which all discovery results render.

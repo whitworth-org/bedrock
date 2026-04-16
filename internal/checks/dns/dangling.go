@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // danglingCheck looks for dangling-DNS conditions on a small set of common

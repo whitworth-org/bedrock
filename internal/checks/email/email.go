@@ -10,7 +10,7 @@
 // Gmail-gate check can consume it without re-querying the resolver.
 package email
 
-import "granite-scan/internal/registry"
+import "bedrock/internal/registry"
 
 const category = "Email"
 

@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // nsCountCheck: RFC 1034/1912 expect ≥2 NS for redundancy.

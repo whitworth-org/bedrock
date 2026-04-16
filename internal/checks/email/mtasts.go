@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // STSPolicy holds a parsed MTA-STS policy file (RFC 8461 §3.2).

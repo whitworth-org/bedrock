@@ -8,9 +8,9 @@ import (
 
 	mdns "github.com/miekg/dns"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/registry"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/registry"
+	"bedrock/internal/report"
 )
 
 // cdsCheck audits CDS / CDNSKEY publication at the apex per RFC 7344 (the

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // tlsCheck scores the negotiated TLS posture of the apex (and www) host
@@ -42,7 +42,7 @@ func (tlsCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 			Title:       "TLS profile",
 			Status:      report.Fail,
 			Evidence:    "failed to load embedded TLS profile JSON: " + err.Error(),
-			Remediation: "rebuild granite-scan with a refreshed tls-profiles-v5.json",
+			Remediation: "rebuild bedrock with a refreshed tls-profiles-v5.json",
 			RFCRefs:     []string{"RFC 7525"},
 		}}
 	}

@@ -8,8 +8,8 @@ import (
 
 	mdns "github.com/miekg/dns"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // chainCheck audits the DS-DNSKEY-RRSIG chain at the target's apex.

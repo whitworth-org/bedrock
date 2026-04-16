@@ -3,7 +3,7 @@ package email
 import (
 	"testing"
 
-	"granite-scan/internal/probe"
+	"bedrock/internal/probe"
 )
 
 func TestParseDKIM(t *testing.T) {

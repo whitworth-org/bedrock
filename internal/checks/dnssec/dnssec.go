@@ -5,7 +5,7 @@
 // requirements), 3658 (delegation signer).
 package dnssec
 
-import "granite-scan/internal/registry"
+import "bedrock/internal/registry"
 
 // init registers the DNSSEC checks. Order is meaningful only because the
 // chain check primes a per-run cache (DS, DNSKEY) that the algorithm and

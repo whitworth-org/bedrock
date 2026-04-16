@@ -18,13 +18,13 @@ import (
 	"sync"
 	"time"
 
-	"granite-scan/internal/report"
+	"bedrock/internal/report"
 )
 
 // userAgent is shared across all sources. Kept consistent with the
 // project-wide HTTP client identity in probe/http.go so operators see one
 // User-Agent string in their access logs.
-const userAgent = "granite-scan/0.1 (+https://example.invalid/)"
+const userAgent = "bedrock/0.1 (+https://example.invalid/)"
 
 // source is the minimal interface every passive enumeration backend
 // satisfies. Each implementation does a single GET, parses the body, and

@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // TLSRPT is the parsed _smtp._tls TXT record (RFC 8460 §3).

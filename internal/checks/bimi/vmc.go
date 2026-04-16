@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"strings"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // logotypeOID is the LogotypeExtension identifier (RFC 3709) that BIMI Group

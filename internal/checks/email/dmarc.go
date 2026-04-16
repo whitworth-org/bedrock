@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // DMARC is the parsed view of a DMARC TXT record (RFC 7489 §6.3). Exported

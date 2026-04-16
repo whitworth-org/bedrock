@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // fakeDMARC mirrors the field shape of email.DMARC so the reflection-based

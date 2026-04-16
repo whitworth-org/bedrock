@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 type nullMXCheck struct{}

@@ -9,8 +9,8 @@ import (
 	"net/textproto"
 	"strings"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 type starttlsCheck struct{}
@@ -102,7 +102,7 @@ func probeSTARTTLS(ctx context.Context, env *probe.Env, mxHost string, refs []st
 	}
 
 	// EHLO with our hostname (use a literal — we are not the actual sender).
-	if err := tp.PrintfLine("EHLO granite-scan.local"); err != nil {
+	if err := tp.PrintfLine("EHLO bedrock.local"); err != nil {
 		return report.Result{
 			ID: id, Category: category, Title: title,
 			Status:      report.Fail,

@@ -1,4 +1,4 @@
-granite-scan report for test.invalid
+bedrock report for test.invalid
 
 == DNS ==
   [WARN] No AAAA record at apex (IPv6 not advertised)

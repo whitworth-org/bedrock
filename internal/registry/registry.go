@@ -9,8 +9,8 @@ import (
 	"sort"
 	"sync"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 type Check interface {

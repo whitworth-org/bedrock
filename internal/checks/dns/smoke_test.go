@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/registry"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/registry"
+	"bedrock/internal/report"
 )
 
 // TestSmokeWhitworth is a network-dependent smoke check, hidden behind the

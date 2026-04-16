@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/registry"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/registry"
+	"bedrock/internal/report"
 )
 
 // ctCheck queries Certificate Transparency log aggregators (crt.sh) for
@@ -62,7 +62,7 @@ type ctSummary struct {
 
 const (
 	ctRecentWindow  = 7 * 24 * time.Hour
-	ctUserAgent     = "granite-scan/0.1 (+https://example.invalid/)"
+	ctUserAgent     = "bedrock/0.1 (+https://example.invalid/)"
 	ctMinSCTs       = 2 // Chrome CT policy floor for publicly trusted certs.
 	ctRFCCore       = "RFC 6962"
 	ctRFCv2         = "RFC 9162"

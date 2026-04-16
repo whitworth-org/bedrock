@@ -17,7 +17,7 @@ Screenshot*.png
 /certificate-transparency-go/
 
 # Go
-/granite-scan
+/bedrock
 /dist/
 *.test
 *.out

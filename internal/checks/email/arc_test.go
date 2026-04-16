@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // TestARCDMARCResultFromCache exercises arcDMARCResult's DMARC-cache reading

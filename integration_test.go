@@ -1,5 +1,5 @@
 // integration_test.go is the top-level golden-file integration test for
-// granite-scan. It exercises the full check registry end-to-end against a
+// bedrock. It exercises the full check registry end-to-end against a
 // fake resolver, with no outbound network required.
 //
 // Approach:
@@ -47,18 +47,18 @@ import (
 
 	mdns "github.com/miekg/dns"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/registry"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/registry"
+	"bedrock/internal/report"
 
 	// Side-effect imports register checks with the global registry. Mirror
 	// main.go so the integration test sees the same check set.
-	_ "granite-scan/internal/checks/bimi"
-	_ "granite-scan/internal/checks/dns"
-	_ "granite-scan/internal/checks/dnssec"
-	_ "granite-scan/internal/checks/email"
-	_ "granite-scan/internal/checks/web"
-	_ "granite-scan/internal/discover"
+	_ "bedrock/internal/checks/bimi"
+	_ "bedrock/internal/checks/dns"
+	_ "bedrock/internal/checks/dnssec"
+	_ "bedrock/internal/checks/email"
+	_ "bedrock/internal/checks/web"
+	_ "bedrock/internal/discover"
 )
 
 // updateGolden, when set, rewrites the golden file from the rendered

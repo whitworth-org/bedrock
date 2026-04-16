@@ -5,9 +5,9 @@ import (
 	"crypto/tls"
 	"net"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/registry"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/registry"
+	"bedrock/internal/report"
 )
 
 // http2Check verifies that the target's HTTPS listener advertises HTTP/2 via

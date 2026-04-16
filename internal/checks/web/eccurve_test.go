@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // TestBuildCurveResult_Pass verifies that any modern-baseline curve being

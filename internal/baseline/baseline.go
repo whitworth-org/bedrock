@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"os"
 
-	"granite-scan/internal/report"
+	"bedrock/internal/report"
 )
 
 // Load reads a previously-saved JSON report from path.

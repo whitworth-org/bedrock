@@ -1,4 +1,4 @@
-// granite-scan: a Hardenize-inspired CLI that audits a domain's
+// bedrock: a Hardenize-inspired CLI that audits a domain's
 // DNS, Email, and WWW security posture against IETF and vendor
 // requirements. (BIMI checks live under the Email category in output.)
 // See CLAUDE.md for the architecture and the approved plan.
@@ -14,25 +14,25 @@ import (
 
 	"golang.org/x/net/idna"
 
-	"granite-scan/internal/baseline"
-	"granite-scan/internal/cli"
-	"granite-scan/internal/probe"
-	"granite-scan/internal/registry"
-	"granite-scan/internal/report"
-	"granite-scan/internal/version"
+	"bedrock/internal/baseline"
+	"bedrock/internal/cli"
+	"bedrock/internal/probe"
+	"bedrock/internal/registry"
+	"bedrock/internal/report"
+	"bedrock/internal/version"
 
 	// Side-effect imports register checks with the global registry.
-	_ "granite-scan/internal/checks/bimi"
-	_ "granite-scan/internal/checks/dns"
-	_ "granite-scan/internal/checks/dnssec"
-	_ "granite-scan/internal/checks/email"
-	_ "granite-scan/internal/checks/web"
-	_ "granite-scan/internal/discover"
+	_ "bedrock/internal/checks/bimi"
+	_ "bedrock/internal/checks/dns"
+	_ "bedrock/internal/checks/dnssec"
+	_ "bedrock/internal/checks/email"
+	_ "bedrock/internal/checks/web"
+	_ "bedrock/internal/discover"
 )
 
-const usage = `granite-scan: audit DNS, Email, and WWW security posture for a domain.
+const usage = `bedrock: audit DNS, Email, and WWW security posture for a domain.
 
-usage: granite-scan [flags] <domain>
+usage: bedrock [flags] <domain>
 
 flags:
 `

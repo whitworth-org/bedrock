@@ -1,4 +1,4 @@
-module granite-scan
+module bedrock
 
 go 1.26.2
 

@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 // hstsCheck enforces RFC 6797 Strict-Transport-Security on the apex's HTTPS

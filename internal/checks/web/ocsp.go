@@ -13,9 +13,9 @@ import (
 
 	"golang.org/x/crypto/ocsp"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/registry"
-	"granite-scan/internal/report"
+	"bedrock/internal/probe"
+	"bedrock/internal/registry"
+	"bedrock/internal/report"
 )
 
 // ocspCheck audits the served OCSP staple and (when available) cross-checks

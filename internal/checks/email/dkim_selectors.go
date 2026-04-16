@@ -3,7 +3,7 @@ package email
 import (
 	"strings"
 
-	"granite-scan/internal/probe"
+	"bedrock/internal/probe"
 )
 
 // commonSelectors is the union of selectors used by major ESPs. The list is
