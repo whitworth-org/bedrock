@@ -1,34 +1,24 @@
-// Package bimi implements BIMI checks aligned with Gmail's requirements.
+// Package bimi implements BIMI checks aligned with Gmail's vendor
+// requirements. There is no IETF RFC for BIMI; the spec is the BIMI Group
+// draft (https://bimigroup.org/) and Gmail's BIMI configuration guide.
 //
-// BIMI has no IETF RFC; the spec is the BIMI Group draft plus Gmail's
-// vendor requirements. v1 covers:
-//   - default._bimi TXT record presence and structure (v=BIMI1; l=...; a=...)
-//   - DMARC enforcement gate: p=quarantine|reject, pct=100, adkim=s, aspf=s
-//   - SVG fetch + Tiny PS conformance subset
-//   - VMC/CMC PEM fetch + chain validation + logo hash match
+// Check ordering matters within the package: the TXT check populates the
+// shared cache that the SVG and VMC checks consume. Categories run in
+// parallel but checks within a category run sequentially (see registry.Run),
+// so the BIMI checks see each other's cached output.
 package bimi
 
-import (
-	"context"
+import "granite-scan/internal/registry"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/registry"
-	"granite-scan/internal/report"
-)
+const category = "BIMI"
 
-func init() { registry.Register(stub{}) }
-
-type stub struct{}
-
-func (stub) ID() string       { return "bimi.stub" }
-func (stub) Category() string { return "BIMI" }
-func (stub) Run(_ context.Context, env *probe.Env) []report.Result {
-	return []report.Result{{
-		ID:       "bimi.stub",
-		Category: "BIMI",
-		Title:    "BIMI category placeholder — no checks implemented yet",
-		Status:   report.Info,
-		Evidence: "target=" + env.Target,
-		RFCRefs:  []string{"BIMI Group draft", "Gmail BIMI requirements"},
-	}}
+func init() {
+	registry.Register(recordCheck{})
+	registry.Register(svgFetchCheck{})
+	registry.Register(svgProfileCheck{})
+	registry.Register(svgAspectCheck{})
+	registry.Register(vmcFetchCheck{})
+	registry.Register(vmcChainCheck{})
+	registry.Register(vmcLogotypeCheck{})
+	registry.Register(gmailGateCheck{})
 }

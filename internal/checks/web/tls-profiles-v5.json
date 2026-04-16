@@ -1,5 +1,4 @@
 {
-    "href": "https://statics.tls.security.mozilla.org/server-side-tls-conf-5.0.json",
     "configurations": {
         "modern": {
             "openssl_ciphers": [],

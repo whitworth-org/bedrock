@@ -1,33 +1,26 @@
 // Package dns implements DNS zone and nameserver checks.
 //
 // Backed by RFC 1034/1035 (core), 1912 (operational), 2181 (clarifications),
-// 2308 (negative caching), 2782 (SRV), 3596 (AAAA), 3597 (unknown RRs),
-// 5936 (AXFR). DNSSEC is in package dnssec.
+// 2308 (negative caching), 3596 (AAAA), 5936 (AXFR), 7505 (Null MX).
+// DNSSEC lives in package dnssec.
 package dns
 
-import (
-	"context"
+import "granite-scan/internal/registry"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/registry"
-	"granite-scan/internal/report"
-)
-
-func init() { registry.Register(stub{}) }
-
-// stub is a placeholder so the category appears in output until real
-// checks land. Returns Info, never Fail.
-type stub struct{}
-
-func (stub) ID() string       { return "dns.stub" }
-func (stub) Category() string { return "DNS" }
-func (stub) Run(_ context.Context, env *probe.Env) []report.Result {
-	return []report.Result{{
-		ID:       "dns.stub",
-		Category: "DNS",
-		Title:    "DNS category placeholder — no checks implemented yet",
-		Status:   report.Info,
-		Evidence: "target=" + env.Target,
-		RFCRefs:  []string{"RFC 1034", "RFC 1035"},
-	}}
+// Each check is registered as its own Check so the registry can list them
+// individually (and so a single broken probe doesn't suppress the rest).
+func init() {
+	registry.Register(zoneCheck{})
+	registry.Register(mxCheck{})
+	registry.Register(nsCountCheck{})
+	registry.Register(nsDiversityCheck{})
+	registry.Register(nsIPv6Check{})
+	registry.Register(cnameApexCheck{})
+	registry.Register(cnameChainCheck{})
+	registry.Register(danglingCheck{})
+	registry.Register(aaaaApexCheck{})
+	registry.Register(axfrCheck{})
 }
+
+// category returned by every check in this package.
+const category = "DNS"

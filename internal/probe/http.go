@@ -40,7 +40,7 @@ func NewHTTP(timeout time.Duration) *HTTP {
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			// Reasonable security baseline; checks will inspect TLSState
-			// to score the actual server posture against Mozilla profiles.
+			// to score the actual server posture against the embedded TLS profiles.
 			MinVersion: tls.VersionTLS10,
 		},
 		// Force a fresh handshake per request — keeps per-host state easy to reason about.

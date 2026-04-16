@@ -2,11 +2,11 @@ package web
 
 import "testing"
 
-// TestMozillaTLSEmbedded asserts the embedded Mozilla profile JSON parses
-// and contains the three required profiles. Acts as a tripwire when the
-// JSON is refreshed in testdata/.
-func TestMozillaTLSEmbedded(t *testing.T) {
-	c, err := loadMozillaTLS()
+// TestTLSProfilesEmbedded asserts the embedded TLS profile JSON parses and
+// contains the three required profiles. Acts as a tripwire when the JSON is
+// refreshed.
+func TestTLSProfilesEmbedded(t *testing.T) {
+	c, err := loadTLSProfiles()
 	if err != nil {
 		t.Fatal(err)
 	}

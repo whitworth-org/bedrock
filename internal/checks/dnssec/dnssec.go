@@ -5,27 +5,23 @@
 // requirements), 3658 (delegation signer).
 package dnssec
 
-import (
-	"context"
+import "granite-scan/internal/registry"
 
-	"granite-scan/internal/probe"
-	"granite-scan/internal/registry"
-	"granite-scan/internal/report"
-)
-
-func init() { registry.Register(stub{}) }
-
-type stub struct{}
-
-func (stub) ID() string       { return "dnssec.stub" }
-func (stub) Category() string { return "DNSSEC" }
-func (stub) Run(_ context.Context, env *probe.Env) []report.Result {
-	return []report.Result{{
-		ID:       "dnssec.stub",
-		Category: "DNSSEC",
-		Title:    "DNSSEC category placeholder — no checks implemented yet",
-		Status:   report.Info,
-		Evidence: "target=" + env.Target,
-		RFCRefs:  []string{"RFC 4033", "RFC 4034", "RFC 4035"},
-	}}
+// init registers the DNSSEC checks. Order is meaningful only because the
+// chain check primes a per-run cache (DS, DNSKEY) that the algorithm and
+// NSEC checks consume — the registry runs checks within a category
+// sequentially, so this ordering is deterministic.
+func init() {
+	registry.Register(chainCheck{})
+	registry.Register(algorithmsCheck{})
+	registry.Register(nsecCheck{})
 }
+
+const category = "DNSSEC"
+
+// Cache keys shared between the dnssec checks (private to this package).
+const (
+	cacheKeyDS     = "dnssec.ds"     // []*dns.DS
+	cacheKeyDNSKEY = "dnssec.dnskey" // []*dns.DNSKEY
+	cacheKeySigned = "dnssec.signed" // bool — true when both DS and DNSKEY present
+)
