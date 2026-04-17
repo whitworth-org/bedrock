@@ -12,20 +12,37 @@ A single-binary command-line auditor for fundamental domain security controls �
 
 Requires **Go 1.26** or newer.
 
+### Preferred: `go install`
+
+```bash
+go install github.com/whitworth-org/bedrock@latest
+```
+
+Or pin a specific release:
+
+```bash
+go install github.com/whitworth-org/bedrock@v1.0.1
+```
+
+The binary is placed in `$GOBIN` (or `$GOPATH/bin`, which defaults to `~/go/bin` when `GOPATH` is unset). Make sure that directory is on your `PATH`:
+
+```bash
+export PATH="$HOME/go/bin:$PATH"
+bedrock --version
+```
+
+### From source
+
 ```bash
 git clone https://github.com/whitworth-org/bedrock.git
 cd bedrock
-make build
+make build        # CGO-less static binary, version ldflags embedded
 ./bedrock --version
 ```
 
-Install to `$GOPATH/bin`:
+### Pre-built binaries
 
-```bash
-make install
-```
-
-Pre-built binaries for linux/macOS/windows × amd64/arm64 are produced by `make release-check` (goreleaser snapshot) or cut by the release workflow on tag push.
+Each `v*` tag push publishes linux / macOS / windows × amd64 / arm64 archives, plus a `checksums.txt`, to the [Releases page](https://github.com/whitworth-org/bedrock/releases). Built by `.github/workflows/release.yml` via goreleaser.
 
 ## Quick start
 

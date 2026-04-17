@@ -1,14 +1,16 @@
 // Package version exposes the build-time version, commit, and date.
 //
-// Values are baked in via -ldflags at release build time:
+// Values are baked in via -ldflags at release build time (see Makefile
+// and .goreleaser.yaml):
 //
-//	go build -ldflags "-X bedrock/internal/version.Version=0.2.0 \
-//	                   -X bedrock/internal/version.Commit=$(git rev-parse --short HEAD) \
-//	                   -X bedrock/internal/version.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" .
+//	go build -ldflags "-X github.com/whitworth-org/bedrock/internal/version.Version=v1.2.3 \
+//	                   -X github.com/whitworth-org/bedrock/internal/version.Commit=$(git rev-parse --short HEAD) \
+//	                   -X github.com/whitworth-org/bedrock/internal/version.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" .
 //
 // When unset, the package falls back to runtime/debug.ReadBuildInfo so a
-// `go install` build still reports a meaningful version (the module
-// pseudo-version + the VCS revision the Go toolchain captured).
+// `go install github.com/whitworth-org/bedrock@v1.2.3` build reports the
+// real module version, plus the VCS revision and commit time the Go
+// toolchain captured.
 package version
 
 import (
@@ -18,7 +20,7 @@ import (
 )
 
 var (
-	Version = "0.1.0-dev"
+	Version = "dev"
 	Commit  = ""
 	Date    = ""
 )
@@ -29,18 +31,23 @@ func String() string {
 	commit := Commit
 	date := Date
 
-	if commit == "" || date == "" {
-		if info, ok := debug.ReadBuildInfo(); ok {
-			for _, s := range info.Settings {
-				switch s.Key {
-				case "vcs.revision":
-					if commit == "" && s.Value != "" {
-						commit = shortRev(s.Value)
-					}
-				case "vcs.time":
-					if date == "" {
-						date = s.Value
-					}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		// When Version wasn't baked in via ldflags, fall back to the Go
+		// toolchain's record of the module version set by `go install
+		// path@version`. Local `go build .` leaves this as "(devel)";
+		// in that case we keep v as "dev".
+		if v == "dev" && info.Main.Version != "" && info.Main.Version != "(devel)" {
+			v = info.Main.Version
+		}
+		for _, s := range info.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				if commit == "" && s.Value != "" {
+					commit = shortRev(s.Value)
+				}
+			case "vcs.time":
+				if date == "" {
+					date = s.Value
 				}
 			}
 		}
