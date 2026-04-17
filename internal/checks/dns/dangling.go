@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // danglingCheck looks for dangling-DNS conditions on a small set of common

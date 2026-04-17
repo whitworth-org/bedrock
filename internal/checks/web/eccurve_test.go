@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // TestBuildCurveResult_Pass verifies that any modern-baseline curve being

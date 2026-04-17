@@ -14,7 +14,7 @@
 // CSP, cookie attributes, etc.
 package web
 
-import "bedrock/internal/registry"
+import "github.com/rwhitworth/bedrock/internal/registry"
 
 const category = "WWW"
 

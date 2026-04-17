@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // SOA negative-cache TTL bounds. RFC 2308 §5 recommends "1 hour to 1 day"

@@ -3,7 +3,7 @@ package email
 import (
 	"testing"
 
-	"bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/probe"
 )
 
 func TestParseDKIM(t *testing.T) {

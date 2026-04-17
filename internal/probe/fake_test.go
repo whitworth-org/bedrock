@@ -213,6 +213,7 @@ func newFakeDoHDNS(t *testing.T) (*DNS, *fakeZone, func()) {
 // ---- tests that exercise the fakes themselves ----
 
 func TestFakeUDPResolver_NXDOMAINByDefault(t *testing.T) {
+	t.Setenv(allowPrivateResolverEnv, "1")
 	spec, _, cleanup := newFakeUDPResolver(t)
 	defer cleanup()
 
@@ -227,6 +228,7 @@ func TestFakeUDPResolver_NXDOMAINByDefault(t *testing.T) {
 }
 
 func TestFakeUDPResolver_SeededAnswers(t *testing.T) {
+	t.Setenv(allowPrivateResolverEnv, "1")
 	spec, zone, cleanup := newFakeUDPResolver(t)
 	defer cleanup()
 

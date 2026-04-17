@@ -7,8 +7,8 @@ import (
 
 	mdns "github.com/miekg/dns"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // algorithmsCheck scores DNSKEY algorithms and DS digest types against

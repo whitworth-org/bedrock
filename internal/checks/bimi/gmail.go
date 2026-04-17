@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"strings"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // dmarcView is the minimal projection of the email package's DMARC struct

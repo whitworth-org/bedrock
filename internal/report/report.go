@@ -143,13 +143,12 @@ func SanitizeForTerminal(s string) string {
 }
 
 // sanitizeResult returns a copy of res with every user-visible string field
-// passed through SanitizeForTerminal. JSON output keeps raw evidence so that
-// downstream tooling still sees the original bytes; only the human-facing
-// renderers call this helper.
+// passed through SanitizeForTerminal. Remediation is deliberately NOT
+// sanitised here: it is intentionally multi-line and is sanitised per-line
+// by renderText after the newline split so its formatting survives.
 func sanitizeResult(res Result) Result {
 	res.Title = SanitizeForTerminal(res.Title)
 	res.Evidence = SanitizeForTerminal(res.Evidence)
-	res.Remediation = SanitizeForTerminal(res.Remediation)
 	for i, ref := range res.RFCRefs {
 		res.RFCRefs[i] = SanitizeForTerminal(ref)
 	}
@@ -170,7 +169,7 @@ func renderText(w io.Writer, r Report, color bool) error {
 			}
 			if res.Status == Fail && res.Remediation != "" {
 				for _, line := range strings.Split(res.Remediation, "\n") {
-					fmt.Fprintf(w, "        fix:      %s\n", line)
+					fmt.Fprintf(w, "        fix:      %s\n", SanitizeForTerminal(line))
 				}
 			}
 			if len(res.RFCRefs) > 0 {

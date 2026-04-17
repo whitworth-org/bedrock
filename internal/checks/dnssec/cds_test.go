@@ -6,7 +6,7 @@ import (
 
 	mdns "github.com/miekg/dns"
 
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // newCDS constructs a CDS RR with the given tuple. Digest is stored as-is so

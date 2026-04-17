@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // caaCheck implements RFC 8659 CAA. CAA is a DNS-only check, so it runs

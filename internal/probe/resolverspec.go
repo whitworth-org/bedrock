@@ -4,8 +4,15 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 )
+
+// allowPrivateResolverEnv, when set to a non-empty value, bypasses the
+// validateResolverHost denylist. Intended for hermetic tests and lab
+// environments where resolvers bind to 127.0.0.1 / RFC 1918 addresses.
+// Production callers must leave this unset.
+const allowPrivateResolverEnv = "BEDROCK_ALLOW_PRIVATE_RESOLVER"
 
 // upstream is one resolved DNS endpoint. Multiple upstreams within a single
 // DNS instance let us run propagation checks across providers.
@@ -134,7 +141,13 @@ func parseUpstream(spec string) (upstream, error) {
 // protocols; DoH URLs must also not use an IP literal (so the ServerName
 // can be compared against the cert SAN). Callers always wrap parseUpstream
 // so this runs during NewDNS / NewMultiDNS setup — NOT at each query.
+//
+// Setting the BEDROCK_ALLOW_PRIVATE_RESOLVER environment variable to a
+// non-empty value disables all checks — use for hermetic tests only.
 func validateResolverHost(up upstream) error {
+	if os.Getenv(allowPrivateResolverEnv) != "" {
+		return nil
+	}
 	switch up.protocol {
 	case protoDoH:
 		u, err := url.Parse(up.addr)

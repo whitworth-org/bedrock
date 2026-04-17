@@ -10,9 +10,9 @@ import (
 
 	"github.com/quic-go/quic-go/http3"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/registry"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/registry"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // http3Check probes for HTTP/3 (QUIC) support via two independent signals:
@@ -143,7 +143,7 @@ func dialHTTP3(ctx context.Context, env *probe.Env) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	req.Header.Set("User-Agent", "bedrock/0.1 (+https://example.invalid/)")
+	req.Header.Set("User-Agent", "github.com/rwhitworth/bedrock/0.1 (+https://example.invalid/)")
 
 	resp, err := client.Do(req)
 	if err != nil {

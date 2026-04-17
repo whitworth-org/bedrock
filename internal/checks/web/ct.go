@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/registry"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/registry"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // ctCheck queries Certificate Transparency log aggregators (crt.sh) for
@@ -62,7 +62,7 @@ type ctSummary struct {
 
 const (
 	ctRecentWindow  = 7 * 24 * time.Hour
-	ctUserAgent     = "bedrock/0.1 (+https://example.invalid/)"
+	ctUserAgent     = "github.com/rwhitworth/bedrock/0.1 (+https://example.invalid/)"
 	ctMinSCTs       = 2 // Chrome CT policy floor for publicly trusted certs.
 	ctRFCCore       = "RFC 6962"
 	ctRFCv2         = "RFC 9162"
@@ -425,14 +425,19 @@ func summarizeCrtShEntries(entries []crtShEntry, now time.Time) ctSummary {
 		}
 	}
 	s.UniqueIssuers = len(issuerCounts)
-	for name, c := range issuerCounts {
+	for name := range issuerCounts {
 		s.Issuers = append(s.Issuers, name)
-		if c > s.TopIssuerCount {
-			s.TopIssuer = name
-			s.TopIssuerCount = c
-		}
 	}
 	sort.Strings(s.Issuers)
+	// Iterate sorted so the tie-break is deterministic: when two issuers are
+	// tied on count, the lexicographically earlier name wins. Map iteration
+	// order in Go is randomised, which made this comparison flaky.
+	for _, name := range s.Issuers {
+		if issuerCounts[name] > s.TopIssuerCount {
+			s.TopIssuer = name
+			s.TopIssuerCount = issuerCounts[name]
+		}
+	}
 	return s
 }
 

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -246,6 +247,11 @@ func safeDialContext(timeout time.Duration, allowPrivate bool) func(context.Cont
 	dialer := &net.Dialer{
 		Timeout:   timeout,
 		KeepAlive: 0,
+	}
+	// Environment override for hermetic tests and lab use — same knob used by
+	// validateResolverHost in resolverspec.go.
+	if os.Getenv(allowPrivateResolverEnv) != "" {
+		allowPrivate = true
 	}
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)

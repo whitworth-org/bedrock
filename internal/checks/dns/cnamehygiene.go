@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // Conservative ceiling. RFC 2181 doesn't fix a number, but RFC 1034 §3.6.2

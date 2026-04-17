@@ -24,6 +24,9 @@ Screenshot*.png
 coverage.*
 *.prof
 
+# Scan / review output directory
+/out/
+
 # Editors / OS
 .idea/
 .vscode/

@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // nsCountCheck: RFC 1034/1912 expect ≥2 NS for redundancy.

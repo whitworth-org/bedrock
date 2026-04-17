@@ -5,7 +5,7 @@ import (
 
 	mdns "github.com/miekg/dns"
 
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // Pin RFC 8624 §3.1 verdicts. Catches accidental loosening of the table.

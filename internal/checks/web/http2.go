@@ -5,9 +5,9 @@ import (
 	"crypto/tls"
 	"net"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/registry"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/registry"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // http2Check verifies that the target's HTTPS listener advertises HTTP/2 via

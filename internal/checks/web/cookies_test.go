@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 func TestParseSetCookie(t *testing.T) {

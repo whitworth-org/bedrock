@@ -6,8 +6,8 @@ import (
 	"regexp"
 	"strings"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // mixedContentCheck does a lightweight scan of the HTTPS root body for

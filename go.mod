@@ -1,4 +1,4 @@
-module bedrock
+module github.com/rwhitworth/bedrock
 
 go 1.26.2
 

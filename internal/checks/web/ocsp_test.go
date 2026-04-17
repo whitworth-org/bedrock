@@ -19,8 +19,8 @@ import (
 
 	"golang.org/x/crypto/ocsp"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // testPKI is a tiny issuer/leaf pair used to forge OCSP responses and CRLs

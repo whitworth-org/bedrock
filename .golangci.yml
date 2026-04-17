@@ -1,0 +1,37 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - contextcheck
+    - errcheck
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - staticcheck
+    - unconvert
+    - unused
+  settings:
+    gosec:
+      excludes:
+        # TLS 1.0 is intentional on the auditor's Get path; GetStrict and DoH
+        # enforce TLS 1.2+. Per-file nolint comments document each case.
+        - G402
+      config:
+        G302: "0600"
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 func TestSOATimers_PassWhenAllInRange(t *testing.T) {

@@ -3,7 +3,7 @@ package email
 import (
 	"strings"
 
-	"bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/probe"
 )
 
 // commonSelectors is the union of selectors used by major ESPs. The list is

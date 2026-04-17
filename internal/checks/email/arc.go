@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/registry"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/registry"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // arcCheck audits a domain's *prerequisites* for participating in ARC

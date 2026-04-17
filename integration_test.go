@@ -47,18 +47,18 @@ import (
 
 	mdns "github.com/miekg/dns"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/registry"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/registry"
+	"github.com/rwhitworth/bedrock/internal/report"
 
 	// Side-effect imports register checks with the global registry. Mirror
 	// main.go so the integration test sees the same check set.
-	_ "bedrock/internal/checks/bimi"
-	_ "bedrock/internal/checks/dns"
-	_ "bedrock/internal/checks/dnssec"
-	_ "bedrock/internal/checks/email"
-	_ "bedrock/internal/checks/web"
-	_ "bedrock/internal/discover"
+	_ "github.com/rwhitworth/bedrock/internal/checks/bimi"
+	_ "github.com/rwhitworth/bedrock/internal/checks/dns"
+	_ "github.com/rwhitworth/bedrock/internal/checks/dnssec"
+	_ "github.com/rwhitworth/bedrock/internal/checks/email"
+	_ "github.com/rwhitworth/bedrock/internal/checks/web"
+	_ "github.com/rwhitworth/bedrock/internal/discover"
 )
 
 // updateGolden, when set, rewrites the golden file from the rendered
@@ -125,6 +125,10 @@ func normalizeOutput(s, resolverSpec string) string {
 // new check that's registered will show up in the golden diff and force a
 // deliberate `-update`.
 func TestIntegrationEmpty(t *testing.T) {
+	// Hermetic test binds a UDP resolver on 127.0.0.1 — bypass the
+	// production SSRF denylist that rejects loopback resolvers.
+	t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "1")
+
 	resolverSpec, shutdown := startFakeDNS(t)
 	defer shutdown()
 

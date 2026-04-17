@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/registry"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/registry"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // TestFailResultsCarryRemediation enforces the project-wide invariant that

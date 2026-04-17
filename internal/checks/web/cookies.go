@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // cookiesCheck enforces Secure / HttpOnly / SameSite on all Set-Cookie

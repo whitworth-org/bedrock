@@ -4,7 +4,7 @@ import (
 	"net/url"
 	"testing"
 
-	"bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/probe"
 )
 
 func TestSameApexOrWWW(t *testing.T) {

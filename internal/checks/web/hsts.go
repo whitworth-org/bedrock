@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // hstsCheck enforces RFC 6797 Strict-Transport-Security on the apex's HTTPS

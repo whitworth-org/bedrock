@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 func TestReverseIPv4(t *testing.T) {
