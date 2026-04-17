@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // TLSRPT is the parsed _smtp._tls TXT record (RFC 8460 §3).
@@ -17,12 +17,16 @@ type TLSRPT struct {
 	Rua     []string // rua= URIs (mailto: or https:)
 }
 
+// ParseTLSRPT parses a _smtp._tls TXT record. Duplicate tag names are
+// rejected — per RFC 8460 §3 a single record MUST NOT carry the same tag
+// twice.
 func ParseTLSRPT(raw string) (*TLSRPT, error) {
 	trimmed := strings.TrimSpace(raw)
 	if !strings.HasPrefix(trimmed, "v=TLSRPTv1") {
 		return nil, errors.New("not a TLS-RPT record (missing v=TLSRPTv1)")
 	}
 	out := &TLSRPT{Raw: trimmed}
+	seen := map[string]struct{}{}
 	for _, part := range strings.Split(trimmed, ";") {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -34,7 +38,12 @@ func ParseTLSRPT(raw string) (*TLSRPT, error) {
 		}
 		name := strings.TrimSpace(part[:eq])
 		value := strings.TrimSpace(part[eq+1:])
-		switch name {
+		key := strings.ToLower(name)
+		if _, dup := seen[key]; dup {
+			return nil, fmt.Errorf("duplicate tag %q", name)
+		}
+		seen[key] = struct{}{}
+		switch key {
 		case "v":
 			out.Version = value
 		case "rua":

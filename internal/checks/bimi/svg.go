@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // Cache keys for the SVG body and its SHA-256 digest. The VMC check needs
@@ -20,6 +20,27 @@ import (
 const (
 	cacheKeyBIMISVGBytes  = "bimi.svg.bytes"
 	cacheKeyBIMISVGSHA256 = "bimi.svg.sha256"
+)
+
+// Resource-exhaustion guards for SVG parsing. A legitimate BIMI logo is
+// small (a few KB) and simple (a few hundred tokens, shallow nesting). These
+// caps ensure the validator is bounded regardless of what a remote operator
+// publishes.
+const (
+	// maxSVGBytes is the largest body we will accept before giving up on
+	// validation. BIMI Group does not normatively pin a byte limit but
+	// mailbox providers in practice reject logos over ~32 KB; 1 MiB is a
+	// comfortable upper bound that still fences off malicious fetches.
+	maxSVGBytes = 1 << 20 // 1 MiB
+
+	// maxSVGTokens caps how many XML tokens we are willing to walk. Chosen
+	// high enough for any plausibly-complex logo but low enough that a
+	// pathological document cannot pin the parser.
+	maxSVGTokens = 4096
+
+	// maxSVGDepth bounds nesting depth. SVG Tiny PS logos are shallow in
+	// practice; 32 is generous.
+	maxSVGDepth = 32
 )
 
 // allowedSVGElements is the BIMI Group "SVG Tiny PS Profile" element
@@ -132,15 +153,32 @@ func (svgFetchCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 	if i := strings.IndexByte(ct, ';'); i >= 0 {
 		ct = strings.TrimSpace(ct[:i])
 	}
-	var results []report.Result
+	// Return early on Content-Type mismatch without caching anything — if
+	// the server is serving the wrong media type we do NOT want downstream
+	// profile/aspect/logotype checks to run over what might be HTML or
+	// arbitrary bytes. Downstream checks keying off the cache will correctly
+	// degrade to N/A.
 	if ct != "image/svg+xml" {
-		results = append(results, report.Result{
+		return []report.Result{{
 			ID: id, Category: category, Title: title,
 			Status:      report.Fail,
 			Evidence:    fmt.Sprintf("Content-Type=%q (want image/svg+xml)", resp.Headers.Get("Content-Type")),
 			Remediation: svgFetchRemediation(),
 			RFCRefs:     refs,
-		})
+		}}
+	}
+
+	// Oversize body guard — 1 MiB is already ~30× any plausible BIMI logo.
+	// We refuse to cache or validate past this point so the parser is not
+	// fed an arbitrarily large buffer.
+	if len(resp.Body) > maxSVGBytes {
+		return []report.Result{{
+			ID: id, Category: category, Title: title,
+			Status:      report.Fail,
+			Evidence:    fmt.Sprintf("SVG body %d bytes exceeds cap %d", len(resp.Body), maxSVGBytes),
+			Remediation: svgFetchRemediation(),
+			RFCRefs:     refs,
+		}}
 	}
 
 	// Cache the bytes + digest for the VMC check (logotype hash match).
@@ -148,15 +186,12 @@ func (svgFetchCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 	env.CachePut(cacheKeyBIMISVGBytes, resp.Body)
 	env.CachePut(cacheKeyBIMISVGSHA256, sum[:])
 
-	if len(results) == 0 {
-		results = append(results, report.Result{
-			ID: id, Category: category, Title: title,
-			Status:   report.Pass,
-			Evidence: fmt.Sprintf("HTTP 200 %s, %d bytes, sha256=%x", ct, len(resp.Body), sum[:8]),
-			RFCRefs:  refs,
-		})
-	}
-	return results
+	return []report.Result{{
+		ID: id, Category: category, Title: title,
+		Status:   report.Pass,
+		Evidence: fmt.Sprintf("HTTP 200 %s, %d bytes, sha256=%x", ct, len(resp.Body), sum[:8]),
+		RFCRefs:  refs,
+	}}
 }
 
 type svgProfileCheck struct{}
@@ -278,17 +313,74 @@ func (r validationReport) passResult(id, title string, refs []string) report.Res
 	}
 }
 
+// urlBearingAttrs lists the attributes whose values may carry a URL. Beyond
+// plain href, SVG paints and filter references can also smuggle external
+// resources via url(…) (e.g. fill="url(http://evil/x)"); BIMI Tiny PS forbids
+// external fetches, so every one of these is scanned for dangerous schemes.
+var urlBearingAttrs = map[string]struct{}{
+	"href":      {},
+	"fill":      {},
+	"stroke":    {},
+	"filter":    {},
+	"mask":      {},
+	"clip-path": {},
+	"style":     {},
+	"begin":     {},
+}
+
+// dangerousAttrValueSubstrings is the set of case-insensitive substrings we
+// reject anywhere inside a url-bearing attribute value. `url(` catches CSS
+// external resource references; the scheme tokens catch the classic
+// script/data/file exfiltration vectors. `http:` / `https:` are here because
+// the Tiny PS profile mandates that any URL reference inside the SVG be an
+// intra-document fragment (`#id`) — absolute references are never valid.
+var dangerousAttrValueSubstrings = []string{
+	"url(",
+	"@import",
+	"javascript:",
+	"data:",
+	"file:",
+	"vbscript:",
+	"http:",
+	"https:",
+}
+
 // ValidateTinyPS walks the SVG document and reports every Tiny PS violation
 // it finds. Returns a fatal error message when the SVG cannot even be
-// parsed or doesn't have <svg> at the root.
+// parsed, exceeds a resource cap, or doesn't have <svg> at the root.
+//
+// The parser fails closed on:
+//   - xml.Directive   — DOCTYPE/ENTITY/NOTATION (billion-laughs, DTD injection)
+//   - xml.ProcInst    — processing instructions other than the initial
+//     <?xml ...?> prolog (Go's decoder does NOT surface that one)
+//   - more than maxSVGTokens tokens or more than maxSVGDepth nesting
 func ValidateTinyPS(body []byte) validationReport {
 	var v validationReport
+	// Resource caps: refuse oversized bodies before we even spin the decoder.
+	if len(body) > maxSVGBytes {
+		v.fatalError = fmt.Sprintf("SVG body %d bytes exceeds cap %d", len(body), maxSVGBytes)
+		return v
+	}
 	dec := xml.NewDecoder(strings.NewReader(string(body)))
 	dec.Strict = true
 
 	rootSeen := false
-	var depth int
+	var depth, tokenCount int
+	// Accumulate every chunk of CharData between <style> open/close into a
+	// single buffer. The XML decoder can hand us style text in multiple
+	// pieces (CDATA splits, whitespace chunks); scanning each chunk alone
+	// misses cross-chunk `@import` / `url(` smuggling. We keep a stack of
+	// open-element names to know when we are inside <style>.
+	var elemStack []string
+	var styleBuf strings.Builder
+	inStyle := false
+
 	for {
+		tokenCount++
+		if tokenCount > maxSVGTokens {
+			v.fatalError = fmt.Sprintf("SVG exceeds token cap %d", maxSVGTokens)
+			return v
+		}
 		tok, err := dec.Token()
 		if err == io.EOF {
 			break
@@ -298,9 +390,33 @@ func ValidateTinyPS(body []byte) validationReport {
 			return v
 		}
 		switch t := tok.(type) {
+		case xml.Directive:
+			// DOCTYPE / ENTITY declarations are the billion-laughs and DTD
+			// injection vectors. BIMI Tiny PS has no legitimate use for them;
+			// reject as a profile failure rather than aborting, so the
+			// operator sees the full list of issues.
+			v.profileFails = append(v.profileFails, "XML directive (DOCTYPE/ENTITY) is not allowed in SVG Tiny PS")
+		case xml.ProcInst:
+			// Processing instructions are rejected, with one exception: the
+			// XML declaration <?xml version="…"?>. Go's decoder surfaces
+			// the XML prolog as a ProcInst with target "xml", so we allow
+			// exactly that target and flag anything else.
+			if strings.EqualFold(t.Target, "xml") {
+				break
+			}
+			v.profileFails = append(v.profileFails, fmt.Sprintf("XML processing instruction <?%s ...?> is not allowed", t.Target))
 		case xml.StartElement:
 			depth++
+			if depth > maxSVGDepth {
+				v.fatalError = fmt.Sprintf("SVG exceeds depth cap %d", maxSVGDepth)
+				return v
+			}
 			name := strings.ToLower(t.Name.Local)
+			elemStack = append(elemStack, name)
+			if name == "style" {
+				inStyle = true
+				styleBuf.Reset()
+			}
 			if !rootSeen {
 				rootSeen = true
 				if name != "svg" {
@@ -317,28 +433,53 @@ func ValidateTinyPS(body []byte) validationReport {
 			} else if _, ok := allowedSVGElements[name]; !ok {
 				v.profileFails = append(v.profileFails, fmt.Sprintf("element <%s> not in Tiny PS allowlist", t.Name.Local))
 			}
-			// Per-element attribute audit: event handlers and external refs.
+			// Per-element attribute audit.
 			for _, a := range t.Attr {
 				attr := strings.ToLower(a.Name.Local)
 				if strings.HasPrefix(attr, "on") {
 					v.profileFails = append(v.profileFails, fmt.Sprintf("event-handler attribute %s on <%s>", a.Name.Local, t.Name.Local))
 					continue
 				}
-				if attr == "href" || (strings.EqualFold(a.Name.Space, "http://www.w3.org/1999/xlink") && attr == "href") {
+				// href / xlink:href / any *:href variant — classic external ref vector.
+				isHrefLike := attr == "href" ||
+					(strings.EqualFold(a.Name.Space, "http://www.w3.org/1999/xlink") && attr == "href")
+				if isHrefLike {
 					if isExternalRef(a.Value) {
 						v.profileFails = append(v.profileFails, fmt.Sprintf("external href on <%s>: %q", t.Name.Local, a.Value))
+					}
+				}
+				// URL-bearing attributes (fill, stroke, filter, mask, clip-path,
+				// style, begin, any href-like) get their value scanned for
+				// the dangerous-substring list. This catches fill="url(http://…)"
+				// or style="background:url(data:…)" payloads.
+				if _, urlBearing := urlBearingAttrs[attr]; urlBearing || isHrefLike {
+					if reason := scanDangerousAttrValue(a.Value); reason != "" {
+						v.profileFails = append(v.profileFails,
+							fmt.Sprintf("attribute %s on <%s> contains %s: %q",
+								a.Name.Local, t.Name.Local, reason, a.Value))
 					}
 				}
 			}
 		case xml.EndElement:
 			depth--
+			if len(elemStack) > 0 {
+				top := elemStack[len(elemStack)-1]
+				elemStack = elemStack[:len(elemStack)-1]
+				if top == "style" && inStyle {
+					// End of <style>: run the accumulated buffer through
+					// the same dangerous-substring scanner so chunk-split
+					// payloads cannot hide. styleBuf is already lower-cased.
+					if reason := scanDangerousStyleBody(styleBuf.String()); reason != "" {
+						v.profileFails = append(v.profileFails, fmt.Sprintf("<style> contains %s", reason))
+					}
+					styleBuf.Reset()
+					inStyle = false
+				}
+			}
 		case xml.CharData:
-			// <style> contents can carry @import / url(...) — flag them.
-			// We don't track the parent element here; cheap heuristic:
-			// if the doc contains "@import" it is almost always inside <style>.
-			s := strings.ToLower(string(t))
-			if strings.Contains(s, "@import") {
-				v.profileFails = append(v.profileFails, "<style> contains @import (external CSS reference)")
+			if inStyle {
+				// Lower-case once as we go so the final scan is cheap.
+				styleBuf.WriteString(strings.ToLower(string(t)))
 			}
 		}
 	}
@@ -346,6 +487,113 @@ func ValidateTinyPS(body []byte) validationReport {
 		v.fatalError = "no XML elements found"
 	}
 	return v
+}
+
+// scanDangerousAttrValue returns a short description of the first
+// dangerous substring found in an attribute value, or "" when the value is
+// clean. Self-fragment references (#id) are explicitly permitted and skip
+// the scan. Comparison is case-insensitive.
+func scanDangerousAttrValue(raw string) string {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return ""
+	}
+	// Intra-document fragment references are allowed.
+	if strings.HasPrefix(v, "#") {
+		return ""
+	}
+	lower := strings.ToLower(v)
+	for _, sub := range dangerousAttrValueSubstrings {
+		if strings.Contains(lower, sub) {
+			return "dangerous token " + sub
+		}
+	}
+	return ""
+}
+
+// scanDangerousStyleBody returns a short description of the first dangerous
+// token in accumulated <style> CharData, or "" when clean. The body is
+// already lower-cased by the caller. We also catch CSS escape sequences
+// like `@\69mport` (backslash-hex import) by stripping CSS backslash
+// escapes before the substring scan.
+func scanDangerousStyleBody(body string) string {
+	if body == "" {
+		return ""
+	}
+	// Collapse CSS backslash escapes. An `\69` (hex for 'i') becomes 'i';
+	// `\00020` becomes space. This is a best-effort approximation that
+	// defeats naive substring obfuscation without pulling in a full CSS
+	// tokenizer.
+	stripped := stripCSSEscapes(body)
+	for _, sub := range dangerousAttrValueSubstrings {
+		if strings.Contains(stripped, sub) {
+			return "dangerous token " + sub
+		}
+	}
+	return ""
+}
+
+// stripCSSEscapes replaces CSS backslash escape sequences with their
+// decoded characters so substring scanners can't be bypassed by
+// `@\69mport`-style tricks. Unknown or truncated escapes are dropped.
+func stripCSSEscapes(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if c != '\\' {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		// consume up to 6 hex digits per CSS spec
+		j := i + 1
+		hexEnd := j
+		for hexEnd < len(s) && hexEnd-j < 6 && isHexDigit(s[hexEnd]) {
+			hexEnd++
+		}
+		if hexEnd > j {
+			var r rune
+			for k := j; k < hexEnd; k++ {
+				r = r*16 + rune(hexValue(s[k]))
+			}
+			b.WriteRune(r)
+			i = hexEnd
+			// Optional trailing whitespace after a hex escape is swallowed.
+			if i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r' || s[i] == '\f') {
+				i++
+			}
+			continue
+		}
+		// Non-hex escape: drop backslash, take next char literally.
+		if j < len(s) {
+			b.WriteByte(s[j])
+			i = j + 1
+			continue
+		}
+		// Trailing lone backslash — drop.
+		i++
+	}
+	return b.String()
+}
+
+// isHexDigit reports whether c is an ASCII hex digit.
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+// hexValue returns the numeric value of an ASCII hex digit.
+func hexValue(c byte) int {
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0')
+	case c >= 'a' && c <= 'f':
+		return int(c-'a') + 10
+	case c >= 'A' && c <= 'F':
+		return int(c-'A') + 10
+	}
+	return 0
 }
 
 // checkRootSVG enforces baseProfile="tiny-ps" on the root <svg>.

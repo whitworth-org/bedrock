@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // STSPolicy holds a parsed MTA-STS policy file (RFC 8461 §3.2).
@@ -20,12 +20,34 @@ type STSPolicy struct {
 	MX      []string // host patterns; "*." prefix permitted per §3.2
 }
 
+// Resource caps for MTA-STS policy files. RFC 8461 doesn't pin a hard
+// ceiling on entries; these are defensive and sit well above any
+// legitimate deployment.
+const (
+	// maxSTSMXEntries caps the number of mx: lines in a policy. Real
+	// deployments have a handful; 64 is generous.
+	maxSTSMXEntries = 64
+
+	// maxSTSMXHostLen is the RFC 1035 maximum length for a fully qualified
+	// DNS name (excluding the trailing dot); any mx: value longer than
+	// this cannot legally refer to a host.
+	maxSTSMXHostLen = 253
+)
+
 // ParseSTSPolicy parses the policy file body. Lines are CRLF-or-LF separated;
-// each line is "key: value" with case-sensitive key names per RFC 8461 §3.2.
+// each line is "key: value". The parser:
+//   - Normalises line endings (CRLF/LF both accepted).
+//   - Lower-cases the key before dispatch, i.e. "Mode:" and "mode:" both
+//     resolve to the same field (case-insensitive key matching).
+//   - Rejects duplicate version / mode / max_age keys (RFC 8461 §3.2 allows
+//     only one of each singleton field).
+//   - Caps mx: entries at maxSTSMXEntries and the length of each mx: value
+//     at maxSTSMXHostLen to bound resource use on malformed policies.
 func ParseSTSPolicy(body string) (*STSPolicy, error) {
 	out := &STSPolicy{Raw: body}
 	// Normalize line endings. Spec uses CRLF but we accept either.
 	body = strings.ReplaceAll(body, "\r\n", "\n")
+	sawVersion, sawMode, sawMaxAge := false, false, false
 	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimRight(line, " \t\r")
 		if line == "" {
@@ -35,20 +57,41 @@ func ParseSTSPolicy(body string) (*STSPolicy, error) {
 		if colon < 0 {
 			return nil, fmt.Errorf("malformed line %q", line)
 		}
-		key := strings.TrimSpace(line[:colon])
+		// Lower-case the key so the dispatch is case-insensitive. Keeping
+		// the original case available via line[:colon] would be fine too
+		// but the switch would have to fold it anyway.
+		key := strings.ToLower(strings.TrimSpace(line[:colon]))
 		value := strings.TrimSpace(line[colon+1:])
 		switch key {
 		case "version":
+			if sawVersion {
+				return nil, errors.New("duplicate version key")
+			}
+			sawVersion = true
 			out.Version = value
 		case "mode":
+			if sawMode {
+				return nil, errors.New("duplicate mode key")
+			}
+			sawMode = true
 			out.Mode = value
 		case "max_age":
+			if sawMaxAge {
+				return nil, errors.New("duplicate max_age key")
+			}
+			sawMaxAge = true
 			n, err := strconv.Atoi(value)
 			if err != nil {
 				return nil, fmt.Errorf("invalid max_age %q", value)
 			}
 			out.MaxAge = n
 		case "mx":
+			if len(out.MX) >= maxSTSMXEntries {
+				return nil, fmt.Errorf("too many mx entries (>%d)", maxSTSMXEntries)
+			}
+			if len(value) > maxSTSMXHostLen {
+				return nil, fmt.Errorf("mx value %d bytes exceeds cap %d", len(value), maxSTSMXHostLen)
+			}
 			out.MX = append(out.MX, value)
 		}
 	}
@@ -172,7 +215,9 @@ func (mtastsPolicyCheck) Run(ctx context.Context, env *probe.Env) []report.Resul
 	defer cancel()
 
 	url := "https://mta-sts." + env.Target + "/.well-known/mta-sts.txt"
-	resp, err := env.HTTP.Get(ctx, url)
+	// RFC 8461 §3.3: the policy fetch MUST use a valid TLS chain and MUST
+	// NOT follow redirects. GetStrict enforces both.
+	resp, err := env.HTTP.GetStrict(ctx, url)
 	if err != nil {
 		return []report.Result{{
 			ID: id, Category: category, Title: title,

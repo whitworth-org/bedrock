@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // DKIMKey is a parsed DKIM key record (RFC 6376 §3.6.1).
@@ -24,6 +24,14 @@ type DKIMKey struct {
 // ParseDKIM parses a DKIM key TXT record. RFC 6376 §3.2 tag-list syntax:
 // tags separated by ";", each "name=value", whitespace around tokens ignored.
 // An empty p= tag means the key was revoked.
+//
+// The parser rejects:
+//   - Duplicate tag names (RFC 6376 §3.2 allows only one of each).
+//   - A `d=` tag (uncommon in key records but seen in some ESP extensions)
+//     whose value contains characters outside the DNS-safe set
+//     [a-zA-Z0-9._-]. This keeps mis-issued records from smuggling
+//     non-domain content (e.g. whitespace, "@", shell metacharacters)
+//     through downstream consumers that log or act on it.
 func ParseDKIM(raw string) (*DKIMKey, error) {
 	out := &DKIMKey{
 		Raw:     raw,
@@ -32,6 +40,7 @@ func ParseDKIM(raw string) (*DKIMKey, error) {
 		Service: "*",
 		Tags:    map[string]string{},
 	}
+	seen := map[string]struct{}{}
 	for _, part := range strings.Split(raw, ";") {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -43,6 +52,12 @@ func ParseDKIM(raw string) (*DKIMKey, error) {
 		}
 		name := strings.TrimSpace(part[:eq])
 		value := strings.TrimSpace(part[eq+1:])
+		// Tag names are case-sensitive per RFC 6376 §3.2 — track the exact
+		// name for duplicate detection rather than folding case.
+		if _, dup := seen[name]; dup {
+			return nil, fmt.Errorf("duplicate tag %q", name)
+		}
+		seen[name] = struct{}{}
 		out.Tags[name] = value
 		switch name {
 		case "v":
@@ -55,12 +70,39 @@ func ParseDKIM(raw string) (*DKIMKey, error) {
 			out.Flags = value
 		case "p":
 			out.P = value
+		case "d":
+			// Some extensions put a domain in the key record; regardless
+			// of spec adherence we require it to be DNS-safe so it can't
+			// carry out-of-band payloads into logs or reports.
+			if !isDNSSafeName(value) {
+				return nil, fmt.Errorf("invalid d=%q (must match [a-zA-Z0-9._-])", value)
+			}
 		}
 	}
 	if out.Version != "" && !strings.EqualFold(out.Version, "DKIM1") {
 		return nil, fmt.Errorf("unexpected v=%q (want DKIM1)", out.Version)
 	}
 	return out, nil
+}
+
+// isDNSSafeName reports whether s uses only the limited DNS label character
+// set [a-zA-Z0-9._-]. Empty strings are rejected.
+func isDNSSafeName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9':
+		case c == '.' || c == '_' || c == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // The default selector list is constructed per-run by selectorList(env),

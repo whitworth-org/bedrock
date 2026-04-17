@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // Record is a parsed BIMI assertion record. Tag syntax mirrors DMARC: a
@@ -27,6 +28,7 @@ type Record struct {
 // for Gmail's purposes.
 func ParseRecord(raw string) (*Record, error) {
 	r := &Record{Raw: raw, Tags: map[string]string{}}
+	seen := map[string]struct{}{}
 	for _, part := range strings.Split(raw, ";") {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -36,10 +38,18 @@ func ParseRecord(raw string) (*Record, error) {
 		if eq < 0 {
 			return nil, fmt.Errorf("malformed tag %q (no '=')", part)
 		}
-		name := strings.TrimSpace(part[:eq])
+		name := strings.ToLower(strings.TrimSpace(part[:eq]))
 		value := strings.TrimSpace(part[eq+1:])
-		r.Tags[strings.ToLower(name)] = value
-		switch strings.ToLower(name) {
+		// Reject duplicate tag names — a single BIMI record MUST NOT carry
+		// the same tag twice (the spec allows only one of each). A repeat
+		// is almost always either operator error or an attempt to smuggle
+		// conflicting values past a naive last-wins parser.
+		if _, dup := seen[name]; dup {
+			return nil, fmt.Errorf("duplicate tag %q", name)
+		}
+		seen[name] = struct{}{}
+		r.Tags[name] = value
+		switch name {
 		case "v":
 			r.Version = value
 		case "l":
@@ -59,6 +69,14 @@ func ParseRecord(raw string) (*Record, error) {
 
 // httpsURL returns nil when the URL is well-formed HTTPS; otherwise an error
 // describing the defect. BIMI requires HTTPS for both the SVG and the VMC.
+//
+// Hardening rules beyond "scheme == https":
+//   - Userinfo (https://user:pass@host/...) is rejected. It is never used in
+//     legitimate BIMI publishing and is a classic tool for URL-obfuscation
+//     phishing (the `@` splits the displayed authority from the real one).
+//   - IP-literal hosts (dotted IPv4 and bracketed [IPv6]) are rejected.
+//     Operators publish BIMI for hostnames, not IPs; allowing IP literals
+//     here just widens the attack surface for the downstream fetchers.
 func httpsURL(s string) error {
 	if s == "" {
 		return errors.New("empty URL")
@@ -72,6 +90,19 @@ func httpsURL(s string) error {
 	}
 	if u.Host == "" {
 		return errors.New("missing host")
+	}
+	if u.User != nil {
+		return errors.New("userinfo not permitted in URL")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return errors.New("missing host")
+	}
+	// net.ParseIP handles both dotted IPv4 and bare IPv6 forms. url.Hostname()
+	// strips the surrounding [] from IPv6 literals, so "[::1]" comes back as
+	// "::1" and we catch it here.
+	if ip := net.ParseIP(host); ip != nil {
+		return fmt.Errorf("host %q is an IP literal; hostname required", host)
 	}
 	return nil
 }
