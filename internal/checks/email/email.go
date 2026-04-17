@@ -10,7 +10,7 @@
 // Gmail-gate check can consume it without re-querying the resolver.
 package email
 
-import "github.com/rwhitworth/bedrock/internal/registry"
+import "github.com/whitworth-org/bedrock/internal/registry"
 
 const category = "Email"
 

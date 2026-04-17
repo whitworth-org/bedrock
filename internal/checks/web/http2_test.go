@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 func TestClassifyHTTP2ALPN(t *testing.T) {

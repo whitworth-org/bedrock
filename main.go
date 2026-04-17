@@ -16,20 +16,20 @@ import (
 
 	"golang.org/x/net/idna"
 
-	"github.com/rwhitworth/bedrock/internal/baseline"
-	"github.com/rwhitworth/bedrock/internal/cli"
-	"github.com/rwhitworth/bedrock/internal/probe"
-	"github.com/rwhitworth/bedrock/internal/registry"
-	"github.com/rwhitworth/bedrock/internal/report"
-	"github.com/rwhitworth/bedrock/internal/version"
+	"github.com/whitworth-org/bedrock/internal/baseline"
+	"github.com/whitworth-org/bedrock/internal/cli"
+	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/registry"
+	"github.com/whitworth-org/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/version"
 
 	// Side-effect imports register checks with the global registry.
-	_ "github.com/rwhitworth/bedrock/internal/checks/bimi"
-	_ "github.com/rwhitworth/bedrock/internal/checks/dns"
-	_ "github.com/rwhitworth/bedrock/internal/checks/dnssec"
-	_ "github.com/rwhitworth/bedrock/internal/checks/email"
-	_ "github.com/rwhitworth/bedrock/internal/checks/web"
-	_ "github.com/rwhitworth/bedrock/internal/discover"
+	_ "github.com/whitworth-org/bedrock/internal/checks/bimi"
+	_ "github.com/whitworth-org/bedrock/internal/checks/dns"
+	_ "github.com/whitworth-org/bedrock/internal/checks/dnssec"
+	_ "github.com/whitworth-org/bedrock/internal/checks/email"
+	_ "github.com/whitworth-org/bedrock/internal/checks/web"
+	_ "github.com/whitworth-org/bedrock/internal/discover"
 )
 
 const usage = `bedrock: audit DNS, Email, and WWW security posture for a domain.

@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rwhitworth/bedrock/internal/probe"
-	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 // googleWorkspaceMXCheck detects domains that still point their MX RRset at

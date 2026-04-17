@@ -13,9 +13,9 @@ import (
 
 	"golang.org/x/crypto/ocsp"
 
-	"github.com/rwhitworth/bedrock/internal/probe"
-	"github.com/rwhitworth/bedrock/internal/registry"
-	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/registry"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 // ocspCheck audits the served OCSP staple and (when available) cross-checks

@@ -15,7 +15,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 // maxBaselineBytes bounds how much of a baseline file we will decode. A

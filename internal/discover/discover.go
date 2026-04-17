@@ -17,9 +17,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/rwhitworth/bedrock/internal/probe"
-	"github.com/rwhitworth/bedrock/internal/registry"
-	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/registry"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 // Category is the report category under which all discovery results render.

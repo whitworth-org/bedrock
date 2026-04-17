@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rwhitworth/bedrock/internal/probe"
-	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 // STSPolicy holds a parsed MTA-STS policy file (RFC 8461 §3.2).

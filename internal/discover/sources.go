@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 // hostnameRe is the conservative allowlist every candidate hostname derived
@@ -49,7 +49,7 @@ func isValidHostname(h string) bool {
 // userAgent is shared across all sources. Kept consistent with the
 // project-wide HTTP client identity in probe/http.go so operators see one
 // User-Agent string in their access logs.
-const userAgent = "github.com/rwhitworth/bedrock/0.1 (+https://example.invalid/)"
+const userAgent = "github.com/whitworth-org/bedrock/0.1 (+https://example.invalid/)"
 
 // source is the minimal interface every passive enumeration backend
 // satisfies. Each implementation does a single GET, parses the body, and

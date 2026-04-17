@@ -5,7 +5,7 @@
 // DNSSEC lives in package dnssec.
 package dns
 
-import "github.com/rwhitworth/bedrock/internal/registry"
+import "github.com/whitworth-org/bedrock/internal/registry"
 
 // Each check is registered as its own Check so the registry can list them
 // individually (and so a single broken probe doesn't suppress the rest).

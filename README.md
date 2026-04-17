@@ -1,6 +1,6 @@
 # bedrock
 
-A single-binary command-line auditor for a domain's **DNS**, **DNSSEC**, **Email** (incl. BIMI), and **Web / TLS** posture. Every finding cites an RFC section; every `FAIL` ships a copy-pasteable remediation snippet.
+A single-binary command-line auditor for fundamental domain security controls — **DNS**, **DNSSEC**, **Email** (incl. BIMI), and **Web / TLS**. Every finding cites an RFC section; every `FAIL` ships a copy-pasteable remediation snippet.
 
 - Single static binary, no runtime dependencies.
 - All logic is local: no upload, no account, no third-party telemetry (optional third-party lookups — crt.sh, DNSBLs — are off by default and must be enabled explicitly).
@@ -13,7 +13,7 @@ A single-binary command-line auditor for a domain's **DNS**, **DNSSEC**, **Email
 Requires **Go 1.26** or newer.
 
 ```bash
-git clone https://github.com/rwhitworth/bedrock.git
+git clone https://github.com/whitworth-org/bedrock.git
 cd bedrock
 make build
 ./bedrock --version
@@ -261,7 +261,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version: '1.26' }
-      - run: go install github.com/rwhitworth/bedrock@latest
+      - run: go install github.com/whitworth-org/bedrock@latest
       - uses: actions/cache@v4
         with:
           path: baseline.json

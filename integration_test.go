@@ -47,18 +47,18 @@ import (
 
 	mdns "github.com/miekg/dns"
 
-	"github.com/rwhitworth/bedrock/internal/probe"
-	"github.com/rwhitworth/bedrock/internal/registry"
-	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/registry"
+	"github.com/whitworth-org/bedrock/internal/report"
 
 	// Side-effect imports register checks with the global registry. Mirror
 	// main.go so the integration test sees the same check set.
-	_ "github.com/rwhitworth/bedrock/internal/checks/bimi"
-	_ "github.com/rwhitworth/bedrock/internal/checks/dns"
-	_ "github.com/rwhitworth/bedrock/internal/checks/dnssec"
-	_ "github.com/rwhitworth/bedrock/internal/checks/email"
-	_ "github.com/rwhitworth/bedrock/internal/checks/web"
-	_ "github.com/rwhitworth/bedrock/internal/discover"
+	_ "github.com/whitworth-org/bedrock/internal/checks/bimi"
+	_ "github.com/whitworth-org/bedrock/internal/checks/dns"
+	_ "github.com/whitworth-org/bedrock/internal/checks/dnssec"
+	_ "github.com/whitworth-org/bedrock/internal/checks/email"
+	_ "github.com/whitworth-org/bedrock/internal/checks/web"
+	_ "github.com/whitworth-org/bedrock/internal/discover"
 )
 
 // updateGolden, when set, rewrites the golden file from the rendered

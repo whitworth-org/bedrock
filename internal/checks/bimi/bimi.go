@@ -8,7 +8,7 @@
 // so the BIMI checks see each other's cached output.
 package bimi
 
-import "github.com/rwhitworth/bedrock/internal/registry"
+import "github.com/whitworth-org/bedrock/internal/registry"
 
 // BIMI lives under the broader Email security category in user-facing
 // output rather than as a top-level category of its own.

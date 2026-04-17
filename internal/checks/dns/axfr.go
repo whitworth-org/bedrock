@@ -8,8 +8,8 @@ import (
 
 	miekg "github.com/miekg/dns"
 
-	"github.com/rwhitworth/bedrock/internal/probe"
-	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 // axfrCheck attempts an AXFR against each authoritative NS over TCP/53.

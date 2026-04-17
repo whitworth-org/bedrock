@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rwhitworth/bedrock/internal/probe"
-	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 // maxConcurrentDials caps how many TLS handshakes we run in parallel

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rwhitworth/bedrock/internal/probe"
-	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 // tlsCheck scores the negotiated TLS posture of the apex (and www) host

@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rwhitworth/bedrock/internal/probe"
-	"github.com/rwhitworth/bedrock/internal/registry"
-	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/registry"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 // ctCheck queries Certificate Transparency log aggregators (crt.sh) for
@@ -62,7 +62,7 @@ type ctSummary struct {
 
 const (
 	ctRecentWindow  = 7 * 24 * time.Hour
-	ctUserAgent     = "github.com/rwhitworth/bedrock/0.1 (+https://example.invalid/)"
+	ctUserAgent     = "github.com/whitworth-org/bedrock/0.1 (+https://example.invalid/)"
 	ctMinSCTs       = 2 // Chrome CT policy floor for publicly trusted certs.
 	ctRFCCore       = "RFC 6962"
 	ctRFCv2         = "RFC 9162"

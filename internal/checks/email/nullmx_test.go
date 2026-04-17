@@ -3,7 +3,7 @@ package email
 import (
 	"testing"
 
-	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/probe"
 )
 
 func TestIsNullMX(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/rwhitworth/bedrock/internal/probe"
-	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 // redirectCheck verifies HTTP→HTTPS redirect hygiene for both apex and www.

@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rwhitworth/bedrock/internal/probe"
-	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 // Cache keys for the SVG body and its SHA-256 digest. The VMC check needs

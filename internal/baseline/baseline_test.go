@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 func writeTemp(t *testing.T, body string) string {

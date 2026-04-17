@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rwhitworth/bedrock/internal/probe"
-	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 // DKIMKey is a parsed DKIM key record (RFC 6376 §3.6.1).

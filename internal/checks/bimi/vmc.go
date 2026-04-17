@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rwhitworth/bedrock/internal/probe"
-	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 // logotypeOID is the LogotypeExtension identifier (RFC 3709) that BIMI Group

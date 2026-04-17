@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rwhitworth/bedrock/internal/probe"
-	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 // DMARC is the parsed view of a DMARC TXT record (RFC 7489 §6.3). Exported
