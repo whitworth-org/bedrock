@@ -13,19 +13,26 @@ import (
 	"github.com/rwhitworth/bedrock/internal/report"
 )
 
-// TestSmokeWhitworth is a network-dependent smoke check, hidden behind the
-// `smoke` build tag so it doesn't run in CI by default. Invoke with:
+// TestSmokeDomain is a network-dependent smoke check, hidden behind the
+// `smoke` build tag so it doesn't run in CI by default. The target domain
+// defaults to a neutral example but can be overridden with
+// BEDROCK_SMOKE_DOMAIN. Invoke with:
 //
-//	go test -tags=smoke -run TestSmokeWhitworth ./internal/checks/dns
-func TestSmokeWhitworth(t *testing.T) {
-	env := probe.NewEnv("whitworth.org", 5*time.Second, true, "")
+//	go test -tags=smoke -run TestSmokeDomain ./internal/checks/dns
+//	BEDROCK_SMOKE_DOMAIN=example.org go test -tags=smoke ./internal/checks/dns
+func TestSmokeDomain(t *testing.T) {
+	domain := os.Getenv("BEDROCK_SMOKE_DOMAIN")
+	if domain == "" {
+		domain = "example.com"
+	}
+	env := probe.NewEnv(domain, 5*time.Second, true, "")
 	results := registry.Run(context.Background(), env)
-	rep := report.Report{Target: "whitworth.org", Results: results}
+	rep := report.Report{Target: domain, Results: results}
 	if err := report.Render(os.Stdout, rep, report.FormatText, false); err != nil {
 		t.Fatal(err)
 	}
 	if len(results) == 0 {
-		t.Fatal("expected at least one DNS result")
+		t.Fatalf("expected at least one DNS result for %s", domain)
 	}
-	t.Logf("got %d results", len(results))
+	t.Logf("got %d results for %s", len(results), domain)
 }

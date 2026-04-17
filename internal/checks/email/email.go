@@ -24,4 +24,5 @@ func init() {
 	registry.Register(daneCheck{})
 	registry.Register(nullMXCheck{})
 	registry.Register(starttlsCheck{})
+	registry.Register(googleWorkspaceMXCheck{})
 }

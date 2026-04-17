@@ -232,26 +232,36 @@ func mdEscape(s string) string {
 
 // mdRemediation renders a Remediation field for the Markdown renderer.
 // Single-line remediations use inline `backticks`; multi-line remediations
-// use a fenced ```bash block so shell snippets retain their shape. The text
-// is sanitised of terminal controls first but is NOT Markdown-escaped inside
-// the code literal (code spans are already inert for Markdown). Pipes are
-// still escaped so they do not break the enclosing table row.
+// use a fenced ```bash block so shell snippets retain their shape. Newlines
+// are preserved by splitting BEFORE SanitizeForTerminal (which otherwise
+// replaces \n with U+FFFD), then sanitising each line independently.
+// The text is NOT Markdown-escaped inside the code literal (code spans are
+// already inert for Markdown). Pipes are still escaped so they do not break
+// the enclosing table row.
 func mdRemediation(s string) string {
 	if s == "" {
 		return ""
 	}
-	s = SanitizeForTerminal(s)
-	s = strings.ReplaceAll(s, "\r", "")
+	// Normalise CRLF/CR to LF without destroying the newline structure.
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+
 	if strings.Contains(s, "\n") {
+		lines := strings.Split(s, "\n")
+		for i, line := range lines {
+			lines[i] = SanitizeForTerminal(line)
+		}
+		joined := strings.Join(lines, "\n")
 		// Fenced code block form. Strip any internal triple-backticks so the
 		// attacker cannot close our fence early, then escape pipes so the
 		// block stays within a single table cell.
-		s = strings.ReplaceAll(s, "```", "'''")
-		s = strings.ReplaceAll(s, "|", "\\|")
-		return "\n```bash\n" + s + "\n```\n"
+		joined = strings.ReplaceAll(joined, "```", "'''")
+		joined = strings.ReplaceAll(joined, "|", "\\|")
+		return "\n```bash\n" + joined + "\n```\n"
 	}
 	// Single-line form: inline code. Swap backticks for single quotes so the
 	// code span itself closes cleanly, then escape table-breaking pipes.
+	s = SanitizeForTerminal(s)
 	s = strings.ReplaceAll(s, "`", "'")
 	s = strings.ReplaceAll(s, "|", "\\|")
 	return "`" + s + "`"

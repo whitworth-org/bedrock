@@ -1,9 +1,9 @@
 .\" bedrock(1) man page
 .\" Section 1: user commands.
 .\" Source: man/bedrock.1 in the bedrock repository.
-.TH BEDROCK 1 "April 2026" "bedrock 0.1" "User Commands"
+.TH BEDROCK 1 "April 2026" "bedrock 0.1.0" "User Commands"
 .SH NAME
-bedrock \- audit a domain's DNS, Email, and WWW security posture
+bedrock \- audit a domain's DNS, DNSSEC, Email, BIMI, and Web/TLS posture
 .SH SYNOPSIS
 .B bedrock
 .RI [ flags ]
@@ -11,13 +11,13 @@ bedrock \- audit a domain's DNS, Email, and WWW security posture
 .SH DESCRIPTION
 .B bedrock
 inspects a target domain against IETF and vendor (Gmail) requirements
-across DNS, DNSSEC, Email, and WWW
+across DNS, DNSSEC, Email, and Web/TLS
 and emits a verdict per check.
 BIMI checks (BIMI Group draft + Gmail requirements) are reported under
 the Email category.
 Each result cites the RFC section that defines the requirement,
 and every failure is accompanied by a copy-pasteable record, header,
-or configuration string the operator can publish to fix it.
+or configuration snippet the operator can publish to fix it.
 .PP
 The tool is a single static binary with no runtime dependencies,
 suitable for CI pipelines and ad-hoc audits.
@@ -26,6 +26,13 @@ By default it performs active probes
 pass
 .B \-\-no\-active
 to confine the run to DNS lookups.
+.PP
+The HTTP client denylists RFC 1918, loopback, link-local, ULA, CGNAT, and
+cloud-metadata addresses to neutralise SSRF via attacker-influenced DNS.
+Resolvers pointing at private address space are rejected unless the
+.B BEDROCK_ALLOW_PRIVATE_RESOLVER
+environment variable is set to a non-empty value (intended for hermetic
+test labs).
 .PP
 .I domain
 may be an internationalised domain name; it is normalised to ASCII
@@ -87,7 +94,7 @@ Comma-separated list of resolver specs (same syntax as
 .BR \-\-resolver ).
 Each query is sent to every listed resolver in parallel; the first answer is
 used for normal lookups and the full set is exposed to the propagation check.
-Mutually preferred over
+Preferred over
 .B \-\-resolver
 when both are supplied.
 .TP
@@ -143,7 +150,9 @@ Enumerate subdomains via passive sources
 .BR threatcrowd ,
 .BR wayback )
 and probe each discovered host for TLS reachability and certificate
-hygiene. Off by default.
+hygiene. Hostnames are allowlisted against
+.B ^[a-zA-Z0-9._-]+$
+at both source and enumerate time. Off by default.
 .TP
 .BI \-\-baseline " path"
 Path to a previously-saved JSON report. Results are diffed against the
@@ -151,7 +160,11 @@ baseline and any check that is now
 .B FAIL
 but was previously
 .BR PASS ", " WARN ", or " INFO
-is reported as a regression.
+is reported as a regression. Duplicate IDs in a baseline file cause every
+current
+.B FAIL
+for that ID to be reported as a regression (fails closed \(em an ambiguous
+baseline cannot mask a regression).
 .TP
 .B \-\-regression\-only
 With
@@ -166,6 +179,8 @@ when standard output is a terminal; colour is suppressed when redirected.
 Each result line shows category, status, check ID, and a one-line evidence
 string.
 Failures additionally show a remediation block.
+ANSI, C0, C1, and DEL bytes in attacker-controlled evidence are replaced
+with U+FFFD.
 .PP
 The JSON output is the canonical projection; the text and Markdown
 formats are derived from the same
@@ -187,7 +202,8 @@ The requirement was not met. Affects the exit code.
 A remediation snippet is always provided.
 .TP
 .B INFO
-A purely informational observation (e.g.\& detected software, profile match).
+A purely informational observation (e.g.\& detected software, profile match,
+legacy Google Workspace MX layout).
 .TP
 .B N/A
 The check was not applicable to this target
@@ -207,7 +223,12 @@ do not affect exit status.
 .TP
 .B 1
 The report contained at least one
-.B FAIL .
+.B FAIL
+(or, with
+.BR \-\-regression\-only ,
+a new
+.B FAIL
+versus the baseline).
 .TP
 .B 2
 Usage error, invalid target, render failure, or unreachable resolver.
@@ -215,35 +236,35 @@ Usage error, invalid target, render failure, or unreachable resolver.
 .TP
 Basic audit, human-readable text:
 .EX
-$ granite\-scan whitworth.org
+$ bedrock example.org
 .EE
 .TP
 Pin a recursive resolver for reproducibility:
 .EX
-$ granite\-scan \-\-resolver 1.1.1.1:53 example.org
+$ bedrock \-\-resolver 1.1.1.1:53 example.org
 .EE
 .TP
 Emit JSON, then filter to just failures with
 .BR jq (1):
 .EX
-$ granite\-scan \-\-json example.org | \\
+$ bedrock \-\-json example.org | \\
     jq '.results[] | select(.status == "FAIL")'
 .EE
 .TP
 Generate a Markdown report for review:
 .EX
-$ granite\-scan \-\-md example.org > example.org.report.md
+$ bedrock \-\-md example.org > example.org.report.md
 .EE
 .TP
 DNS-only audit of a third-party domain (no outbound TCP beyond DNS):
 .EX
-$ granite\-scan \-\-no\-active partner.example.com
+$ bedrock \-\-no\-active partner.example.com
 .EE
 .TP
 Use in a CI pipeline; non-zero exit fails the job on any
 .B FAIL :
 .EX
-$ granite\-scan \-\-json prod.example.com > posture.json || \\
+$ bedrock \-\-json prod.example.com > posture.json || \\
     { cat posture.json; exit 1; }
 .EE
 .SH FILES
@@ -253,6 +274,13 @@ Consulted when
 .B \-\-resolver
 is not supplied.
 .SH ENVIRONMENT
+.TP
+.B BEDROCK_ALLOW_PRIVATE_RESOLVER
+When set to a non-empty value, bypasses the resolver-IP denylist so
+loopback / RFC 1918 resolvers can be used. Intended for hermetic test
+environments only; production callers must leave this unset.
+.PP
+Otherwise
 .B bedrock
 ignores all environment variables other than those consulted by the
 Go runtime
@@ -265,33 +293,43 @@ checks reference, among others:
 .IP \(bu 2
 RFC 1034, 1035, 1912, 2181, 2308, 3596, 3597, 5936 (DNS)
 .IP \(bu 2
-RFC 4033, 4034, 4035, 4509, 5011, 5155, 6605, 6781, 8624 (DNSSEC)
+RFC 4033, 4034, 4035, 4509, 5011, 5155, 6605, 6781, 7344, 8624 (DNSSEC)
 .IP \(bu 2
 RFC 5321, 3207, 7505 (SMTP / STARTTLS / Null MX)
 .IP \(bu 2
-RFC 7208 (SPF), 6376 (DKIM), 7489 (DMARC),
-8460 (TLS-RPT), 8461 (MTA-STS), 7672 (DANE-SMTP)
+RFC 7208 (SPF), 6376 (DKIM), 7489 (DMARC), 8617 (ARC),
+8460 (TLS-RPT), 8461 (MTA-STS), 7672 (DANE-SMTP), 5782 (DNSBL)
 .IP \(bu 2
-RFC 5280, 6797 (HSTS), 7525 / BCP 195 (TLS), 8659 (CAA)
+RFC 5280, 6125, 6797 (HSTS), 7525 / BCP 195 (TLS), 8659 (CAA),
+6066 / 6960 (OCSP), 9162 (CT), 9113 (HTTP/2), 9114 (HTTP/3)
 .IP \(bu 2
-BIMI Group draft and Gmail vendor BIMI requirements
+BIMI Group draft, Gmail BIMI requirements, RFC 3709 LogotypeExtn
 .RE
 .SH LIMITATIONS
 The Go standard library does not expose the negotiated TLS elliptic curve;
 TLS profile scoring uses protocol version, negotiated cipher suite, and
-the served certificate's key as discriminators.
+the served certificate's key as discriminators. Accepted EC curves are
+detected via probe-and-detect in a separate check.
 .PP
-DKIM selector probing is limited to a fixed list
-.RB ( default ", " google ", " selector1 ", " selector2 ", " mail ", " dkim );
-custom selectors are not auto-discovered.
+DKIM selector probing covers a fixed list of well-known selectors plus
+ESP-specific selectors derived from SPF includes. Custom per-tenant
+selectors (e.g. HubSpot's
+.BR hs1\-<id>\-<domain>
+pattern) cannot be discovered without the customer ID.
 .PP
 VMC chain validation uses
 .B ExtKeyUsageAny
-because the BIMI EKU OID is not present in the Go standard library's
-root usage table.
-The logotype extension is matched by SHA-256 byte search inside the
-.B 1.3.6.1.5.5.7.1.12
-extension value; full RFC 3709 ASN.1 decoding is not yet performed.
+because the BIMI EKU OIDs
+.RB ( 1.3.6.1.5.5.7.3.31
+and
+.BR 1.3.6.1.5.5.7.3.32 )
+are not present in the Go standard library's root usage table. A
+BIMI-specific EKU gate runs
+.I before
+chain verification to reject certificates lacking the correct purpose.
+The logotype extension is now decoded via real RFC 3709 ASN.1
+(previously a SHA-256 byte search); the SVG hash in the cert must match
+the fetched SVG for the check to pass.
 .SH BUGS
 Report issues against the source repository.
 .SH SEE ALSO
