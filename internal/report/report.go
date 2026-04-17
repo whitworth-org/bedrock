@@ -108,12 +108,62 @@ func groupByCategory(results []Result) ([]string, map[string][]Result) {
 	return cats, g
 }
 
+// SanitizeForTerminal scrubs characters that can corrupt or weaponise terminal
+// output: all C0 controls (0x00–0x1F) except TAB, the DEL byte (0x7F), and all
+// C1 controls (0x80–0x9F). This explicitly drops newline/carriage-return, BEL,
+// backspace and ESC so that evidence strings carrying attacker-controlled data
+// (DNS TXT content, certificate subjects, HTTP headers) cannot inject ANSI
+// escape sequences, clear the screen, or smuggle hidden text. Each removed
+// byte is replaced with the Unicode replacement rune U+FFFD. Multi-byte UTF-8
+// is preserved because iteration is rune-wise.
+func SanitizeForTerminal(s string) string {
+	if s == "" {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\t':
+			b.WriteRune(r)
+		case r >= 0x00 && r <= 0x1F:
+			// All C0 controls other than TAB — including \n, \r, BEL (0x07),
+			// backspace (0x08) and ESC (0x1B) — are replaced.
+			b.WriteRune('\uFFFD')
+		case r == 0x7F:
+			b.WriteRune('\uFFFD')
+		case r >= 0x80 && r <= 0x9F:
+			// C1 controls, some of which begin ANSI CSI sequences.
+			b.WriteRune('\uFFFD')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// sanitizeResult returns a copy of res with every user-visible string field
+// passed through SanitizeForTerminal. JSON output keeps raw evidence so that
+// downstream tooling still sees the original bytes; only the human-facing
+// renderers call this helper.
+func sanitizeResult(res Result) Result {
+	res.Title = SanitizeForTerminal(res.Title)
+	res.Evidence = SanitizeForTerminal(res.Evidence)
+	res.Remediation = SanitizeForTerminal(res.Remediation)
+	for i, ref := range res.RFCRefs {
+		res.RFCRefs[i] = SanitizeForTerminal(ref)
+	}
+	return res
+}
+
 func renderText(w io.Writer, r Report, color bool) error {
-	fmt.Fprintf(w, "bedrock report for %s\n\n", r.Target)
+	target := SanitizeForTerminal(r.Target)
+	fmt.Fprintf(w, "bedrock report for %s\n\n", target)
 	cats, g := groupByCategory(r.Results)
 	for _, c := range cats {
-		fmt.Fprintf(w, "== %s ==\n", c)
+		fmt.Fprintf(w, "== %s ==\n", SanitizeForTerminal(c))
 		for _, res := range g[c] {
+			res = sanitizeResult(res)
 			fmt.Fprintf(w, "  [%s] %s\n", colorize(res.Status.String(), res.Status, color), res.Title)
 			if res.Evidence != "" {
 				fmt.Fprintf(w, "        evidence: %s\n", res.Evidence)
@@ -133,10 +183,10 @@ func renderText(w io.Writer, r Report, color bool) error {
 }
 
 func renderMarkdown(w io.Writer, r Report) error {
-	fmt.Fprintf(w, "# bedrock report — `%s`\n\n", r.Target)
+	fmt.Fprintf(w, "# bedrock report — `%s`\n\n", mdEscape(r.Target))
 	cats, g := groupByCategory(r.Results)
 	for _, c := range cats {
-		fmt.Fprintf(w, "## %s\n\n", c)
+		fmt.Fprintf(w, "## %s\n\n", mdEscape(c))
 		fmt.Fprintln(w, "| Status | Check | Evidence | Remediation | Refs |")
 		fmt.Fprintln(w, "|---|---|---|---|---|")
 		for _, res := range g[c] {
@@ -144,7 +194,7 @@ func renderMarkdown(w io.Writer, r Report) error {
 				res.Status.String(),
 				mdEscape(res.Title),
 				mdEscape(res.Evidence),
-				mdCode(res.Remediation),
+				mdRemediation(res.Remediation),
 				mdEscape(strings.Join(res.RFCRefs, ", ")),
 			)
 		}
@@ -153,21 +203,57 @@ func renderMarkdown(w io.Writer, r Report) error {
 	return nil
 }
 
+// mdMetaChars lists Markdown punctuation we must escape inside table cells.
+// We treat the full CommonMark meta-set (minus whitespace) conservatively:
+// better a noisy cell than an injected link, emphasis span, or HTML element
+// rendered from attacker-controlled content.
+var mdMetaChars = []string{
+	"\\", "`", "<", ">", "[", "]", "(", ")", "!", "*", "_",
+	"{", "}", "#", "+", "-", ".", "|",
+}
+
+// mdEscape prepares a plain string for safe embedding in a Markdown table
+// cell. It strips terminal control bytes via SanitizeForTerminal, folds
+// CR/LF to spaces so the row stays on one line, and backslash-escapes every
+// Markdown meta character including the table-cell delimiter.
 func mdEscape(s string) string {
 	if s == "" {
 		return ""
 	}
-	s = strings.ReplaceAll(s, "|", "\\|")
+	s = SanitizeForTerminal(s)
+	// SanitizeForTerminal already turned \n and \r into U+FFFD; collapse any
+	// leftover literal newlines callers may have inserted post-sanitise.
+	s = strings.ReplaceAll(s, "\r", " ")
 	s = strings.ReplaceAll(s, "\n", " ")
+	for _, m := range mdMetaChars {
+		s = strings.ReplaceAll(s, m, "\\"+m)
+	}
 	return s
 }
 
-func mdCode(s string) string {
+// mdRemediation renders a Remediation field for the Markdown renderer.
+// Single-line remediations use inline `backticks`; multi-line remediations
+// use a fenced ```bash block so shell snippets retain their shape. The text
+// is sanitised of terminal controls first but is NOT Markdown-escaped inside
+// the code literal (code spans are already inert for Markdown). Pipes are
+// still escaped so they do not break the enclosing table row.
+func mdRemediation(s string) string {
 	if s == "" {
 		return ""
 	}
+	s = SanitizeForTerminal(s)
+	s = strings.ReplaceAll(s, "\r", "")
+	if strings.Contains(s, "\n") {
+		// Fenced code block form. Strip any internal triple-backticks so the
+		// attacker cannot close our fence early, then escape pipes so the
+		// block stays within a single table cell.
+		s = strings.ReplaceAll(s, "```", "'''")
+		s = strings.ReplaceAll(s, "|", "\\|")
+		return "\n```bash\n" + s + "\n```\n"
+	}
+	// Single-line form: inline code. Swap backticks for single quotes so the
+	// code span itself closes cleanly, then escape table-breaking pipes.
 	s = strings.ReplaceAll(s, "`", "'")
-	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "|", "\\|")
 	return "`" + s + "`"
 }

@@ -14,20 +14,20 @@ import (
 
 	"golang.org/x/net/idna"
 
-	"bedrock/internal/baseline"
-	"bedrock/internal/cli"
-	"bedrock/internal/probe"
-	"bedrock/internal/registry"
-	"bedrock/internal/report"
-	"bedrock/internal/version"
+	"github.com/rwhitworth/bedrock/internal/baseline"
+	"github.com/rwhitworth/bedrock/internal/cli"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/registry"
+	"github.com/rwhitworth/bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/version"
 
 	// Side-effect imports register checks with the global registry.
-	_ "bedrock/internal/checks/bimi"
-	_ "bedrock/internal/checks/dns"
-	_ "bedrock/internal/checks/dnssec"
-	_ "bedrock/internal/checks/email"
-	_ "bedrock/internal/checks/web"
-	_ "bedrock/internal/discover"
+	_ "github.com/rwhitworth/bedrock/internal/checks/bimi"
+	_ "github.com/rwhitworth/bedrock/internal/checks/dns"
+	_ "github.com/rwhitworth/bedrock/internal/checks/dnssec"
+	_ "github.com/rwhitworth/bedrock/internal/checks/email"
+	_ "github.com/rwhitworth/bedrock/internal/checks/web"
+	_ "github.com/rwhitworth/bedrock/internal/discover"
 )
 
 const usage = `bedrock: audit DNS, Email, and WWW security posture for a domain.
@@ -154,7 +154,12 @@ func main() {
 	if format == report.FormatText && len(regressions) > 0 {
 		fmt.Fprintf(os.Stdout, "\n== Regressions vs baseline (%s) ==\n", *baselinePath)
 		for _, r := range regressions {
-			fmt.Fprintf(os.Stdout, "  [REGRESSION] %s — %s\n", r.ID, r.Title)
+			// Sanitise ID + Title: regression entries are echoed outside the
+			// normal renderer, and the baseline file is attacker-influenceable
+			// if it was produced by a previous scan of an untrusted domain.
+			fmt.Fprintf(os.Stdout, "  [REGRESSION] %s — %s\n",
+				report.SanitizeForTerminal(r.ID),
+				report.SanitizeForTerminal(r.Title))
 		}
 		fmt.Fprintln(os.Stdout)
 	}
