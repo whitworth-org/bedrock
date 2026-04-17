@@ -242,6 +242,101 @@ func TestEnumerateDedupAndScopeFilter(t *testing.T) {
 	}
 }
 
+// TestIsValidHostname locks in the allowlist-based sanitizer used by
+// enumerate() before a candidate is added to the seen-set. The production
+// sanitizer is the single place we trust to keep control bytes, quotes,
+// backslashes, whitespace, angle brackets, and non-ASCII bytes out of the
+// enumerator's output — the regression surface is worth a dedicated test.
+func TestIsValidHostname(t *testing.T) {
+	good := []string{
+		"a.example.com",
+		"foo",
+		"foo-bar.example.com",
+		"deep.sub.example.com",
+		"a",
+	}
+	for _, h := range good {
+		if !isValidHostname(h) {
+			t.Errorf("isValidHostname(%q) = false, want true", h)
+		}
+	}
+	bad := []string{
+		"",
+		"a.example.com\n",
+		"a.example.com\r",
+		"a.example.com ",
+		" a.example.com",
+		"a.example.com\t",
+		"a\"example.com",
+		"a'example.com",
+		"a\\example.com",
+		"a<example.com",
+		"a>example.com",
+		"a|example.com",
+		"a;example.com",
+		"a example.com",
+		"a\x00example.com",
+		"a\x7fexample.com",
+		"a\xc2\xa0example.com", // non-breaking space (UTF-8)
+	}
+	for _, h := range bad {
+		if isValidHostname(h) {
+			t.Errorf("isValidHostname(%q) = true, want false", h)
+		}
+	}
+}
+
+// TestParseWaybackRejectsBadBytes guards the secondary sanitizer that runs
+// on raw response lines from the Internet Archive CDX endpoint. The CDX
+// index is attacker-influenced: a crawler stored whatever bytes appeared
+// on a third-party page at capture time.
+func TestParseWaybackRejectsBadBytes(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{
+			name: "line with CR/LF inside percent-encoded URL is dropped",
+			body: "http%3A%2F%2Fa.example.com%2F%0A%0Devil\nhttp://b.example.com/\n",
+			want: []string{"b.example.com"},
+		},
+		{
+			name: "line with embedded quote is dropped",
+			body: "http://a.example.com/\"x\nhttp://b.example.com/\n",
+			want: []string{"b.example.com"},
+		},
+		{
+			name: "line with angle bracket is dropped",
+			body: "http://a.example.com/<script>\nhttp://b.example.com/\n",
+			want: []string{"b.example.com"},
+		},
+		{
+			name: "line with backslash is dropped",
+			body: "http://a.example.com/\\x\nhttp://b.example.com/\n",
+			want: []string{"b.example.com"},
+		},
+		{
+			name: "line with non-ASCII byte is dropped",
+			body: "http://a.example.com/\xffx\nhttp://b.example.com/\n",
+			want: []string{"b.example.com"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseWayback(tc.body, "example.com")
+			if got == nil {
+				got = []string{}
+			}
+			sort.Strings(got)
+			sort.Strings(tc.want)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("parseWayback = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestEnumerateRespectsContextCancellation guards against future regressions
 // where a misbehaving source might block enumerate past the caller's
 // deadline. We do NOT make a network call — the fakeSource returns

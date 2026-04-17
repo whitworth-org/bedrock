@@ -13,18 +13,43 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
+
+// hostnameRe is the conservative allowlist every candidate hostname derived
+// from a passive source must match before being returned. Untrusted source
+// bodies may contain attacker-chosen bytes — we reject anything that isn't
+// a plain DNS-label character so downstream consumers (report renderers,
+// TLS SNI, log lines) never see a control character, quote, backslash,
+// whitespace, angle bracket, or non-ASCII byte.
+var hostnameRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+// isValidHostname enforces the hostnameRe allowlist and additionally rejects
+// any byte < 0x20 or > 0x7E (defence-in-depth against regex regressions).
+// B1-F26/F27: sanitize passive-source candidates.
+func isValidHostname(h string) bool {
+	if h == "" {
+		return false
+	}
+	for i := 0; i < len(h); i++ {
+		b := h[i]
+		if b < 0x20 || b > 0x7E {
+			return false
+		}
+	}
+	return hostnameRe.MatchString(h)
+}
 
 // userAgent is shared across all sources. Kept consistent with the
 // project-wide HTTP client identity in probe/http.go so operators see one
 // User-Agent string in their access logs.
-const userAgent = "bedrock/0.1 (+https://example.invalid/)"
+const userAgent = "github.com/rwhitworth/bedrock/0.1 (+https://example.invalid/)"
 
 // source is the minimal interface every passive enumeration backend
 // satisfies. Each implementation does a single GET, parses the body, and
@@ -39,7 +64,13 @@ type source interface {
 // dedups results (lowercased, trailing-dot stripped), and filters to the
 // in-scope set (apex or *.apex). Per-source errors become Info results
 // rather than aborting the whole enumeration — discovery is best-effort.
-func enumerate(ctx context.Context, domain string, timeout time.Duration) ([]string, []report.Result) {
+func enumerate(parentCtx context.Context, domain string, timeout time.Duration) ([]string, []report.Result) {
+	// Derive a cancellable context so any early return from this function
+	// (or cancellation by the caller) propagates to every source goroutine
+	// and tears down their in-flight HTTP requests promptly. B4-F6.
+	ctx, cancel := context.WithCancel(parentCtx)
+	defer cancel()
+
 	// Per-source HTTP timeout. The plan calls for 15s; we honor that as a
 	// hard floor independent of env.Timeout (env.Timeout is tuned for DNS,
 	// which is much faster than these archive APIs).
@@ -66,6 +97,8 @@ func enumerate(ctx context.Context, domain string, timeout time.Duration) ([]str
 		wg.Add(1)
 		go func(s source) {
 			defer wg.Done()
+			// Use the derived ctx, not parentCtx, so cancel() above also
+			// cancels any in-flight source goroutine on early return.
 			hosts, err := s.Discover(ctx, domain, client)
 			if err != nil {
 				mu.Lock()
@@ -84,6 +117,12 @@ func enumerate(ctx context.Context, domain string, timeout time.Duration) ([]str
 			for _, h := range hosts {
 				h = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(h, ".")))
 				if h == "" {
+					continue
+				}
+				// Reject candidates with CR/LF/quotes/backslash/whitespace
+				// /angle brackets or non-ASCII bytes before anything else
+				// touches them. B1-F26/F27.
+				if !isValidHostname(h) {
 					continue
 				}
 				// Scope filter: keep only in-bailiwick names. We accept the
@@ -191,14 +230,19 @@ func parseAnubis(body []byte) ([]string, error) {
 	return hosts, nil
 }
 
-// threatcrowdSource queries http://ci-www.threatcrowd.org/searchApi/v2/.
+// threatcrowdSource queries https://ci-www.threatcrowd.org/searchApi/v2/.
 // Response shape: {"response_code":"1","subdomains":[...]}.
+//
+// HTTPS-only: if the TLS handshake fails we emit no candidates rather than
+// fall back to plaintext HTTP, since a MITM on a cleartext response could
+// inject attacker-chosen hostnames into every downstream check. B1-F25 /
+// B3-07.
 type threatcrowdSource struct{}
 
 func (threatcrowdSource) Name() string { return "threatcrowd" }
 
 func (threatcrowdSource) Discover(ctx context.Context, domain string, client *http.Client) ([]string, error) {
-	body, err := httpGet(ctx, client, fmt.Sprintf("http://ci-www.threatcrowd.org/searchApi/v2/domain/report/?domain=%s", url.QueryEscape(domain)))
+	body, err := httpGet(ctx, client, fmt.Sprintf("https://ci-www.threatcrowd.org/searchApi/v2/domain/report/?domain=%s", url.QueryEscape(domain)))
 	if err != nil {
 		return nil, fmt.Errorf("threatcrowd: %w", err)
 	}
@@ -226,8 +270,9 @@ type waybackSource struct{}
 
 func (waybackSource) Name() string { return "wayback" }
 
+// HTTPS-only: see threatcrowdSource for rationale. B1-F26.
 func (waybackSource) Discover(ctx context.Context, domain string, client *http.Client) ([]string, error) {
-	target := fmt.Sprintf("http://web.archive.org/cdx/search/cdx?url=*.%s/*&output=txt&fl=original&collapse=urlkey", url.QueryEscape(domain))
+	target := fmt.Sprintf("https://web.archive.org/cdx/search/cdx?url=*.%s/*&output=txt&fl=original&collapse=urlkey", url.QueryEscape(domain))
 	body, err := httpGet(ctx, client, target)
 	if err != nil {
 		return nil, fmt.Errorf("wayback: %w", err)
@@ -239,6 +284,10 @@ func (waybackSource) Discover(ctx context.Context, domain string, client *http.C
 // Each line is a URL; we URL-decode it (Wayback percent-encodes the path
 // portion), parse it, and pull the Hostname. Lines that don't parse as
 // URLs or whose hostname doesn't end with ".<domain>" are dropped.
+//
+// Any line containing CR/LF/quotes/backslash/whitespace/angle brackets or
+// bytes outside printable ASCII is rejected before parsing, and the final
+// hostname must match hostnameRe. B1-F26/F27.
 func parseWayback(body, domain string) []string {
 	out := make([]string, 0, 16)
 	suffix := "." + strings.ToLower(domain)
@@ -249,6 +298,13 @@ func parseWayback(body, domain string) []string {
 		}
 		if decoded, err := url.QueryUnescape(line); err == nil {
 			line = decoded
+		}
+		// Reject any line with control/non-ASCII bytes or shell/quoting
+		// metachars before letting url.Parse touch it. Wayback responses
+		// are attacker-influenced: a crawler stored whatever garbage was
+		// on some third-party page.
+		if containsBadByte(line) {
+			continue
 		}
 		// CDX may return lines without a scheme; url.Parse needs one.
 		if !strings.Contains(line, "://") {
@@ -262,10 +318,30 @@ func parseWayback(body, domain string) []string {
 		if host == "" {
 			continue
 		}
+		if !isValidHostname(host) {
+			continue
+		}
 		if host != strings.ToLower(domain) && !strings.HasSuffix(host, suffix) {
 			continue
 		}
 		out = append(out, host)
 	}
 	return out
+}
+
+// containsBadByte returns true if s has any control byte, any byte > 0x7E,
+// any whitespace, any quote, any backslash, or any angle bracket. Used as
+// a pre-filter on raw response lines from untrusted passive sources.
+func containsBadByte(s string) bool {
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b < 0x20 || b > 0x7E {
+			return true
+		}
+		switch b {
+		case ' ', '\t', '"', '\'', '`', '\\', '<', '>':
+			return true
+		}
+	}
+	return false
 }
