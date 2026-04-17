@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"bedrock/internal/probe"
+	"bedrock/internal/report"
 )
 
 func TestParseCrtShJSON_Array(t *testing.T) {
@@ -211,7 +212,7 @@ func TestCAAIssueAllowlist(t *testing.T) {
 	}
 }
 
-func TestCTCheck_DisabledReturnsNotApplicable(t *testing.T) {
+func TestCTCheck_DisabledReturnsInfo(t *testing.T) {
 	env := &probe.Env{Target: "example.com", EnableCT: false}
 	results := ctCheck{}.Run(t.Context(), env)
 	if len(results) != 1 {
@@ -220,7 +221,7 @@ func TestCTCheck_DisabledReturnsNotApplicable(t *testing.T) {
 	if results[0].ID != "web.ct.lookup" {
 		t.Errorf("ID = %q, want web.ct.lookup", results[0].ID)
 	}
-	if results[0].Status.String() != "N/A" {
-		t.Errorf("Status = %s, want N/A", results[0].Status)
+	if results[0].Status != report.Info {
+		t.Errorf("Status = %s, want INFO", results[0].Status)
 	}
 }

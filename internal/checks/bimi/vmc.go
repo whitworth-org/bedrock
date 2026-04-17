@@ -75,7 +75,7 @@ func (vmcFetchCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 	if !ok {
 		return []report.Result{{
 			ID: id, Category: category, Title: title,
-			Status: report.NotApplicable, Evidence: "no parsed BIMI record",
+			Status: report.Info, Evidence: "no parsed BIMI record",
 			RFCRefs: refs,
 		}}
 	}
@@ -150,7 +150,7 @@ func (vmcChainCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 	if !ok {
 		return []report.Result{{
 			ID: id, Category: category, Title: title,
-			Status: report.NotApplicable, Evidence: "no VMC bytes cached",
+			Status: report.Info, Evidence: "no VMC bytes cached",
 			RFCRefs: refs,
 		}}
 	}
@@ -227,7 +227,7 @@ func (vmcLogotypeCheck) Run(ctx context.Context, env *probe.Env) []report.Result
 	if !ok {
 		return []report.Result{{
 			ID: id, Category: category, Title: title,
-			Status: report.NotApplicable, Evidence: "no validated VMC leaf cached",
+			Status: report.Info, Evidence: "no validated VMC leaf cached",
 			RFCRefs: refs,
 		}}
 	}
@@ -235,7 +235,7 @@ func (vmcLogotypeCheck) Run(ctx context.Context, env *probe.Env) []report.Result
 	if !ok {
 		return []report.Result{{
 			ID: id, Category: category, Title: title,
-			Status: report.NotApplicable, Evidence: "cached leaf is the wrong type",
+			Status: report.Info, Evidence: "cached leaf is the wrong type",
 			RFCRefs: refs,
 		}}
 	}

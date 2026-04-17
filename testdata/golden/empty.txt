@@ -9,7 +9,7 @@ bedrock report for test.invalid
         ref:      RFC 5936 §6
   [PASS] No CNAME at apex (correct)
         ref:      RFC 1912 §2.4, RFC 2181 §10.3
-  [N/A] No CNAME chain at www.test.invalid
+  [INFO] No CNAME chain at www.test.invalid
         evidence: www.test.invalid is not a CNAME
         ref:      RFC 1912 §2.4
   [PASS] No dangling-DNS candidates found among probed hosts
@@ -51,7 +51,7 @@ bedrock report for test.invalid
         ref:      RFC 4033, RFC 4034, RFC 3658
 
 == Email ==
-  [N/A] BIMI Gmail gate: DMARC must be quarantine|reject, pct=100, strict alignment
+  [INFO] BIMI Gmail gate: DMARC must be quarantine|reject, pct=100, strict alignment
         evidence: DMARC not parsed (no entry at email.dmarc.parsed)
         ref:      Gmail BIMI requirements, RFC 7489 §6.3
   [N/A] BIMI SVG viewBox is square (1:1)
@@ -70,7 +70,7 @@ bedrock report for test.invalid
   [N/A] BIMI VMC chain validates against system trust store
         evidence: skipped: --no-active
         ref:      BIMI Group draft §4.5
-  [N/A] BIMI Verified Mark Certificate fetched over HTTPS
+  [INFO] BIMI Verified Mark Certificate fetched over HTTPS
         evidence: no parsed BIMI record
         ref:      BIMI Group draft §4.5, RFC 3709 (Logotype extension)
   [N/A] BIMI VMC carries the logotype extension binding the SVG
@@ -106,7 +106,7 @@ bedrock report for test.invalid
   [N/A] Null MX (RFC 7505) declaration
         evidence: no MX records — null MX not applicable
         ref:      RFC 7505 §3
-  [N/A] DNS blocklist (DNSBL) listings
+  [INFO] DNS blocklist (DNSBL) listings
         evidence: disabled (pass --enable-rbl to query third-party blocklists)
         ref:      RFC 5782
   [N/A] STARTTLS advertised by MX
@@ -122,7 +122,7 @@ bedrock report for test.invalid
         ref:      RFC 8460 §3
 
 == Subdomain ==
-  [N/A] Subdomain enumeration
+  [INFO] Subdomain enumeration
         evidence: disabled (--subdomains off)
 
 == WWW ==
@@ -138,7 +138,7 @@ bedrock report for test.invalid
   [N/A] CRL revocation check
         evidence: active probing disabled (--no-active)
         ref:      RFC 5280 §5
-  [N/A] Certificate Transparency log lookup
+  [INFO] Certificate Transparency log lookup
         evidence: disabled (--enable-ct off)
         ref:      RFC 6962, RFC 9162
   [N/A] Security headers

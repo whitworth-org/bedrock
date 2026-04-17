@@ -37,7 +37,7 @@ func (gmailGateCheck) Run(_ context.Context, env *probe.Env) []report.Result {
 	if !ok {
 		return []report.Result{{
 			ID: id, Category: category, Title: title,
-			Status:      report.NotApplicable,
+			Status:      report.Info,
 			Evidence:    "DMARC not parsed (no entry at " + probe.CacheKeyDMARC + ")",
 			Remediation: dmarcRemediation(env.Target),
 			RFCRefs:     refs,
@@ -57,7 +57,7 @@ func (gmailGateCheck) Run(_ context.Context, env *probe.Env) []report.Result {
 	if err != nil {
 		return []report.Result{{
 			ID: id, Category: category, Title: title,
-			Status:   report.NotApplicable,
+			Status:   report.Info,
 			Evidence: "DMARC cache value not introspectable: " + err.Error(),
 			RFCRefs:  refs,
 		}}

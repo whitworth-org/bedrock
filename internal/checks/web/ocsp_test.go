@@ -492,7 +492,7 @@ func TestTimeoutFromContext(t *testing.T) {
 }
 
 // TestRunCheck_NoCachedState exercises the top-level Run with active=true but
-// no cached TLS state — every result should be N/A rather than crash.
+// no cached TLS state — every result should be Info rather than crash.
 func TestRunCheck_NoCachedState(t *testing.T) {
 	env := &probe.Env{Active: true, Timeout: time.Second}
 	// Manually init the cache map since we're constructing Env outside NewEnv.
@@ -503,7 +503,7 @@ func TestRunCheck_NoCachedState(t *testing.T) {
 		t.Fatalf("want 3 results, got %d", len(out))
 	}
 	staple := findResult(t, out, "web.ocsp.staple")
-	if staple.Status != report.NotApplicable {
-		t.Errorf("want N/A staple when no cached state, got %s", staple.Status)
+	if staple.Status != report.Info {
+		t.Errorf("want Info staple when no cached state, got %s", staple.Status)
 	}
 }

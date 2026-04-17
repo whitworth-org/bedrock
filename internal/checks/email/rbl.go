@@ -50,7 +50,7 @@ func (rblCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 	if !env.EnableRBL {
 		return []report.Result{{
 			ID: id, Category: category, Title: title,
-			Status:   report.NotApplicable,
+			Status:   report.Info,
 			Evidence: "disabled (pass --enable-rbl to query third-party blocklists)",
 			RFCRefs:  refs,
 		}}
@@ -73,7 +73,7 @@ func (rblCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 	if len(v4s) == 0 {
 		results = append(results, report.Result{
 			ID: id, Category: category, Title: title,
-			Status:   report.NotApplicable,
+			Status:   report.Info,
 			Evidence: "no IPv4 addresses to check (" + gatherEvidence + ")",
 			RFCRefs:  refs,
 		})

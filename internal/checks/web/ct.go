@@ -74,7 +74,7 @@ func (ctCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 		return []report.Result{{
 			ID: "web.ct.lookup", Category: category,
 			Title:    "Certificate Transparency log lookup",
-			Status:   report.NotApplicable,
+			Status:   report.Info,
 			Evidence: "disabled (--enable-ct off)",
 			RFCRefs:  []string{ctRFCCore, ctRFCv2},
 		}}
@@ -154,7 +154,7 @@ func runCTSCTs(ctx context.Context, env *probe.Env) report.Result {
 	}
 	state := getCachedTLSState(env)
 	if state == nil {
-		res.Status = report.NotApplicable
+		res.Status = report.Info
 		res.Evidence = "no cached TLS state to inspect"
 		return res
 	}

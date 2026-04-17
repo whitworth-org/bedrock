@@ -36,8 +36,8 @@ func runGmail(t *testing.T, env *probe.Env) []report.Result {
 func TestGmailGate_NoCacheEntry(t *testing.T) {
 	env := newEnvWithDMARC(t, nil) // do not put anything
 	results := runGmail(t, env)
-	if len(results) != 1 || results[0].Status != report.NotApplicable {
-		t.Fatalf("want single NotApplicable; got %+v", results)
+	if len(results) != 1 || results[0].Status != report.Info {
+		t.Fatalf("want single Info; got %+v", results)
 	}
 }
 
@@ -46,12 +46,12 @@ func TestGmailGate_NilCacheValue(t *testing.T) {
 	env.CachePut(probe.CacheKeyDMARC, (*fakeDMARC)(nil))
 	results := runGmail(t, env)
 	// Reflection unwrap of typed-nil pointer surfaces "nil DMARC value"
-	// from readDMARC and we report NotApplicable for that path.
+	// from readDMARC and we report Info for that path.
 	if len(results) != 1 {
 		t.Fatalf("want 1 result; got %d: %+v", len(results), results)
 	}
-	if results[0].Status != report.NotApplicable {
-		t.Errorf("want NotApplicable; got %s", results[0].Status)
+	if results[0].Status != report.Info {
+		t.Errorf("want Info; got %s", results[0].Status)
 	}
 }
 

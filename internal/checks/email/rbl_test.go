@@ -60,8 +60,8 @@ func TestRBLDisabled(t *testing.T) {
 		t.Fatalf("disabled run: got %d results, want 1", len(got))
 	}
 	r := got[0]
-	if r.Status != report.NotApplicable {
-		t.Errorf("disabled run: status = %v, want NotApplicable", r.Status)
+	if r.Status != report.Info {
+		t.Errorf("disabled run: status = %v, want Info", r.Status)
 	}
 	if r.ID != "email.rbl" {
 		t.Errorf("disabled run: id = %q, want email.rbl", r.ID)

@@ -39,7 +39,7 @@ func (discoverCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 			ID:       "subdomain.discover",
 			Category: category,
 			Title:    "Subdomain enumeration",
-			Status:   report.NotApplicable,
+			Status:   report.Info,
 			Evidence: "disabled (--subdomains off)",
 		}}
 	}

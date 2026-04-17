@@ -114,7 +114,7 @@ func (cnameChainCheck) Run(ctx context.Context, env *probe.Env) []report.Result 
 			ID:       "dns.cname.chain",
 			Category: category,
 			Title:    "No CNAME chain at " + host,
-			Status:   report.NotApplicable,
+			Status:   report.Info,
 			Evidence: host + " is not a CNAME",
 			RFCRefs:  []string{"RFC 1912 §2.4"},
 		}}
