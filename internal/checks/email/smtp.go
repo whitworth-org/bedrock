@@ -81,14 +81,14 @@ func probeSTARTTLS(ctx context.Context, env *probe.Env, mxHost string, refs []st
 			RFCRefs:     refs,
 		}
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	// Bound the entire SMTP exchange by the env timeout.
 	if dl, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(dl)
 	}
 
 	tp := textproto.NewConn(conn)
-	defer tp.Close()
+	defer func() { _ = tp.Close() }()
 
 	// Read banner (220).
 	if _, _, err := tp.ReadResponse(220); err != nil {

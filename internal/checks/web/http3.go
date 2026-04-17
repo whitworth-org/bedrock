@@ -133,7 +133,7 @@ func dialHTTP3(ctx context.Context, env *probe.Env) (bool, error) {
 	}
 	// Always release the underlying UDP socket so we don't leak sockets across
 	// multi-host runs.
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 
 	gctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
@@ -149,7 +149,7 @@ func dialHTTP3(ctx context.Context, env *probe.Env) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// Drain the body so the connection can be cleanly closed; cap to avoid
 	// pulling a large page when we only need to confirm the round-trip worked.
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))

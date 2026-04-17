@@ -264,7 +264,7 @@ func checkResponder(ctx context.Context, leaf, issuer *x509.Certificate, stapled
 		r.Evidence = fmt.Sprintf("could not contact OCSP responder %s: %v", url, err)
 		return r
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		r.Status = report.Info
 		r.Evidence = fmt.Sprintf("OCSP responder %s returned HTTP %d", url, resp.StatusCode)
@@ -337,7 +337,7 @@ func checkCRL(ctx context.Context, leaf *x509.Certificate) report.Result {
 		r.Evidence = fmt.Sprintf("could not fetch CRL %s: %v", url, err)
 		return r
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		r.Status = report.Info
 		r.Evidence = fmt.Sprintf("CRL %s returned HTTP %d", url, resp.StatusCode)

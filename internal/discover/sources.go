@@ -159,7 +159,7 @@ func httpGet(ctx context.Context, client *http.Client, target string) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	const maxBody = 4 << 20 // 4 MiB
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if err != nil {
