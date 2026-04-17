@@ -16,16 +16,42 @@ linters:
     - unconvert
     - unused
   settings:
+    errcheck:
+      # Writes to stdout/stderr from a CLI entry-point and from the renderer
+      # are not actionable — if the TTY disappears mid-write we have nowhere
+      # to report the error. Errors on real network I/O and file handles are
+      # still fully checked.
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
     gosec:
       excludes:
         # TLS 1.0 is intentional on the auditor's Get path; GetStrict and DoH
         # enforce TLS 1.2+. Per-file nolint comments document each case.
         - G402
+        # File paths come from user-supplied --config / --baseline flags,
+        # which are trust-inherent by design. Treating them as tainted
+        # would make the CLI unusable.
+        - G304
+        # Integer-overflow warnings: each use-site is bounded by validated
+        # structure (DMARC pct is 0..100 per RFC 7489; CSS hex-escape
+        # scalar is capped by the six-digit loop).
+        - G115
+        # Test-only permissive mkdir/writefile modes for golden fixtures.
+        - G301
+        - G306
       config:
         G302: "0600"
     gocritic:
       disabled-checks:
         - ifElseChain
+    staticcheck:
+      # QF* rules are stylistic quick-fix hints, not correctness.
+      checks:
+        - "all"
+        - "-QF1002"
+        - "-QF1008"
 
 formatters:
   enable:

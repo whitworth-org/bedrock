@@ -14,9 +14,7 @@ import (
 // field, so we don't need a real signed/parsed cert for these tests.
 func certWithUnknownEKU(oids ...asn1.ObjectIdentifier) *x509.Certificate {
 	c := &x509.Certificate{}
-	for _, oid := range oids {
-		c.UnknownExtKeyUsage = append(c.UnknownExtKeyUsage, oid)
-	}
+	c.UnknownExtKeyUsage = append(c.UnknownExtKeyUsage, oids...)
 	return c
 }
 

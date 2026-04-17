@@ -117,7 +117,7 @@ func TestRunRecoversFromPanic(t *testing.T) {
 func TestRunEmptyRegistry(t *testing.T) {
 	defer withEmptyRegistry(t)()
 	out := Run(context.Background(), nil)
-	if out != nil && len(out) != 0 {
+	if len(out) != 0 {
 		t.Fatalf("empty registry should produce no results, got %+v", out)
 	}
 }

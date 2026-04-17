@@ -123,7 +123,8 @@ func main() {
 	minSeverity, severitySet, err := cli.ParseSeverity(*severity)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		stop()
+		os.Exit(2) //nolint:gocritic // stop() called above; signal ctx cancelled before exit
 	}
 	filter := cli.Filter{
 		Only:        cli.SplitCSV(*onlyCSV),

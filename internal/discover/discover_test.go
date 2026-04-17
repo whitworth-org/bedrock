@@ -161,11 +161,6 @@ func runEnumerateWith(ctx context.Context, domain string, srcs []source) ([]stri
 	// We re-implement the orchestration inline rather than refactor
 	// enumerate to take a sources slice — the production call site has a
 	// fixed source list and we want to keep its API tight.
-	type result struct {
-		hosts []string
-		err   error
-		name  string
-	}
 	out := make([]string, 0)
 	notes := make([]string, 0)
 	seen := map[string]struct{}{}

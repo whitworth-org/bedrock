@@ -6,7 +6,6 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -337,8 +336,3 @@ func contains(haystack []string, needle string) bool {
 }
 
 // errNoTLSState is returned when a downstream check needs the cached TLS
-// state but the upstream tlsCheck didn't capture one (e.g. handshake failed).
-// Documented gap: Go's tls.ConnectionState does not expose the negotiated
-// curve (RFC 8446 §4.2.7), so tls_curves constraints from the embedded profiles
-// are not enforced — they are reported as Info evidence only.
-var errNoTLSState = errors.New("no cached TLS state")

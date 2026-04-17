@@ -153,10 +153,10 @@ func TestIntegrationEmpty(t *testing.T) {
 
 	goldenPath := filepath.Join("testdata", "golden", "empty.txt")
 	if *updateGolden {
-		if err := os.MkdirAll(filepath.Dir(goldenPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(goldenPath), 0o750); err != nil {
 			t.Fatalf("mkdir golden dir: %v", err)
 		}
-		if err := os.WriteFile(goldenPath, []byte(got), 0o644); err != nil {
+		if err := os.WriteFile(goldenPath, []byte(got), 0o600); err != nil {
 			t.Fatalf("write golden: %v", err)
 		}
 		t.Logf("wrote golden %s (%d bytes)", goldenPath, len(got))

@@ -49,7 +49,7 @@ func (http2Check) Run(ctx context.Context, env *probe.Env) []report.Result {
 			RFCRefs:     []string{"RFC 9113", "RFC 7301"},
 		}}
 	}
-	defer rawConn.Close()
+	defer func() { _ = rawConn.Close() }()
 
 	tlsConn := tls.Client(rawConn, &tls.Config{
 		ServerName: env.Target,

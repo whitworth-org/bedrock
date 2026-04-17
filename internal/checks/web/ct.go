@@ -366,7 +366,7 @@ func fetchCrtShEntries(ctx context.Context, target string, timeout time.Duration
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("crt.sh returned HTTP %d", resp.StatusCode)
 	}

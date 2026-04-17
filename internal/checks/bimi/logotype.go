@@ -97,14 +97,6 @@ type logotypeData struct {
 	Audio []logotypeAudio `asn1:"tag:1,optional"`
 }
 
-// logotypeReference mirrors RFC 3709 LogotypeReference (the indirect arm of
-// LogotypeInfo). Only consumed to detect the indirect form so we can return
-// a clear error. Same SEQUENCE-OF-IA5String quirk as LogotypeDetails.
-type logotypeReference struct {
-	RefStructHash []hashAlgAndValue
-	RefStructURI  asn1.RawValue
-}
-
 // logotypeInfoDirect wraps the direct arm of the LogotypeInfo CHOICE.
 // LogotypeInfo direct is `[0] LogotypeData` (context-specific, IMPLICIT in
 // effect because LogotypeData is itself a SEQUENCE — the `tag:0` form below

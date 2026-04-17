@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strings"
 
 	"github.com/whitworth-org/bedrock/internal/probe"
@@ -149,14 +148,4 @@ func cookieSlug(name string) string {
 		}
 	}
 	return b.String()
-}
-
-// readSetCookieFromHeader exists to keep tests dependency-free — they construct
-// an http.Header literal and pass it through the same parsing path as Run.
-func readSetCookieFromHeader(h http.Header) []cookieAttrs {
-	var out []cookieAttrs
-	for _, raw := range h.Values("Set-Cookie") {
-		out = append(out, parseSetCookie(raw))
-	}
-	return out
 }

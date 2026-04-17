@@ -277,7 +277,7 @@ func cdsConsistentWithCDNSKEY(cdsSet []*mdns.CDS, cdnskeySet []*mdns.CDNSKEY) (b
 				continue
 			}
 			// CDNSKEY embeds DNSKEY, so ToDS is available.
-			computed := ck.DNSKEY.ToDS(cds.DigestType)
+			computed := ck.ToDS(cds.DigestType)
 			if computed == nil {
 				continue
 			}

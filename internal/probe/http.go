@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -206,7 +205,7 @@ func (h *HTTP) fetch(ctx context.Context, cli *http.Client, u *url.URL) (*Respon
 	if err != nil {
 		return nil, err
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	// Read up to maxBodyBytes+1 so we can detect truncation by whether the
 	// cap was exactly hit and another byte was available.
@@ -317,30 +316,6 @@ func blockedIPReason(ip net.IP) (string, bool) {
 		return "cloud metadata (169.254.169.254)", true
 	}
 	return "", false
-}
-
-// validateURLHostPublic returns an error if u's host is an IP literal in
-// the denylist or a hostname that resolves only to denylisted IPs. Intended
-// for upstream resolver specs where the dial happens later and we want a
-// clear early error rather than a mysterious dial failure.
-func validateURLHostPublic(rawURL string) error {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("parse url: %w", err)
-	}
-	host := u.Hostname()
-	if host == "" {
-		return fmt.Errorf("url has no host: %s", rawURL)
-	}
-	if strings.EqualFold(host, "localhost") {
-		return fmt.Errorf("url points at localhost: %s", rawURL)
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		if reason, blocked := blockedIPReason(ip); blocked {
-			return fmt.Errorf("url host %s is %s", ip.String(), reason)
-		}
-	}
-	return nil
 }
 
 // VerifyChain validates the server's leaf+intermediates against the system
