@@ -9,7 +9,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/net/idna"
@@ -112,7 +114,11 @@ func main() {
 	env.EnableRBL = *enableRBL
 	env.EnableCT = *enableCT
 
-	results := registry.Run(context.Background(), env)
+	// Propagate Ctrl-C / SIGTERM into the scan so in-flight lookups can bail
+	// cleanly rather than leaking goroutines.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	results := registry.Run(ctx, env)
 
 	minSeverity, severitySet, err := cli.ParseSeverity(*severity)
 	if err != nil {

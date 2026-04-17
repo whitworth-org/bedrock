@@ -6,11 +6,12 @@ package registry
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 type Check interface {
@@ -19,22 +20,45 @@ type Check interface {
 	Run(ctx context.Context, env *probe.Env) []report.Result
 }
 
-var checks []Check
+// checksMu guards the global checks slice. Register is called from init()
+// (single-threaded at program start) and All / Run may be called from test
+// code concurrently, so the lock is cheap insurance against a race.
+var (
+	checksMu sync.RWMutex
+	checks   []Check
+)
 
 // Register adds a check to the global registry. Called from package init().
-func Register(c Check) { checks = append(checks, c) }
+func Register(c Check) {
+	checksMu.Lock()
+	defer checksMu.Unlock()
+	checks = append(checks, c)
+}
 
-// All returns the registered checks (defensive copy).
+// All returns the registered checks (defensive copy under read lock).
 func All() []Check {
+	checksMu.RLock()
+	defer checksMu.RUnlock()
 	out := make([]Check, len(checks))
 	copy(out, checks)
 	return out
 }
 
 // Run executes every registered check, grouping by category for parallelism.
+// A per-category goroutine recovers from panics so a single buggy check
+// cannot abort the whole scan — the panicking check is reported as a Fail
+// result with evidence naming the recovered value.
 func Run(ctx context.Context, env *probe.Env) []report.Result {
+	// Snapshot the registry under the read lock so later Register calls
+	// (shouldn't happen — init() runs before Run — but cheap to guard
+	// against) cannot mutate the slice we iterate.
+	checksMu.RLock()
+	snapshot := make([]Check, len(checks))
+	copy(snapshot, checks)
+	checksMu.RUnlock()
+
 	byCat := map[string][]Check{}
-	for _, c := range checks {
+	for _, c := range snapshot {
 		byCat[c.Category()] = append(byCat[c.Category()], c)
 	}
 
@@ -48,12 +72,23 @@ func Run(ctx context.Context, env *probe.Env) []report.Result {
 		go func(cat string, list []Check) {
 			defer wg.Done()
 			var local []report.Result
+			defer func() {
+				if r := recover(); r != nil {
+					local = append(local, report.Result{
+						ID:       "registry.panic",
+						Category: cat,
+						Title:    "check panic recovered",
+						Status:   report.Fail,
+						Evidence: fmt.Sprintf("panic: %v", r),
+					})
+				}
+				mu.Lock()
+				out = append(out, local...)
+				mu.Unlock()
+			}()
 			for _, c := range list {
 				local = append(local, c.Run(ctx, env)...)
 			}
-			mu.Lock()
-			out = append(out, local...)
-			mu.Unlock()
 		}(cat, list)
 	}
 	wg.Wait()

@@ -3,16 +3,14 @@ package discover
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
-	"errors"
 	"fmt"
 	"net"
 	"sort"
 	"sync"
 	"time"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // maxConcurrentDials caps how many TLS handshakes we run in parallel
@@ -45,6 +43,22 @@ func probeHosts(ctx context.Context, env *probe.Env, hosts []string) []report.Re
 		wg.Add(1)
 		go func(host string) {
 			defer wg.Done()
+			// Recover from panics in per-host probing so one bad host
+			// cannot abort the whole discovery pass. Surface the recovered
+			// value as a Fail result for operator visibility.
+			defer func() {
+				if r := recover(); r != nil {
+					mu.Lock()
+					out = append(out, report.Result{
+						ID:       "subdomain.tls." + host,
+						Category: category,
+						Title:    "TLS reachability panic (" + host + ")",
+						Status:   report.Fail,
+						Evidence: fmt.Sprintf("panic during probe: %v", r),
+					})
+					mu.Unlock()
+				}
+			}()
 			select {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
@@ -124,7 +138,7 @@ func tlsReachResult(ctx context.Context, host string, timeout time.Duration) rep
 	// dial above if the chain was bad (we set MinVersion only, not
 	// InsecureSkipVerify), but an explicit check produces a clean error
 	// string and decouples us from any future Go default changes.
-	if err := verifyChain(&state, host); err != nil {
+	if err := probe.VerifyChain(&state, host); err != nil {
 		r.Status = report.Fail
 		r.Evidence = "chain validation failed: " + err.Error()
 		r.Remediation = "serve the full intermediate chain from your CA at " + host
@@ -143,30 +157,6 @@ func tlsReachResult(ctx context.Context, host string, timeout time.Duration) rep
 	r.Status = report.Pass
 	r.Evidence = fmt.Sprintf("TLS %s, leaf valid through %s", tlsVersionName(state.Version), leaf.NotAfter.Format(time.RFC3339))
 	return r
-}
-
-// verifyChain mirrors probe.VerifyChain but is duplicated here intentionally
-// to keep the discover package self-contained and avoid widening the probe
-// package's public surface for a single consumer.
-func verifyChain(state *tls.ConnectionState, dnsName string) error {
-	if state == nil || len(state.PeerCertificates) == 0 {
-		return errors.New("no peer certificates")
-	}
-	roots, err := x509.SystemCertPool()
-	if err != nil {
-		return fmt.Errorf("load system roots: %w", err)
-	}
-	intermediates := x509.NewCertPool()
-	for _, c := range state.PeerCertificates[1:] {
-		intermediates.AddCert(c)
-	}
-	leaf := state.PeerCertificates[0]
-	_, err = leaf.Verify(x509.VerifyOptions{
-		DNSName:       dnsName,
-		Roots:         roots,
-		Intermediates: intermediates,
-	})
-	return err
 }
 
 // tlsVersionName mirrors web.tlsVersionName so the discover package does not

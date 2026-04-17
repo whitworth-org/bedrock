@@ -24,6 +24,10 @@ import (
 type DNS struct {
 	upstreams []upstream // primary at index 0; additional entries for propagation
 	timeout   time.Duration
+	// specErr captures a parse failure from NewDNS so the first lookup can
+	// return a clean error rather than silently falling back to system DNS
+	// after a bad explicit spec.
+	specErr error
 
 	udpClient  *dns.Client
 	tcpClient  *dns.Client
@@ -40,10 +44,18 @@ type DNS struct {
 //   - "cloudflare" / "google" / "quad9" / "opendns"           — preset, UDP
 //   - "<preset>-dot" / "<preset>-doh"                          — preset over DoT/DoH
 //   - "tls://host[:port]" / "https://host/path"                — explicit
+//
+// Parse errors are deferred to the first lookup so NewDNS never aborts
+// startup: an invalid spec just means every query returns that error.
 func NewDNS(server string, timeout time.Duration) *DNS {
 	d := &DNS{timeout: timeout}
 	if up, ok := systemOrSpec(server); ok {
 		d.upstreams = up
+	} else if server != "" {
+		// Remember the parse error so the first lookup can surface it.
+		if _, err := parseUpstream(server); err != nil {
+			d.specErr = err
+		}
 	}
 	return d
 }
@@ -123,6 +135,11 @@ func (d *DNS) ensureUpstreams() error {
 	if len(d.upstreams) > 0 {
 		return nil
 	}
+	// If NewDNS saw an invalid explicit spec, surface that error now rather
+	// than silently falling back to system DNS.
+	if d.specErr != nil {
+		return d.specErr
+	}
 	ups, err := systemUpstreams()
 	if err != nil {
 		return err
@@ -162,7 +179,8 @@ type MultiResp struct {
 
 // ExchangeAll runs the same query against every configured upstream in
 // parallel and returns one MultiResp per upstream, in upstream order. Used
-// by the dns.propagation check.
+// by the dns.propagation check. Goroutine fan-out is capped at 16 so a
+// large --resolvers list cannot trip rate limits or starve the host.
 func (d *DNS) ExchangeAll(ctx context.Context, name string, qtype uint16) []MultiResp {
 	if err := d.ensureUpstreams(); err != nil {
 		return []MultiResp{{Err: err}}
@@ -170,11 +188,19 @@ func (d *DNS) ExchangeAll(ctx context.Context, name string, qtype uint16) []Mult
 	d.ensureClients()
 	m := buildQuery(name, qtype, false)
 	out := make([]MultiResp, len(d.upstreams))
+	sem := make(chan struct{}, 16)
 	var wg sync.WaitGroup
 	for i, u := range d.upstreams {
 		wg.Add(1)
 		go func(i int, u upstream) {
 			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				out[i] = MultiResp{Upstream: u.label, Err: ctx.Err()}
+				return
+			}
+			defer func() { <-sem }()
 			resp, err := d.exchangeOnUpstream(ctx, m.Copy(), u)
 			out[i] = MultiResp{Upstream: u.label, Msg: resp, Err: err}
 		}(i, u)
@@ -193,7 +219,22 @@ func buildQuery(name string, qtype uint16, do bool) *dns.Msg {
 	return m
 }
 
+// answerMatches returns true when rr's owner name equals the queried name
+// after canonical FQDN normalisation. Defence against a resolver (or
+// path-injection via a compromised recursive) returning off-name answers
+// that a check would otherwise trust.
+func answerMatches(rr dns.RR, queried string) bool {
+	if rr == nil || rr.Header() == nil {
+		return false
+	}
+	return dns.CanonicalName(rr.Header().Name) == dns.CanonicalName(dns.Fqdn(queried))
+}
+
 func (d *DNS) exchangeOnUpstream(ctx context.Context, m *dns.Msg, u upstream) (*dns.Msg, error) {
+	// Tight per-upstream deadline so a single slow resolver cannot consume
+	// the caller's whole budget when we fan out across upstreams.
+	ctx, cancel := context.WithTimeout(ctx, d.timeout)
+	defer cancel()
 	switch u.protocol {
 	case protoDoH:
 		return dohExchange(ctx, d.httpClient, u.addr, m)
@@ -228,6 +269,9 @@ func (d *DNS) LookupTXT(ctx context.Context, name string) ([]string, error) {
 	}
 	var out []string
 	for _, rr := range resp.Answer {
+		if !answerMatches(rr, name) {
+			continue
+		}
 		if t, ok := rr.(*dns.TXT); ok {
 			out = append(out, strings.Join(t.Txt, ""))
 		}
@@ -254,6 +298,9 @@ func (d *DNS) LookupMX(ctx context.Context, name string) ([]MX, error) {
 	}
 	var out []MX
 	for _, rr := range resp.Answer {
+		if !answerMatches(rr, name) {
+			continue
+		}
 		if m, ok := rr.(*dns.MX); ok {
 			out = append(out, MX{Preference: m.Preference, Host: strings.TrimSuffix(m.Mx, ".")})
 		}
@@ -274,6 +321,9 @@ func (d *DNS) LookupNS(ctx context.Context, name string) ([]string, error) {
 	}
 	var out []string
 	for _, rr := range resp.Answer {
+		if !answerMatches(rr, name) {
+			continue
+		}
 		if ns, ok := rr.(*dns.NS); ok {
 			out = append(out, strings.TrimSuffix(ns.Ns, "."))
 		}
@@ -302,6 +352,9 @@ func (d *DNS) lookupAddr(ctx context.Context, name string, qtype uint16) ([]net.
 	}
 	var out []net.IP
 	for _, rr := range resp.Answer {
+		if !answerMatches(rr, name) {
+			continue
+		}
 		switch v := rr.(type) {
 		case *dns.A:
 			out = append(out, v.A)
@@ -334,7 +387,26 @@ func (d *DNS) LookupSOA(ctx context.Context, name string) (*SOA, error) {
 	if resp.Rcode == dns.RcodeNameError {
 		return nil, ErrNXDOMAIN
 	}
-	for _, rr := range append(resp.Answer, resp.Ns...) {
+	// Answer section: filter by owner name. Authority section: accept as-is
+	// per the SOA fallback semantics (NXDOMAIN / NODATA replies carry the
+	// zone SOA in Ns which may legitimately have a different owner name).
+	for _, rr := range resp.Answer {
+		if !answerMatches(rr, name) {
+			continue
+		}
+		if s, ok := rr.(*dns.SOA); ok {
+			return &SOA{
+				NS:      strings.TrimSuffix(s.Ns, "."),
+				Mbox:    strings.TrimSuffix(s.Mbox, "."),
+				Serial:  s.Serial,
+				Refresh: s.Refresh,
+				Retry:   s.Retry,
+				Expire:  s.Expire,
+				Minimum: s.Minttl,
+			}, nil
+		}
+	}
+	for _, rr := range resp.Ns {
 		if s, ok := rr.(*dns.SOA); ok {
 			return &SOA{
 				NS:      strings.TrimSuffix(s.Ns, "."),
@@ -370,6 +442,9 @@ func (d *DNS) LookupCAA(ctx context.Context, name string) ([]CAA, error) {
 	}
 	var out []CAA
 	for _, rr := range resp.Answer {
+		if !answerMatches(rr, name) {
+			continue
+		}
 		if c, ok := rr.(*dns.CAA); ok {
 			out = append(out, CAA{Flag: c.Flag, Tag: c.Tag, Value: c.Value})
 		}
@@ -398,6 +473,9 @@ func (d *DNS) LookupTLSA(ctx context.Context, name string) ([]TLSA, error) {
 	}
 	var out []TLSA
 	for _, rr := range resp.Answer {
+		if !answerMatches(rr, name) {
+			continue
+		}
 		if t, ok := rr.(*dns.TLSA); ok {
 			out = append(out, TLSA{
 				Usage:        t.Usage,
@@ -424,6 +502,9 @@ func (d *DNS) LookupCNAME(ctx context.Context, name string) (string, error) {
 		return "", ErrNXDOMAIN
 	}
 	for _, rr := range resp.Answer {
+		if !answerMatches(rr, name) {
+			continue
+		}
 		if c, ok := rr.(*dns.CNAME); ok {
 			return strings.TrimSuffix(c.Target, "."), nil
 		}

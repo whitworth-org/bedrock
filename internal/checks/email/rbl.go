@@ -9,9 +9,9 @@ import (
 	"strings"
 	"sync"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/registry"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/registry"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // rblZones is the fixed set of public DNS-based blocklists we query when
@@ -211,6 +211,19 @@ func queryRBLs(ctx context.Context, env *probe.Env, ips []string, zones []string
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// Recover from any panic inside queryOneRBL (e.g. a surprise
+			// from the DNS library on a malformed answer). The panicking
+			// job is dropped; other workers continue. We don't surface a
+			// dedicated Fail here because the per-worker channel is for
+			// listings only — the registry catches unrecovered panics.
+			defer func() {
+				if r := recover(); r != nil {
+					_ = r // silently drop: a single panicking lookup should
+					// not crash the scan. The registry-level recover would
+					// catch it anyway but at the cost of the whole email
+					// category.
+				}
+			}()
 			for j := range jobs {
 				if hit, ok := queryOneRBL(ctx, env, j.ip, j.zone); ok {
 					select {
@@ -224,6 +237,7 @@ func queryRBLs(ctx context.Context, env *probe.Env, ips []string, zones []string
 	}
 
 	go func() {
+		defer func() { _ = recover() }()
 		defer close(jobs)
 		for _, ip := range ips {
 			for _, z := range zones {
@@ -237,6 +251,7 @@ func queryRBLs(ctx context.Context, env *probe.Env, ips []string, zones []string
 	}()
 
 	go func() {
+		defer func() { _ = recover() }()
 		wg.Wait()
 		close(results)
 	}()

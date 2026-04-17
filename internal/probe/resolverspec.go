@@ -3,6 +3,7 @@ package probe
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"strings"
 )
 
@@ -84,42 +85,107 @@ func parseUpstream(spec string) (upstream, error) {
 		return upstream{}, fmt.Errorf("empty resolver spec")
 	}
 
+	var up upstream
 	// Explicit scheme prefixes win.
 	switch {
 	case strings.HasPrefix(s, "https://"), strings.HasPrefix(s, "doh://"):
-		url := strings.TrimPrefix(strings.TrimPrefix(s, "doh://"), "https://")
+		u := strings.TrimPrefix(strings.TrimPrefix(s, "doh://"), "https://")
 		// re-add https:// for actual fetches
-		return upstream{label: s, addr: "https://" + url, protocol: protoDoH}, nil
+		up = upstream{label: s, addr: "https://" + u, protocol: protoDoH}
 	case strings.HasPrefix(s, "tls://"), strings.HasPrefix(s, "dot://"):
 		host := strings.TrimPrefix(strings.TrimPrefix(s, "dot://"), "tls://")
-		return upstream{label: s, addr: hostWithPort(host, "853"), protocol: protoDoT}, nil
+		up = upstream{label: s, addr: hostWithPort(host, "853"), protocol: protoDoT}
 	case strings.HasPrefix(s, "udp://"), strings.HasPrefix(s, "tcp://"):
 		host := strings.TrimPrefix(strings.TrimPrefix(s, "tcp://"), "udp://")
-		return upstream{label: s, addr: hostWithPort(host, "53"), protocol: protoUDP}, nil
+		up = upstream{label: s, addr: hostWithPort(host, "53"), protocol: protoUDP}
+	default:
+		// Preset names with optional protocol suffix.
+		low := strings.ToLower(s)
+		name, suffix := low, ""
+		if i := strings.LastIndex(low, "-"); i > 0 {
+			switch low[i+1:] {
+			case "dot", "doh", "udp", "tcp":
+				name, suffix = low[:i], low[i+1:]
+			}
+		}
+		if p, ok := presets[name]; ok {
+			switch suffix {
+			case "", "udp", "tcp":
+				// Presets point at vetted public resolvers; skip validation.
+				return upstream{label: name, addr: p.udp, protocol: protoUDP}, nil
+			case "dot":
+				return upstream{label: name + "-dot", addr: p.dot, protocol: protoDoT}, nil
+			case "doh":
+				return upstream{label: name + "-doh", addr: p.doh, protocol: protoDoH}, nil
+			}
+		}
+		// Bare host or host:port → UDP.
+		up = upstream{label: s, addr: hostWithPort(s, "53"), protocol: protoUDP}
 	}
 
-	// Preset names with optional protocol suffix.
-	low := strings.ToLower(s)
-	name, suffix := low, ""
-	if i := strings.LastIndex(low, "-"); i > 0 {
-		switch low[i+1:] {
-		case "dot", "doh", "udp", "tcp":
-			name, suffix = low[:i], low[i+1:]
-		}
+	if err := validateResolverHost(up); err != nil {
+		return upstream{}, err
 	}
-	if p, ok := presets[name]; ok {
-		switch suffix {
-		case "", "udp", "tcp":
-			return upstream{label: name, addr: p.udp, protocol: protoUDP}, nil
-		case "dot":
-			return upstream{label: name + "-dot", addr: p.dot, protocol: protoDoT}, nil
-		case "doh":
-			return upstream{label: name + "-doh", addr: p.doh, protocol: protoDoH}, nil
-		}
-	}
+	return up, nil
+}
 
-	// Bare host or host:port → UDP.
-	return upstream{label: s, addr: hostWithPort(s, "53"), protocol: protoUDP}, nil
+// validateResolverHost rejects upstreams whose host is loopback, private,
+// link-local, ULA, CGNAT, or the cloud-metadata literal. Applied to all
+// protocols; DoH URLs must also not use an IP literal (so the ServerName
+// can be compared against the cert SAN). Callers always wrap parseUpstream
+// so this runs during NewDNS / NewMultiDNS setup — NOT at each query.
+func validateResolverHost(up upstream) error {
+	switch up.protocol {
+	case protoDoH:
+		u, err := url.Parse(up.addr)
+		if err != nil {
+			return fmt.Errorf("parse doh url %q: %w", up.addr, err)
+		}
+		host := u.Hostname()
+		if host == "" {
+			return fmt.Errorf("doh url missing host: %s", up.addr)
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			return fmt.Errorf("doh url host must be a DNS name, not an IP literal: %s", host)
+		}
+		if strings.EqualFold(host, "localhost") {
+			return fmt.Errorf("doh url points at localhost: %s", up.addr)
+		}
+		return nil
+	case protoDoT:
+		host, _, err := net.SplitHostPort(up.addr)
+		if err != nil {
+			host = up.addr
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			// RFC 8310 §7.3: a DoT ServerName must be a DNS name so the
+			// client can verify against the SAN. IP-literal DoT upstreams
+			// are insecure.
+			return fmt.Errorf("dot upstream must use a DNS name, not an IP literal: %s", host)
+		}
+		if strings.EqualFold(host, "localhost") {
+			return fmt.Errorf("dot upstream points at localhost: %s", up.addr)
+		}
+		return nil
+	default: // UDP / TCP plain
+		host, _, err := net.SplitHostPort(up.addr)
+		if err != nil {
+			host = up.addr
+		}
+		if strings.EqualFold(host, "localhost") {
+			return fmt.Errorf("resolver points at localhost: %s", up.addr)
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			if reason, blocked := blockedIPReason(ip); blocked {
+				return fmt.Errorf("resolver %s is %s", ip.String(), reason)
+			}
+			return nil
+		}
+		// Hostname: we cannot resolve here without triggering DNS via the
+		// resolver we are still constructing, so defer the IP check to
+		// first use. The dialer enforces the denylist at dial time.
+		return nil
+	}
 }
 
 func hostWithPort(s, defaultPort string) string {

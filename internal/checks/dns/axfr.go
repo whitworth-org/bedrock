@@ -8,8 +8,8 @@ import (
 
 	miekg "github.com/miekg/dns"
 
-	"bedrock/internal/probe"
-	"bedrock/internal/report"
+	"github.com/rwhitworth/bedrock/internal/probe"
+	"github.com/rwhitworth/bedrock/internal/report"
 )
 
 // axfrCheck attempts an AXFR against each authoritative NS over TCP/53.
@@ -95,17 +95,57 @@ func axfrProbe(ctx context.Context, env *probe.Env, nsHost string) report.Result
 		}
 	}
 
-	var rrCount int
-	var lastErr error
-	for ev := range envCh {
-		if ev == nil {
-			continue
+	// Drain the AXFR envelope channel. A hostile NS could stream arbitrarily
+	// many RRs; cap total RR count at 50000 to bound memory + wall-clock.
+	// Use a select so ctx cancellation (Ctrl-C, parent timeout) is honoured.
+	const maxAXFRRRs = 50000
+	var (
+		rrCount int
+		lastErr error
+		capped  bool
+	)
+	func() {
+		defer func() {
+			// Recover defensively — miekg/dns has panicked on malformed
+			// transfers in the past. Treat a panic as "refused" (Pass).
+			if r := recover(); r != nil {
+				lastErr = fmt.Errorf("AXFR stream panic: %v", r)
+			}
+		}()
+		for {
+			select {
+			case ev, ok := <-envCh:
+				if !ok {
+					return
+				}
+				if ev == nil {
+					continue
+				}
+				if ev.Error != nil {
+					lastErr = ev.Error
+					continue
+				}
+				rrCount += len(ev.RR)
+				if rrCount > maxAXFRRRs {
+					capped = true
+					return
+				}
+			case <-ctx.Done():
+				lastErr = ctx.Err()
+				return
+			}
 		}
-		if ev.Error != nil {
-			lastErr = ev.Error
-			continue
+	}()
+
+	if capped {
+		return report.Result{
+			ID:       id,
+			Category: category,
+			Title:    "AXFR allowed at " + nsHost + " (zone leak)",
+			Status:   report.Fail,
+			Evidence: fmt.Sprintf("AXFR refused: >%d RRs — transfer capped to bound memory", maxAXFRRRs),
+			RFCRefs:  []string{"RFC 5936 §6"},
 		}
-		rrCount += len(ev.RR)
 	}
 
 	// Refusal manifests as an error envelope before any answer RRs arrive.

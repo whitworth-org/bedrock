@@ -80,6 +80,25 @@ func (e *Env) CachePut(key string, v any) {
 	e.cacheMu.Unlock()
 }
 
+// CacheGetOrSet atomically returns the existing value for key, or calls
+// producer under the cache lock and stores the result. Stored values MUST
+// be immutable — multiple readers will share the same reference without
+// further synchronisation. Use this to avoid the classic check-then-put
+// race where two callers both run an expensive producer.
+//
+// Callers may migrate at their convenience; existing Get/Put usage is
+// still correct for producers that are already guarded elsewhere.
+func (e *Env) CacheGetOrSet(key string, producer func() any) any {
+	e.cacheMu.Lock()
+	defer e.cacheMu.Unlock()
+	if v, ok := e.cache[key]; ok {
+		return v
+	}
+	v := producer()
+	e.cache[key] = v
+	return v
+}
+
 // WithTimeout returns a context bounded by the env's per-operation timeout.
 func (e *Env) WithTimeout(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, e.Timeout)
