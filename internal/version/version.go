@@ -65,6 +65,8 @@ func String() string {
 	return out
 }
 
+// 12 matches GitHub-style short SHAs and bounds the 40-char vcs.revision
+// from runtime/debug.ReadBuildInfo (the ldflags path uses --short, which is shorter).
 func shortRev(s string) string {
 	if len(s) > 12 {
 		return s[:12]
