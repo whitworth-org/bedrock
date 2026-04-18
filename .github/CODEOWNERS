@@ -1,0 +1,9 @@
+# Default code owner for this repository.
+#
+# Portable across whitworth-org repositories: drop this file into
+# `.github/CODEOWNERS` of any repo where @rjwhitworth has write access
+# and it will work unchanged.
+#
+# The `*` pattern is intentionally the only rule so that this file
+# also owns itself (no separate `/.github/CODEOWNERS` line needed).
+*	@rjwhitworth
