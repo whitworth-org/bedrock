@@ -122,7 +122,7 @@ bedrock --config audit.json example.org
 
 Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only `FAIL` affects the exit code.
 
-### DNS — RFC 1034/1035, 1912, 2181, 2308, 3596, 5936
+### DNS
 
 | Check ID                 | What it verifies                                                                 |
 |--------------------------|----------------------------------------------------------------------------------|
@@ -138,7 +138,7 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 | `dns.dangling.summary`   | Probes common hosts (`www`, `api`, `mail`, `cdn`, …) for dangling CNAMEs.        |
 | `dns.axfr.<ns>`          | Every authoritative NS refuses AXFR from the public Internet (RFC 5936 §6).      |
 
-### DNSSEC — RFC 4033/4034/4035, 5155, 7344, 8624
+### DNSSEC
 
 | Check ID                  | What it verifies                                                                |
 |---------------------------|---------------------------------------------------------------------------------|
@@ -151,7 +151,7 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 | `dnssec.cds.matches_ds`   | CDS digests match the DS at the parent (RFC 7344 §4).                           |
 | `dnssec.cds.signed`       | CDS RRset carries an RRSIG (RFC 7344 §4.1).                                     |
 
-### Email — RFC 7208 (SPF), 6376 (DKIM), 7489 (DMARC), 8461 (MTA-STS), 8460 (TLS-RPT), 7672 (DANE), 7505 (Null MX), 3207 (STARTTLS), 8617 (ARC), 5782 (DNSBL)
+### Email
 
 | Check ID                                     | What it verifies                                                                 |
 |----------------------------------------------|----------------------------------------------------------------------------------|
@@ -168,7 +168,7 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 | `email.rbl` (opt-in via `--enable-rbl`)      | Apex and MX IPs vs Spamhaus, Barracuda, SpamCop, SORBS, Surriel PSBL.            |
 | `email.google_workspace_mx`                  | **INFO only** — detects legacy `ASPMX.L.GOOGLE.COM` layout and recommends migration to the new single `SMTP.GOOGLE.COM` MX. Silent for non-Google MX and domains already on the new form. |
 
-### BIMI (reported under the Email category) — BIMI Group draft + Gmail requirements
+### BIMI
 
 | Check ID              | What it verifies                                                                      |
 |-----------------------|---------------------------------------------------------------------------------------|
@@ -181,7 +181,7 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 | `bimi.vmc.logotype`   | RFC 3709 LogotypeExtn ASN.1 decoded; SHA-256 of SVG matches the hash in the cert.     |
 | `bimi.gmail.dmarc`    | Gmail BIMI requirements: DMARC enforcement, `pct=100`, strict alignment.              |
 
-### Web / TLS — RFC 5280, 6797 (HSTS), 7525 / BCP 195 (TLS), 8659 (CAA), 6962 / 9162 (CT), 9113 (HTTP/2), 9114 (HTTP/3), 6960 (OCSP), 6125 (SAN)
+### Web / TLS
 
 | Check ID                              | What it verifies                                                                    |
 |---------------------------------------|-------------------------------------------------------------------------------------|
