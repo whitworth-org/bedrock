@@ -1,11 +1,11 @@
 # bedrock
 
-A single-binary command-line auditor for fundamental domain security controls — **DNS**, **DNSSEC**, **Email** (incl. BIMI), and **Web / TLS**. Every finding cites an RFC section; every `FAIL` ships a copy-pasteable remediation snippet.
+A single-binary CLI auditor for DNS, DNSSEC, Email (incl. BIMI), and Web / TLS. Every finding cites an RFC; every `FAIL` includes a copy-pasteable remediation snippet.
 
 - Single static binary, no runtime dependencies.
-- All logic is local: no upload, no account, no third-party telemetry (optional third-party lookups — crt.sh, DNSBLs — are off by default and must be enabled explicitly).
+- Runs locally: no upload, no account, no telemetry. Optional third-party lookups (crt.sh, DNSBLs) are off by default.
 - Deterministic output: results are sorted by `(category, id)`; categories run in parallel.
-- Safe by default: the HTTP client denylists RFC 1918 / loopback / link-local / ULA / CGNAT / cloud-metadata addresses to neutralise SSRF via attacker-influenced DNS.
+- SSRF-safe HTTP client: denies RFC 1918, loopback, link-local, ULA, CGNAT, and cloud-metadata addresses so attacker-influenced DNS cannot reach internal endpoints.
 - Exit code reflects posture (`0` clean, `1` at least one `FAIL`, `2` usage error).
 
 ## Install
@@ -324,22 +324,18 @@ testdata/golden/            integration-test fixtures
 
 ## License
 
-Bedrock is distributed under the **MIT License** (see `LICENSE`). MIT was chosen for three reasons:
+MIT (see `LICENSE`). Picked because security teams can drop a permissive tool into proprietary pipelines without involving legal, the license fits on one page, and `miekg/dns`, `quic-go`, and `golang.org/x/*` are all MIT-compatible.
 
-1. **Permissive**: security teams can drop bedrock into proprietary pipelines without legal review overhead. This is the primary use case.
-2. **Short and unambiguous**: the full license fits on one page and is already understood by every corporate policy engine.
-3. **Go-ecosystem convention**: `miekg/dns`, `quic-go`, and the `golang.org/x/*` stack are all permissive-licensed; MIT matches without introducing copyleft friction.
-
-If an explicit patent grant or trademark clause is required for your adoption context, **Apache-2.0** is a drop-in upgrade and would not meaningfully constrain downstream use. GPL/AGPL were intentionally declined: bedrock is an observational tool whose value depends on unrestricted deployment into closed environments.
+Apache-2.0 is a clean drop-in if you need an explicit patent grant. GPL/AGPL were declined: bedrock is meant to run anywhere, including in closed environments.
 
 ## Limitations
 
 - Output is English only.
-- Stdlib `crypto/tls` does not expose received TLS extensions; JA3/JA4 server fingerprinting is therefore not implemented. Negotiated EC curve is detected via probe-and-detect (suppressed under `--no-active`).
-- The DKIM check probes a fixed selector list (44 well-known + ESP-specific derived from SPF includes). Custom per-tenant selectors (e.g. HubSpot's `hs1-<id>-<domain>` pattern) cannot be discovered without the customer ID; NSEC walking under `_domainkey` is intentionally deferred.
+- Stdlib `crypto/tls` does not expose received TLS extensions, so JA3/JA4 server fingerprinting is not implemented. Negotiated EC curve is detected via probe-and-detect (suppressed under `--no-active`).
+- The DKIM check probes a fixed selector list (44 well-known + ESP-specific derived from SPF includes). Custom per-tenant selectors (e.g. HubSpot's `hs1-<id>-<domain>` pattern) cannot be discovered without the customer ID; NSEC walking under `_domainkey` is deferred.
 - VMC chain validation uses `ExtKeyUsageAny` because the BIMI EKU OIDs are not in the Go standard library root-usage table. The BIMI-specific OID gate (`classifyMarkCert`) runs *before* chain verification.
 - `--enable-rbl` and `--enable-ct` issue live queries to third-party services; do not enable them for casual or repeated scans of domains you do not operate.
-- The `--resolvers` propagation check returns the first successful answer for normal lookups; divergence is surfaced via a separate `dns.propagation` evidence string rather than as an independent check.
+- The `--resolvers` propagation check returns the first successful answer; divergence appears as a `dns.propagation` evidence string rather than a separate check.
 
 ---
 
