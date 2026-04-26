@@ -50,7 +50,7 @@ func NewHTTP(timeout time.Duration) *HTTP {
 			// to score the actual server posture against the embedded TLS profiles.
 			MinVersion: tls.VersionTLS10,
 		},
-		// Force a fresh handshake per request — keeps per-host state easy to reason about.
+		// Keep-alives disabled by default for safety; enabled per-target in Get/Do
 		DisableKeepAlives:     true,
 		DialContext:           safeDialContext(timeout, false),
 		TLSHandshakeTimeout:   timeout,
@@ -93,6 +93,11 @@ func (h *HTTP) Get(ctx context.Context, target string) (*Response, error) {
 
 	chain := []*url.URL{u}
 	cli := *h.client
+	// Enable keep-alives for this target domain to optimize back-to-back requests
+	baseTr := h.client.Transport.(*http.Transport)
+	targetTr := baseTr.Clone()
+	targetTr.DisableKeepAlives = false
+	cli.Transport = targetTr
 	cli.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) > 8 {
 			return errors.New("too many redirects (>8)")
@@ -198,7 +203,19 @@ func (h *HTTP) GetStrict(ctx context.Context, target string) (*Response, error) 
 // For mixed-scheme endpoints (HTTP/HTTPS), use Do. For HTTPS-only endpoints,
 // use DoStrict to enforce TLS 1.2+.
 func (h *HTTP) Do(req *http.Request) (*Response, error) {
-	return h.doWithClient(req, h.client)
+	// Enable keep-alives for this target domain to optimize back-to-back requests
+	baseTr, ok := h.client.Transport.(*http.Transport)
+	if !ok {
+		return nil, errors.New("http transport is not *http.Transport")
+	}
+	targetTr := baseTr.Clone()
+	targetTr.DisableKeepAlives = false
+	targetCli := &http.Client{
+		Transport: targetTr,
+		Timeout:   h.client.Timeout,
+		CheckRedirect: h.client.CheckRedirect,
+	}
+	return h.doWithClient(req, targetCli)
 }
 
 // DoStrict performs a custom HTTP request using the strict safe transport
