@@ -11,13 +11,8 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// nsCountCheck: RFC 1034/1912 expect ≥2 NS for redundancy.
-type nsCountCheck struct{}
-
-func (nsCountCheck) ID() string       { return "dns.ns.count" }
-func (nsCountCheck) Category() string { return category }
-
-func (nsCountCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+// runNSCount: RFC 1034/1912 expect ≥2 NS for redundancy.
+func runNSCount(ctx context.Context, env *probe.Env) []report.Result {
 	ctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
 
@@ -58,16 +53,11 @@ func (nsCountCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 	}}
 }
 
-// nsDiversityCheck: a lightweight topology heuristic. Two NS in the same
+// runNSDiversity is a lightweight topology heuristic. Two NS in the same
 // IPv4 /24 are a single failure domain. The full ASN check would need an
 // external feed (RIPE / Team Cymru), which we deliberately don't take a dep
 // on; /24 is a coarse but useful proxy.
-type nsDiversityCheck struct{}
-
-func (nsDiversityCheck) ID() string       { return "dns.ns.diversity" }
-func (nsDiversityCheck) Category() string { return category }
-
-func (nsDiversityCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runNSDiversity(ctx context.Context, env *probe.Env) []report.Result {
 	ctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
 
@@ -149,15 +139,10 @@ func (nsDiversityCheck) Run(ctx context.Context, env *probe.Env) []report.Result
 	}}
 }
 
-// nsIPv6Check: RFC 3596 §1 / current IETF practice — at least one
-// authoritative NS should have an AAAA. Not a Fail — IPv6 deployment is
-// still operationally optional.
-type nsIPv6Check struct{}
-
-func (nsIPv6Check) ID() string       { return "dns.ns.ipv6" }
-func (nsIPv6Check) Category() string { return category }
-
-func (nsIPv6Check) Run(ctx context.Context, env *probe.Env) []report.Result {
+// runNSIPv6: RFC 3596 §1 / current IETF practice — at least one authoritative
+// NS should have an AAAA. Not a Fail — IPv6 deployment is still operationally
+// optional.
+func runNSIPv6(ctx context.Context, env *probe.Env) []report.Result {
 	ctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
 
