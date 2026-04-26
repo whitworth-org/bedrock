@@ -119,4 +119,3 @@ func ensureChainData(ctx context.Context, env *probe.Env) *chainData {
 	_, cd := chainOnceFor(env)
 	return cd
 }
-
