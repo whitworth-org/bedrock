@@ -11,8 +11,8 @@
 //   - Build a probe.Env with --no-active so HTTP / SMTP / VMC fetches are
 //     skipped (they would otherwise need their own fakes — out of scope
 //     for this golden-empty fixture).
-//   - Run the full registry, render the report as text, and diff against
-//     testdata/golden/<name>.txt.
+//   - Run the full registry, render the report as plain JSON, and diff
+//     against testdata/golden/<name>.json.
 //
 // Run with `go test -update` to refresh the golden file after intentional
 // output-format changes.
@@ -146,12 +146,12 @@ func TestIntegrationEmpty(t *testing.T) {
 	rep := report.Report{Target: target, Results: results}
 
 	var sb strings.Builder
-	if err := report.Render(&sb, rep, report.FormatText, false); err != nil {
+	if err := report.RenderJSON(&sb, rep, false); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	got := normalizeOutput(sb.String(), resolverSpec)
 
-	goldenPath := filepath.Join("testdata", "golden", "empty.txt")
+	goldenPath := filepath.Join("testdata", "golden", "empty.json")
 	if *updateGolden {
 		if err := os.MkdirAll(filepath.Dir(goldenPath), 0o750); err != nil {
 			t.Fatalf("mkdir golden dir: %v", err)

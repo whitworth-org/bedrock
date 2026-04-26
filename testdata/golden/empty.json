@@ -1,0 +1,544 @@
+{
+  "target": "test.invalid",
+  "results": [
+    {
+      "id": "dns.aaaa.apex",
+      "category": "DNS",
+      "title": "No AAAA record at apex (IPv6 not advertised)",
+      "status": "WARN",
+      "evidence": "AAAA RRset is empty",
+      "rfc_refs": [
+        "RFC 3596"
+      ]
+    },
+    {
+      "id": "dns.axfr",
+      "category": "DNS",
+      "title": "AXFR refusal probe",
+      "status": "N/A",
+      "evidence": "skipped: --no-active",
+      "rfc_refs": [
+        "RFC 5936 §6"
+      ]
+    },
+    {
+      "id": "dns.cname.apex",
+      "category": "DNS",
+      "title": "No CNAME at apex (correct)",
+      "status": "PASS",
+      "rfc_refs": [
+        "RFC 1912 §2.4",
+        "RFC 2181 §10.3"
+      ]
+    },
+    {
+      "id": "dns.cname.chain",
+      "category": "DNS",
+      "title": "No CNAME chain at www.test.invalid",
+      "status": "INFO",
+      "evidence": "www.test.invalid is not a CNAME",
+      "rfc_refs": [
+        "RFC 1912 §2.4"
+      ]
+    },
+    {
+      "id": "dns.dangling.summary",
+      "category": "DNS",
+      "title": "No dangling-DNS candidates found among probed hosts",
+      "status": "PASS",
+      "evidence": "hosts probed: ,www,api,blog,shop,docs,status,static,assets,cdn,mail,app",
+      "rfc_refs": [
+        "RFC 1912 §2.4"
+      ]
+    },
+    {
+      "id": "dns.ns.count",
+      "category": "DNS",
+      "title": "Apex NS RRset",
+      "status": "FAIL",
+      "evidence": "NS lookup failed: NXDOMAIN",
+      "remediation": "Publish at least two NS records at the apex pointing to authoritative nameservers reachable over IPv4 (and ideally IPv6).",
+      "rfc_refs": [
+        "RFC 1034 §4.1",
+        "RFC 1912 §2.8"
+      ]
+    },
+    {
+      "id": "dns.ns.diversity",
+      "category": "DNS",
+      "title": "Nameserver topology diversity",
+      "status": "N/A",
+      "evidence": "no NS records resolved",
+      "rfc_refs": [
+        "RFC 2182 §3.1"
+      ]
+    },
+    {
+      "id": "dns.ns.ipv6",
+      "category": "DNS",
+      "title": "Nameserver IPv6 reachability",
+      "status": "N/A",
+      "evidence": "no NS records resolved",
+      "rfc_refs": [
+        "RFC 3596"
+      ]
+    },
+    {
+      "id": "dns.zone.mx",
+      "category": "DNS",
+      "title": "Apex MX records",
+      "status": "WARN",
+      "evidence": "lookup error: NXDOMAIN",
+      "rfc_refs": [
+        "RFC 1912 §2.5",
+        "RFC 7505"
+      ]
+    },
+    {
+      "id": "dns.zone.soa",
+      "category": "DNS",
+      "title": "SOA record",
+      "status": "FAIL",
+      "evidence": "lookup error: NXDOMAIN",
+      "remediation": "test.invalid. IN SOA ns1.test.invalid. hostmaster.test.invalid. (\n    2026041601   ; serial\n    7200         ; refresh (2h)\n    3600         ; retry   (1h)\n    1209600      ; expire  (2w)\n    3600         ; minimum (1h, RFC 2308 negative cache)\n)",
+      "rfc_refs": [
+        "RFC 1035 §3.3.13",
+        "RFC 1912 §2.2",
+        "RFC 2308 §5"
+      ]
+    },
+    {
+      "id": "dnssec.cds.matches_ds",
+      "category": "DNSSEC",
+      "title": "CDS/parent-DS match check skipped",
+      "status": "N/A",
+      "evidence": "no CDS published",
+      "rfc_refs": [
+        "RFC 7344 §4"
+      ]
+    },
+    {
+      "id": "dnssec.cds.published",
+      "category": "DNSSEC",
+      "title": "No CDS/CDNSKEY published",
+      "status": "INFO",
+      "evidence": "operator manages DS at parent manually (CDS/CDNSKEY are optional, RFC 7344 §3)",
+      "rfc_refs": [
+        "RFC 7344 §3"
+      ]
+    },
+    {
+      "id": "dnssec.signed",
+      "category": "DNSSEC",
+      "title": "Domain is not DNSSEC-signed",
+      "status": "INFO",
+      "evidence": "no DS records at parent; no DNSKEY records at apex",
+      "remediation": "# At your DNS provider, enable DNSSEC and publish the resulting DS\n# record at your registrar. Example after generation:\ntest.invalid. IN DS 12345 13 2 ABCDEF1234... ; KSK SHA-256",
+      "rfc_refs": [
+        "RFC 4033",
+        "RFC 4034",
+        "RFC 3658"
+      ]
+    },
+    {
+      "id": "bimi.gmail.dmarc",
+      "category": "Email",
+      "title": "BIMI Gmail gate: DMARC must be quarantine|reject, pct=100, strict alignment",
+      "status": "INFO",
+      "evidence": "DMARC not parsed (no entry at email.dmarc.parsed)",
+      "remediation": "_dmarc.test.invalid. IN TXT \"v=DMARC1; p=quarantine; pct=100; rua=mailto:dmarc@test.invalid; adkim=s; aspf=s\"",
+      "rfc_refs": [
+        "Gmail BIMI requirements",
+        "RFC 7489 §6.3"
+      ]
+    },
+    {
+      "id": "bimi.svg.aspect",
+      "category": "Email",
+      "title": "BIMI SVG viewBox is square (1:1)",
+      "status": "N/A",
+      "evidence": "skipped: --no-active",
+      "rfc_refs": [
+        "BIMI Group draft §4.4 (square logo requirement)"
+      ]
+    },
+    {
+      "id": "bimi.svg.fetch",
+      "category": "Email",
+      "title": "BIMI SVG fetched over HTTPS as image/svg+xml",
+      "status": "N/A",
+      "evidence": "no parsed BIMI record (TXT check did not produce one)",
+      "rfc_refs": [
+        "BIMI Group draft §4.4",
+        "BIMI SVG Tiny PS Profile"
+      ]
+    },
+    {
+      "id": "bimi.svg.profile",
+      "category": "Email",
+      "title": "BIMI SVG conforms to SVG Tiny PS profile",
+      "status": "N/A",
+      "evidence": "skipped: --no-active",
+      "rfc_refs": [
+        "BIMI SVG Tiny PS Profile §3"
+      ]
+    },
+    {
+      "id": "bimi.txt",
+      "category": "Email",
+      "title": "BIMI assertion record (default._bimi)",
+      "status": "FAIL",
+      "evidence": "no TXT record at default._bimi.test.invalid",
+      "remediation": "default._bimi.test.invalid. IN TXT \"v=BIMI1; l=https://test.invalid/bimi/logo.svg; a=https://test.invalid/bimi/vmc.pem\"",
+      "rfc_refs": [
+        "BIMI Group draft §4",
+        "Gmail BIMI requirements"
+      ]
+    },
+    {
+      "id": "bimi.vmc.chain",
+      "category": "Email",
+      "title": "BIMI VMC chain validates against system trust store",
+      "status": "N/A",
+      "evidence": "skipped: --no-active",
+      "rfc_refs": [
+        "BIMI Group draft §4.5"
+      ]
+    },
+    {
+      "id": "bimi.vmc.fetch",
+      "category": "Email",
+      "title": "BIMI Verified Mark Certificate fetched over HTTPS",
+      "status": "INFO",
+      "evidence": "no parsed BIMI record",
+      "rfc_refs": [
+        "BIMI Group draft §4.5",
+        "RFC 3709 (Logotype extension)"
+      ]
+    },
+    {
+      "id": "bimi.vmc.logotype",
+      "category": "Email",
+      "title": "BIMI VMC carries the logotype extension binding the SVG",
+      "status": "N/A",
+      "evidence": "skipped: --no-active",
+      "rfc_refs": [
+        "RFC 3709 §4",
+        "BIMI Group draft §4.5"
+      ]
+    },
+    {
+      "id": "email.arc.dkim",
+      "category": "Email",
+      "title": "DKIM keys available for ARC signing",
+      "status": "WARN",
+      "evidence": "ARC requires DKIM keys (none found at default._domainkey.test.invalid)",
+      "rfc_refs": [
+        "RFC 8617 §4.1",
+        "RFC 6376"
+      ]
+    },
+    {
+      "id": "email.arc.dmarc",
+      "category": "Email",
+      "title": "DMARC enforcement complements ARC",
+      "status": "INFO",
+      "evidence": "no DMARC record cached; ARC adds value primarily once DMARC enforcement is in place",
+      "rfc_refs": [
+        "RFC 8617 §5",
+        "RFC 7489"
+      ]
+    },
+    {
+      "id": "email.arc.guidance",
+      "category": "Email",
+      "title": "ARC (Authenticated Received Chain) deployment guidance",
+      "status": "INFO",
+      "evidence": "ARC preserves authentication results across legitimate intermediaries (mailing lists, forwarders) by stamping ARC-Authentication-Results, ARC-Message-Signature, and ARC-Seal headers on each hop.",
+      "remediation": "Deploy at MTA / mail-gateway: stamp three headers per hop using the AMS+AS sealing pair defined in RFC 8617 §4 (ARC-Authentication-Results, ARC-Message-Signature, ARC-Seal). Use the same DKIM key infrastructure as the domain's outbound DKIM signer.",
+      "rfc_refs": [
+        "RFC 8617 §4",
+        "RFC 8617 §5"
+      ]
+    },
+    {
+      "id": "email.dane",
+      "category": "Email",
+      "title": "DANE TLSA records present per MX",
+      "status": "N/A",
+      "evidence": "no usable MX records — DANE not applicable",
+      "rfc_refs": [
+        "RFC 7672 §2.2",
+        "RFC 6698"
+      ]
+    },
+    {
+      "id": "email.dkim.selector.none",
+      "category": "Email",
+      "title": "DKIM key discoverable on a common selector",
+      "status": "FAIL",
+      "evidence": "no DKIM key found at any of: default, dkim, mail, selector1, selector2, key1, key2, k1, k2, k3, mx, s1, s2, google, google2, smtpapi, mg, mailo, pm, scph0823, scph1023, scph0124, amazonses, mfsv01, mfsv02, mfsv03, mfsv04, mfsv05, 200608, et, zendesk1, zendesk2, klaviyo, k1klaviyo, mte1, mte2, mandrill, drip, ac1, ac2, convertkit, brevo, ovh, hetzner",
+      "remediation": "\u003cselector\u003e._domainkey.test.invalid. IN TXT \"v=DKIM1; k=rsa; p=\u003cbase64-public-key\u003e\"",
+      "rfc_refs": [
+        "RFC 6376 §3.6.1",
+        "RFC 6376 §3.6.2"
+      ]
+    },
+    {
+      "id": "email.dmarc.record",
+      "category": "Email",
+      "title": "DMARC record present and well-formed",
+      "status": "FAIL",
+      "evidence": "no v=DMARC1 TXT record at _dmarc.test.invalid",
+      "remediation": "_dmarc.test.invalid. IN TXT \"v=DMARC1; p=reject; rua=mailto:dmarc-reports@test.invalid; adkim=s; aspf=s\"",
+      "rfc_refs": [
+        "RFC 7489 §6.3",
+        "RFC 7489 §6.4",
+        "RFC 7489 §11.2"
+      ]
+    },
+    {
+      "id": "email.mtasts.policy",
+      "category": "Email",
+      "title": "MTA-STS policy file fetched and well-formed",
+      "status": "N/A",
+      "evidence": "skipped: --no-active",
+      "rfc_refs": [
+        "RFC 8461 §3.2"
+      ]
+    },
+    {
+      "id": "email.mtasts.txt",
+      "category": "Email",
+      "title": "MTA-STS TXT record present and well-formed",
+      "status": "FAIL",
+      "evidence": "no v=STSv1 TXT record at _mta-sts.test.invalid",
+      "remediation": "_mta-sts.test.invalid. IN TXT \"v=STSv1; id=20260416000000Z\"",
+      "rfc_refs": [
+        "RFC 8461 §3.1"
+      ]
+    },
+    {
+      "id": "email.nullmx",
+      "category": "Email",
+      "title": "Null MX (RFC 7505) declaration",
+      "status": "N/A",
+      "evidence": "no MX records — null MX not applicable",
+      "rfc_refs": [
+        "RFC 7505 §3"
+      ]
+    },
+    {
+      "id": "email.rbl",
+      "category": "Email",
+      "title": "DNS blocklist (DNSBL) listings",
+      "status": "INFO",
+      "evidence": "disabled (pass --enable-rbl to query third-party blocklists)",
+      "rfc_refs": [
+        "RFC 5782"
+      ]
+    },
+    {
+      "id": "email.smtp.starttls",
+      "category": "Email",
+      "title": "STARTTLS advertised by MX",
+      "status": "N/A",
+      "evidence": "no usable MX records",
+      "rfc_refs": [
+        "RFC 3207 §2",
+        "RFC 5321"
+      ]
+    },
+    {
+      "id": "email.spf.record",
+      "category": "Email",
+      "title": "SPF record present and well-formed",
+      "status": "FAIL",
+      "evidence": "no v=spf1 TXT record at apex",
+      "remediation": "test.invalid. IN TXT \"v=spf1 -all\"",
+      "rfc_refs": [
+        "RFC 7208 §3",
+        "RFC 7208 §4.6.4",
+        "RFC 7208 §11"
+      ]
+    },
+    {
+      "id": "email.tlsrpt.record",
+      "category": "Email",
+      "title": "TLS-RPT record present and well-formed",
+      "status": "FAIL",
+      "evidence": "no v=TLSRPTv1 TXT record at _smtp._tls.test.invalid",
+      "remediation": "_smtp._tls.test.invalid. IN TXT \"v=TLSRPTv1; rua=mailto:tlsrpt@test.invalid\"",
+      "rfc_refs": [
+        "RFC 8460 §3"
+      ]
+    },
+    {
+      "id": "subdomain.discover",
+      "category": "Subdomain",
+      "title": "Subdomain enumeration",
+      "status": "INFO",
+      "evidence": "disabled (--subdomains off)"
+    },
+    {
+      "id": "web.caa",
+      "category": "WWW",
+      "title": "CAA records present (RFC 8659)",
+      "status": "WARN",
+      "evidence": "no CAA records at apex (any CA is permitted to issue)",
+      "remediation": "test.invalid. IN CAA 0 issue \"letsencrypt.org\"\ntest.invalid. IN CAA 0 issuewild \";\"\ntest.invalid. IN CAA 0 iodef \"mailto:security@test.invalid\"",
+      "rfc_refs": [
+        "RFC 8659 §3",
+        "RFC 8659 §4"
+      ]
+    },
+    {
+      "id": "web.cert.chain",
+      "category": "WWW",
+      "title": "Certificate hygiene",
+      "status": "N/A",
+      "evidence": "active probing disabled (--no-active)",
+      "rfc_refs": [
+        "RFC 5280"
+      ]
+    },
+    {
+      "id": "web.cookies",
+      "category": "WWW",
+      "title": "Cookie attributes",
+      "status": "N/A",
+      "evidence": "active probing disabled (--no-active)",
+      "rfc_refs": [
+        "RFC 6265"
+      ]
+    },
+    {
+      "id": "web.crl.status",
+      "category": "WWW",
+      "title": "CRL revocation check",
+      "status": "N/A",
+      "evidence": "active probing disabled (--no-active)",
+      "rfc_refs": [
+        "RFC 5280 §5"
+      ]
+    },
+    {
+      "id": "web.ct.lookup",
+      "category": "WWW",
+      "title": "Certificate Transparency log lookup",
+      "status": "INFO",
+      "evidence": "disabled (--enable-ct off)",
+      "rfc_refs": [
+        "RFC 6962",
+        "RFC 9162"
+      ]
+    },
+    {
+      "id": "web.headers",
+      "category": "WWW",
+      "title": "Security headers",
+      "status": "N/A",
+      "evidence": "active probing disabled (--no-active)",
+      "rfc_refs": [
+        "WHATWG Fetch",
+        "RFC 7034"
+      ]
+    },
+    {
+      "id": "web.hsts",
+      "category": "WWW",
+      "title": "Strict-Transport-Security",
+      "status": "N/A",
+      "evidence": "active probing disabled (--no-active)",
+      "rfc_refs": [
+        "RFC 6797"
+      ]
+    },
+    {
+      "id": "web.http2",
+      "category": "WWW",
+      "title": "HTTP/2 advertised via ALPN",
+      "status": "N/A",
+      "evidence": "active probing disabled (--no-active)",
+      "rfc_refs": [
+        "RFC 9113",
+        "RFC 7301"
+      ]
+    },
+    {
+      "id": "web.http3",
+      "category": "WWW",
+      "title": "HTTP/3 (QUIC) supported",
+      "status": "N/A",
+      "evidence": "active probing disabled (--no-active)",
+      "rfc_refs": [
+        "RFC 9114",
+        "RFC 9000",
+        "RFC 7838",
+        "RFC 9110"
+      ]
+    },
+    {
+      "id": "web.mixedcontent",
+      "category": "WWW",
+      "title": "Mixed-content scan",
+      "status": "N/A",
+      "evidence": "active probing disabled (--no-active)",
+      "rfc_refs": [
+        "W3C Mixed Content"
+      ]
+    },
+    {
+      "id": "web.ocsp.responder",
+      "category": "WWW",
+      "title": "Independent OCSP responder",
+      "status": "N/A",
+      "evidence": "active probing disabled (--no-active)",
+      "rfc_refs": [
+        "RFC 6960"
+      ]
+    },
+    {
+      "id": "web.ocsp.staple",
+      "category": "WWW",
+      "title": "OCSP stapling",
+      "status": "N/A",
+      "evidence": "active probing disabled (--no-active)",
+      "rfc_refs": [
+        "RFC 6066 §8",
+        "RFC 6960"
+      ]
+    },
+    {
+      "id": "web.redirect",
+      "category": "WWW",
+      "title": "HTTP→HTTPS redirect hygiene",
+      "status": "N/A",
+      "evidence": "active probing disabled (--no-active)",
+      "rfc_refs": [
+        "RFC 7525 §3.1.1"
+      ]
+    },
+    {
+      "id": "web.tls.curves",
+      "category": "WWW",
+      "title": "TLS elliptic curves accepted",
+      "status": "N/A",
+      "evidence": "active probing disabled (--no-active)",
+      "rfc_refs": [
+        "RFC 8446 §4.2.7",
+        "RFC 8422"
+      ]
+    },
+    {
+      "id": "web.tls.profile",
+      "category": "WWW",
+      "title": "TLS profile",
+      "status": "N/A",
+      "evidence": "active probing disabled (--no-active)",
+      "rfc_refs": [
+        "RFC 7525"
+      ]
+    }
+  ]
+}
