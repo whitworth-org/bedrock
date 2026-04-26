@@ -10,20 +10,16 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// hstsCheck enforces RFC 6797 Strict-Transport-Security on the apex's HTTPS
+// runHSTS enforces RFC 6797 Strict-Transport-Security on the apex's HTTPS
 // root. The embedded profile baseline recommends max-age >= 63072000 (2y);
 // we require >= 15552000 (180d) to Pass and warn under 31536000 (1y).
-type hstsCheck struct{}
-
-func (hstsCheck) ID() string       { return "web.hsts" }
-func (hstsCheck) Category() string { return category }
 
 const (
 	hstsMinAgeFloor = 15552000 // 180 days, RFC 6797 minimum we accept
 	hstsOneYear     = 31536000
 )
 
-func (hstsCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runHSTS(ctx context.Context, env *probe.Env) []report.Result {
 	if !env.Active {
 		return []report.Result{{
 			ID: "web.hsts", Category: category,

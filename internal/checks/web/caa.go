@@ -10,15 +10,10 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// caaCheck implements RFC 8659 CAA. CAA is a DNS-only check, so it runs
+// runCAA implements RFC 8659 CAA. CAA is a DNS-only check, so it runs
 // regardless of env.Active. Absence is a Warn (CAs default to allow);
 // presence with valid issue/issuewild/iodef tags is a Pass.
-type caaCheck struct{}
-
-func (caaCheck) ID() string       { return "web.caa" }
-func (caaCheck) Category() string { return category }
-
-func (caaCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runCAA(ctx context.Context, env *probe.Env) []report.Result {
 	cctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
 

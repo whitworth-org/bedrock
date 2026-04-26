@@ -15,15 +15,10 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// tlsCheck scores the negotiated TLS posture of the apex (and www) host
+// runTLS scores the negotiated TLS posture of the apex (and www) host
 // against the embedded modern → intermediate → old profile cascade. RFC 7525
 // (BCP 195) is the floor; the embedded profiles are the target ceiling.
-type tlsCheck struct{}
-
-func (tlsCheck) ID() string       { return "web.tls.profile" }
-func (tlsCheck) Category() string { return category }
-
-func (tlsCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runTLS(ctx context.Context, env *probe.Env) []report.Result {
 	if !env.Active {
 		return []report.Result{{
 			ID: "web.tls.profile", Category: category,

@@ -181,7 +181,7 @@ func TestCurveNameByID(t *testing.T) {
 // without any network I/O.
 func TestECCurveCheck_NoActive(t *testing.T) {
 	env := probe.NewEnv("example.com", time.Second, false /* active */, "")
-	results := ecCurveCheck{}.Run(context.Background(), env)
+	results := runECCurves(context.Background(), env)
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}

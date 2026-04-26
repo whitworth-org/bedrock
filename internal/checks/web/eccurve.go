@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/registry"
 	"github.com/whitworth-org/bedrock/internal/report"
@@ -27,10 +28,6 @@ import (
 //   - RFC 7919       (named groups for FFDH — informational; we do not
 //     probe FFDH groups because Go does not expose them via
 //     CurvePreferences and FFDHE is rare in practice)
-type ecCurveCheck struct{}
-
-func (ecCurveCheck) ID() string       { return "web.tls.curves" }
-func (ecCurveCheck) Category() string { return category }
 
 // probeCurves is the candidate set we attempt. `modern` flags whether the
 // curve is acceptable in the embedded "modern" TLS profile (X25519, P-256,
@@ -51,7 +48,7 @@ var probeCurves = []struct {
 // don't hammer a single host with one TCP connection per curve at once.
 const maxParallelDials = 4
 
-func (ecCurveCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runECCurves(ctx context.Context, env *probe.Env) []report.Result {
 	if !env.Active {
 		return []report.Result{{
 			ID:       "web.tls.curves",
@@ -203,4 +200,4 @@ func curveNameByID(id tls.CurveID) string {
 	return fmt.Sprintf("curve(0x%04x)", uint16(id))
 }
 
-func init() { registry.Register(ecCurveCheck{}) }
+func init() { registry.Register(checkutil.Wrap("web.tls.curves", category, runECCurves)) }

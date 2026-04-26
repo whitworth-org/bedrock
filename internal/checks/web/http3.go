@@ -10,28 +10,25 @@ import (
 
 	"github.com/quic-go/quic-go/http3"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/registry"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// http3Check probes for HTTP/3 (QUIC) support via two independent signals:
+// runHTTP3 probes for HTTP/3 (QUIC) support via two independent signals:
 //  1. The Alt-Svc response header on the served HTTPS root advertising "h3"
 //     (per RFC 7838 / RFC 9114 §3.1.1).
 //  2. An actual HTTP/3 GET against the apex over QUIC (RFC 9000 transport,
 //     RFC 9114 application mapping).
 //
 // HTTP/3 is treated as an enhancement: not running it is INFO, not FAIL.
-type http3Check struct{}
-
-func (http3Check) ID() string       { return "web.http3" }
-func (http3Check) Category() string { return category }
 
 // http3RFCs are the specs cited by every result this check emits, kept in one
 // place so renderers consistently surface the same provenance.
 var http3RFCs = []string{"RFC 9114", "RFC 9000", "RFC 7838", "RFC 9110"}
 
-func (http3Check) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runHTTP3(ctx context.Context, env *probe.Env) []report.Result {
 	if !env.Active {
 		return []report.Result{{
 			ID: "web.http3", Category: category,
@@ -164,4 +161,4 @@ func http3Remediation() string {
 	)
 }
 
-func init() { registry.Register(http3Check{}) }
+func init() { registry.Register(checkutil.Wrap("web.http3", category, runHTTP3)) }
