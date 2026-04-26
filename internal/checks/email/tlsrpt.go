@@ -62,12 +62,7 @@ func ParseTLSRPT(raw string) (*TLSRPT, error) {
 	return out, nil
 }
 
-type tlsrptCheck struct{}
-
-func (tlsrptCheck) ID() string       { return "email.tlsrpt.record" }
-func (tlsrptCheck) Category() string { return category }
-
-func (tlsrptCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runTLSRPT(ctx context.Context, env *probe.Env) []report.Result {
 	ctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
 

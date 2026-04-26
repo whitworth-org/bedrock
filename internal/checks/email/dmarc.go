@@ -200,12 +200,7 @@ func validDMARCPolicy(v string) bool {
 	return false
 }
 
-type dmarcCheck struct{}
-
-func (dmarcCheck) ID() string       { return "email.dmarc.record" }
-func (dmarcCheck) Category() string { return category }
-
-func (dmarcCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runDMARC(ctx context.Context, env *probe.Env) []report.Result {
 	ctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
 

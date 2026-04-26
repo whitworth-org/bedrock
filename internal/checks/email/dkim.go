@@ -110,12 +110,7 @@ func isDNSSafeName(s string) bool {
 // (see dkim_selectors.go). Order is deterministic; every found selector is
 // reported regardless of position.
 
-type dkimCheck struct{}
-
-func (dkimCheck) ID() string       { return "email.dkim" }
-func (dkimCheck) Category() string { return category }
-
-func (dkimCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runDKIM(ctx context.Context, env *probe.Env) []report.Result {
 	refs := []string{"RFC 6376 §3.6.1", "RFC 6376 §3.6.2"}
 	selectors := selectorList(env)
 	results := make([]report.Result, 0, len(selectors))
