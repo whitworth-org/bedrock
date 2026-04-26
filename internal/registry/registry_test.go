@@ -6,6 +6,7 @@ import (
 	"sort"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
@@ -28,6 +29,12 @@ func (s stubCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 // are not disturbed.
 func withEmptyRegistry(t *testing.T) func() {
 	t.Helper()
+	return swapEmptyRegistry()
+}
+
+// swapEmptyRegistry is the helper-free variant used by benchmarks (which
+// take *testing.B, not *testing.T). It returns the same restore closure.
+func swapEmptyRegistry() func() {
 	checksMu.Lock()
 	saved := checks
 	checks = nil
@@ -201,5 +208,32 @@ func TestRunPanicIsolatedToOneCheck(t *testing.T) {
 	}
 	if !foundPanic {
 		t.Fatalf("panic must surface as registry.panic Fail: %+v", out)
+	}
+}
+
+// BenchmarkRunCategoryParallel measures wall-clock time for a single Run
+// over a category with checks that each sleep 50ms — modelling I/O-bound
+// checks waiting on DNS or HTTP. With maxChecksPerCategory=8 the wall-clock
+// should be ~ ceil(N/8) * 50ms; the pre-A1 sequential loop would have been
+// N * 50ms.
+func BenchmarkRunCategoryParallel(b *testing.B) {
+	defer swapEmptyRegistry()()
+
+	const sleep = 50 * time.Millisecond
+	const checks = 16
+	for i := 0; i < checks; i++ {
+		id := fmt.Sprintf("bench.%02d", i)
+		Register(stubCheck{id: id, cat: "B", run: func(ctx context.Context, _ *probe.Env) []report.Result {
+			select {
+			case <-ctx.Done():
+			case <-time.After(sleep):
+			}
+			return []report.Result{{ID: id, Category: "B", Status: report.Pass}}
+		}})
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = Run(context.Background(), nil)
 	}
 }
