@@ -12,30 +12,25 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// chainCheck audits the DS-DNSKEY-RRSIG chain at the target's apex.
+// runChain audits the DS-DNSKEY-RRSIG chain at the target's apex.
 //
 // We rely on a recursive resolver to fetch the parent's DS records (the
 // resolver walks the delegation), so a single DS query against the apex
-// name is sufficient for our purposes.
-type chainCheck struct{}
+// name is sufficient for our purposes. The DS+DNSKEY artefacts are
+// produced once per run via ensureChainData and shared with the algorithms
+// and nsec checks; under the parallel registry whichever check runs first
+// populates the cache.
+func runChain(ctx context.Context, env *probe.Env) []report.Result {
+	cd := ensureChainData(ctx, env)
+	keyResp := cd.keyResp
+	dsErr := cd.dsErr
+	keyErr := cd.keyErr
+	dsSet := cd.dsSet
+	keySet := cd.keySet
 
-func (chainCheck) ID() string       { return "dnssec.chain" }
-func (chainCheck) Category() string { return category }
-
-func (chainCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+	// soa lookups still go through a per-call timeout context.
 	cctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
-
-	dsResp, dsErr := env.DNS.ExchangeWithDO(cctx, env.Target, mdns.TypeDS)
-	keyResp, keyErr := env.DNS.ExchangeWithDO(cctx, env.Target, mdns.TypeDNSKEY)
-
-	dsSet := extractDS(dsResp)
-	keySet := extractDNSKEY(keyResp)
-
-	// Cache for sibling checks (algorithms, nsec) so we don't refetch.
-	env.CachePut(cacheKeyDS, dsSet)
-	env.CachePut(cacheKeyDNSKEY, keySet)
-	env.CachePut(cacheKeySigned, len(dsSet) > 0 && len(keySet) > 0)
 
 	results := []report.Result{}
 
