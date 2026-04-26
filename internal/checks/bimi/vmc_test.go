@@ -132,6 +132,169 @@ func TestIsSVGMediaType(t *testing.T) {
 	}
 }
 
+func TestDecodeLogotypeExtn_ExceedsImageCap(t *testing.T) {
+	// Build a LogotypeData with 9 images (exceeds maxLogotypeImages = 8)
+	images := make([]logotypeImage, 9)
+	for i := range images {
+		uriSeq, err := encodeIA5StringSeq([]string{"https://example.com/logo.svg"})
+		if err != nil {
+			t.Fatalf("encodeIA5StringSeq: %v", err)
+		}
+		images[i] = logotypeImage{
+			ImageDetails: logotypeDetails{
+				MediaType: "image/svg+xml",
+				LogotypeHash: []hashAlgAndValue{
+					{
+						HashAlg:   pkix.AlgorithmIdentifier{Algorithm: sha256OID},
+						HashValue: make([]byte, 32),
+					},
+				},
+				LogotypeURI: uriSeq,
+			},
+		}
+	}
+	ext := logotypeExtn{
+		SubjectLogo: logotypeInfoDirect{
+			Data: logotypeData{Image: images},
+		},
+	}
+	der, err := asn1.Marshal(ext)
+	if err != nil {
+		t.Fatalf("asn1.Marshal: %v", err)
+	}
+	_, err = DecodeLogotypeExtn(der)
+	if err == nil {
+		t.Fatal("expected error for too many images")
+	}
+	if !strings.Contains(err.Error(), "9 images") || !strings.Contains(err.Error(), "max 8") {
+		t.Errorf("error should mention image count limit, got: %v", err)
+	}
+}
+
+func TestDecodeLogotypeExtn_ContainsAudio(t *testing.T) {
+	// Build a LogotypeData with audio entries (BIMI requires 0)
+	uriSeq, err := encodeIA5StringSeq([]string{"https://example.com/logo.svg"})
+	if err != nil {
+		t.Fatalf("encodeIA5StringSeq: %v", err)
+	}
+	ext := logotypeExtn{
+		SubjectLogo: logotypeInfoDirect{
+			Data: logotypeData{
+				Image: []logotypeImage{
+					{
+						ImageDetails: logotypeDetails{
+							MediaType: "image/svg+xml",
+							LogotypeHash: []hashAlgAndValue{
+								{
+									HashAlg:   pkix.AlgorithmIdentifier{Algorithm: sha256OID},
+									HashValue: make([]byte, 32),
+								},
+							},
+							LogotypeURI: uriSeq,
+						},
+					},
+				},
+				Audio: []logotypeAudio{{Raw: []byte{0x30, 0x00}}}, // minimal SEQUENCE
+			},
+		},
+	}
+	der, err := asn1.Marshal(ext)
+	if err != nil {
+		t.Fatalf("asn1.Marshal: %v", err)
+	}
+	_, err = DecodeLogotypeExtn(der)
+	if err == nil {
+		t.Fatal("expected error for audio entries")
+	}
+	if !strings.Contains(err.Error(), "audio") || !strings.Contains(err.Error(), "BIMI") {
+		t.Errorf("error should mention audio/BIMI restriction, got: %v", err)
+	}
+}
+
+func TestDecodeLogotypeExtn_ExceedsURICap(t *testing.T) {
+	// Build a LogotypeImage with 9 URIs (exceeds maxLogotypeURIs = 8)
+	uris := make([]string, 9)
+	for i := range uris {
+		uris[i] = "https://example.com/logo.svg"
+	}
+	uriSeq, err := encodeIA5StringSeq(uris)
+	if err != nil {
+		t.Fatalf("encodeIA5StringSeq: %v", err)
+	}
+	ext := logotypeExtn{
+		SubjectLogo: logotypeInfoDirect{
+			Data: logotypeData{
+				Image: []logotypeImage{
+					{
+						ImageDetails: logotypeDetails{
+							MediaType: "image/svg+xml",
+							LogotypeHash: []hashAlgAndValue{
+								{
+									HashAlg:   pkix.AlgorithmIdentifier{Algorithm: sha256OID},
+									HashValue: make([]byte, 32),
+								},
+							},
+							LogotypeURI: uriSeq,
+						},
+					},
+				},
+			},
+		},
+	}
+	der, err := asn1.Marshal(ext)
+	if err != nil {
+		t.Fatalf("asn1.Marshal: %v", err)
+	}
+	_, err = DecodeLogotypeExtn(der)
+	if err == nil {
+		t.Fatal("expected error for too many URIs")
+	}
+	if !strings.Contains(err.Error(), "9 URIs") || !strings.Contains(err.Error(), "max 8") {
+		t.Errorf("error should mention URI count limit, got: %v", err)
+	}
+}
+
+func TestDecodeLogotypeExtn_ExceedsHashCap(t *testing.T) {
+	// Build a LogotypeImage with 5 hashes (exceeds maxHashesPerImage = 4)
+	hashes := make([]hashAlgAndValue, 5)
+	for i := range hashes {
+		hashes[i] = hashAlgAndValue{
+			HashAlg:   pkix.AlgorithmIdentifier{Algorithm: sha256OID},
+			HashValue: make([]byte, 32),
+		}
+	}
+	uriSeq, err := encodeIA5StringSeq([]string{"https://example.com/logo.svg"})
+	if err != nil {
+		t.Fatalf("encodeIA5StringSeq: %v", err)
+	}
+	ext := logotypeExtn{
+		SubjectLogo: logotypeInfoDirect{
+			Data: logotypeData{
+				Image: []logotypeImage{
+					{
+						ImageDetails: logotypeDetails{
+							MediaType:    "image/svg+xml",
+							LogotypeHash: hashes,
+							LogotypeURI:  uriSeq,
+						},
+					},
+				},
+			},
+		},
+	}
+	der, err := asn1.Marshal(ext)
+	if err != nil {
+		t.Fatalf("asn1.Marshal: %v", err)
+	}
+	_, err = DecodeLogotypeExtn(der)
+	if err == nil {
+		t.Fatal("expected error for too many hashes")
+	}
+	if !strings.Contains(err.Error(), "5 hashes") || !strings.Contains(err.Error(), "max 4") {
+		t.Errorf("error should mention hash count limit, got: %v", err)
+	}
+}
+
 func TestClassifyMarkCert(t *testing.T) {
 	if got := classifyMarkCert(nil); got != markCertOther {
 		t.Errorf("nil cert: got %s want %s", got, markCertOther)

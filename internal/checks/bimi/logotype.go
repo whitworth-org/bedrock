@@ -26,6 +26,14 @@ import (
 	"fmt"
 )
 
+// Security caps for attacker-controlled ASN.1 content
+const (
+	maxLogotypeImages = 8 // Max images in LogotypeData
+	maxLogotypeAudio  = 0 // BIMI doesn't use audio; reject any present
+	maxLogotypeURIs   = 8 // Max URIs per image
+	maxHashesPerImage = 4 // Max hashes per image
+)
+
 // LogotypeImage is the flattened view of a single LogotypeImage entry that
 // the VMC logotype check actually consumes. We expose the algorithm OID and
 // raw hash bytes so the caller can verify against any algorithm BIMI may
@@ -156,6 +164,12 @@ func imagesFrom(d logotypeData) ([]LogotypeImage, error) {
 	if len(d.Image) == 0 {
 		return nil, errors.New("LogotypeData carries no image entries")
 	}
+	if len(d.Image) > maxLogotypeImages {
+		return nil, fmt.Errorf("LogotypeData contains %d images (max %d)", len(d.Image), maxLogotypeImages)
+	}
+	if len(d.Audio) > maxLogotypeAudio {
+		return nil, fmt.Errorf("LogotypeData contains %d audio entries (BIMI requires 0)", len(d.Audio))
+	}
 	out := make([]LogotypeImage, 0, len(d.Image))
 	for _, img := range d.Image {
 		// LogotypeURI is SIZE(1..MAX); pick the first as evidence. Same for
@@ -166,12 +180,18 @@ func imagesFrom(d logotypeData) ([]LogotypeImage, error) {
 		if err != nil {
 			return nil, fmt.Errorf("decode LogotypeURI: %w", err)
 		}
+		if len(uris) > maxLogotypeURIs {
+			return nil, fmt.Errorf("LogotypeImage contains %d URIs (max %d)", len(uris), maxLogotypeURIs)
+		}
 		var uri string
 		if len(uris) > 0 {
 			uri = uris[0]
 		}
 		if len(img.ImageDetails.LogotypeHash) == 0 {
 			return nil, errors.New("LogotypeDetails missing logotypeHash entries")
+		}
+		if len(img.ImageDetails.LogotypeHash) > maxHashesPerImage {
+			return nil, fmt.Errorf("LogotypeImage contains %d hashes (max %d)", len(img.ImageDetails.LogotypeHash), maxHashesPerImage)
 		}
 		// Emit one LogotypeImage per (image, hash) pair so a caller can match
 		// the publisher's SVG digest against any of the hashes the CA bound.

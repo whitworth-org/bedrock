@@ -44,7 +44,7 @@ func (discoverCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 		}}
 	}
 
-	hosts, notes := enumerate(ctx, env.Target, env.Timeout)
+	hosts, notes := enumerate(ctx, env, env.Target, env.Timeout)
 
 	out := append([]report.Result{}, notes...)
 	out = append(out, report.Result{
