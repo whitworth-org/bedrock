@@ -43,6 +43,10 @@ func (redirectCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 
 	var out []report.Result
 	for _, h := range hosts {
+		// Mid-flight ctx gate between the apex and www HTTP probes.
+		if err := ctx.Err(); err != nil {
+			break
+		}
 		out = append(out, evaluateRedirect(ctx, env, h))
 	}
 	return out

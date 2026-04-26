@@ -59,6 +59,11 @@ func (zoneCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 
 	results := []report.Result{soaTimers(env.Target, soa)}
 
+	// Mid-flight ctx gate between SOA and NS lookups.
+	if err := ctx.Err(); err != nil {
+		return results
+	}
+
 	// MNAME / NS-set consistency: the SOA MNAME ("primary master") should
 	// itself appear in the apex NS RRset OR be intentionally hidden. We only
 	// Warn when it's missing — hidden primaries are a legitimate setup.

@@ -51,6 +51,11 @@ func (daneCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 
 	var results []report.Result
 	for _, mx := range mxs {
+		// Mid-flight ctx gate: stop probing further MX hosts once the
+		// scan is cancelled instead of issuing one TLSA query per host.
+		if err := ctx.Err(); err != nil {
+			break
+		}
 		results = append(results, probeDANE(ctx, env, mx.Host, refs))
 	}
 	return results
