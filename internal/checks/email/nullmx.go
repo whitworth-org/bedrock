@@ -8,15 +8,10 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-type nullMXCheck struct{}
-
-func (nullMXCheck) ID() string       { return "email.nullmx" }
-func (nullMXCheck) Category() string { return category }
-
-// Run detects RFC 7505 Null MX. A single MX with preference 0 and host "."
-// asserts the domain accepts no mail. The check is purely informational —
+// runNullMX detects RFC 7505 Null MX. A single MX with preference 0 and host
+// "." asserts the domain accepts no mail. The check is purely informational —
 // it tells the operator whether their domain is mail-accepting or not.
-func (nullMXCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runNullMX(ctx context.Context, env *probe.Env) []report.Result {
 	ctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
 

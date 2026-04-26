@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/registry"
 	"github.com/whitworth-org/bedrock/internal/report"
@@ -32,17 +33,12 @@ var rblZones = []string{
 // a typical (apex + a few MX A records) × len(rblZones) matrix quickly.
 const rblWorkers = 8
 
-type rblCheck struct{}
-
-func (rblCheck) ID() string       { return "email.rbl" }
-func (rblCheck) Category() string { return category }
-
-// Run resolves the apex's A records and each MX host's A records, then
+// runRBL resolves the apex's A records and each MX host's A records, then
 // queries every IPv4 against every entry in rblZones. Listings yield one
 // WARN per (ip, zone) pair; a clean run yields a single PASS. IPv6 is
 // reported once as INFO and skipped — most public DNSBLs do not index
 // AAAA addresses reliably.
-func (rblCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runRBL(ctx context.Context, env *probe.Env) []report.Result {
 	refs := []string{"RFC 5782"}
 	const id = "email.rbl"
 	const title = "DNS blocklist (DNSBL) listings"
@@ -316,4 +312,4 @@ func sanitizeZoneID(zone string) string {
 	return strings.ReplaceAll(zone, ".", "_")
 }
 
-func init() { registry.Register(rblCheck{}) }
+func init() { registry.Register(checkutil.Wrap("email.rbl", category, runRBL)) }

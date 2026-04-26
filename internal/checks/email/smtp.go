@@ -13,14 +13,9 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-type starttlsCheck struct{}
-
-func (starttlsCheck) ID() string       { return "email.smtp.starttls" }
-func (starttlsCheck) Category() string { return category }
-
-// Run probes each MX on port 25 to confirm STARTTLS is advertised in the
-// EHLO response (RFC 3207 §2). Active probe — skipped under --no-active.
-func (starttlsCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+// runSTARTTLS probes each MX on port 25 to confirm STARTTLS is advertised in
+// the EHLO response (RFC 3207 §2). Active probe — skipped under --no-active.
+func runSTARTTLS(ctx context.Context, env *probe.Env) []report.Result {
 	refs := []string{"RFC 3207 §2", "RFC 5321"}
 
 	mxs, err := env.DNS.LookupMX(ctx, env.Target)

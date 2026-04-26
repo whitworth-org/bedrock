@@ -10,19 +10,22 @@
 // Gmail-gate check can consume it without re-querying the resolver.
 package email
 
-import "github.com/whitworth-org/bedrock/internal/registry"
+import (
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
+	"github.com/whitworth-org/bedrock/internal/registry"
+)
 
 const category = "Email"
 
 func init() {
-	registry.Register(spfCheck{})
-	registry.Register(dkimCheck{})
-	registry.Register(dmarcCheck{})
-	registry.Register(mtastsTXTCheck{})
-	registry.Register(mtastsPolicyCheck{})
-	registry.Register(tlsrptCheck{})
-	registry.Register(daneCheck{})
-	registry.Register(nullMXCheck{})
-	registry.Register(starttlsCheck{})
-	registry.Register(googleWorkspaceMXCheck{})
+	registry.Register(checkutil.Wrap("email.spf.record", category, runSPF))
+	registry.Register(checkutil.Wrap("email.dkim", category, runDKIM))
+	registry.Register(checkutil.Wrap("email.dmarc.record", category, runDMARC))
+	registry.Register(checkutil.Wrap("email.mtasts.txt", category, runMTASTSTXT))
+	registry.Register(checkutil.Wrap("email.mtasts.policy", category, runMTASTSPolicy))
+	registry.Register(checkutil.Wrap("email.tlsrpt.record", category, runTLSRPT))
+	registry.Register(checkutil.Wrap("email.dane", category, runDANE))
+	registry.Register(checkutil.Wrap("email.nullmx", category, runNullMX))
+	registry.Register(checkutil.Wrap("email.smtp.starttls", category, runSTARTTLS))
+	registry.Register(checkutil.Wrap("email.google_workspace_mx", category, runGoogleWorkspaceMX))
 }

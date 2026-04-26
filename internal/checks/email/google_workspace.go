@@ -17,10 +17,6 @@ import (
 // quiet: it emits nothing unless the legacy form is in active use. Non-Google
 // mail providers, domains already on the new single-MX form, and domains
 // without MX records produce no output at all.
-type googleWorkspaceMXCheck struct{}
-
-func (googleWorkspaceMXCheck) ID() string       { return "email.google_workspace_mx" }
-func (googleWorkspaceMXCheck) Category() string { return category }
 
 // legacyASPMXHosts lists the exact Google Workspace ASPMX hostnames that
 // constitute the legacy (multi-record) configuration. Any MX pointing at one
@@ -43,12 +39,12 @@ const newSingleMXHost = "smtp.google.com"
 // can click through to the first-party instructions.
 const googleWorkspaceMigrationURL = "https://knowledge.workspace.google.com/admin/domains/set-up-mx-records-for-google-workspace"
 
-// Run inspects the cached (or freshly fetched) MX set. If — and only if —
-// the domain uses Google Workspace via legacy ASPMX records, emit a single
-// INFO result pointing at the migration guide. The check produces no
-// results in all other cases (no MX, non-Google MX, or already-new
-// single-host form) so the report stays uncluttered.
-func (googleWorkspaceMXCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+// runGoogleWorkspaceMX inspects the cached (or freshly fetched) MX set. If
+// — and only if — the domain uses Google Workspace via legacy ASPMX records,
+// emit a single INFO result pointing at the migration guide. The check
+// produces no results in all other cases (no MX, non-Google MX, or
+// already-new single-host form) so the report stays uncluttered.
+func runGoogleWorkspaceMX(ctx context.Context, env *probe.Env) []report.Result {
 	mxs := lookupMXCached(ctx, env)
 	if len(mxs) == 0 {
 		return nil

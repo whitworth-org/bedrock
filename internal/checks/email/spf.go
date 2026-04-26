@@ -143,12 +143,7 @@ func (s *SPF) CountDNSLookups() int {
 	return n
 }
 
-type spfCheck struct{}
-
-func (spfCheck) ID() string       { return "email.spf.record" }
-func (spfCheck) Category() string { return category }
-
-func (spfCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runSPF(ctx context.Context, env *probe.Env) []report.Result {
 	ctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/registry"
 	"github.com/whitworth-org/bedrock/internal/report"
@@ -21,12 +22,7 @@ import (
 // Status policy: ARC adoption is an enhancement, never a baseline
 // requirement, so this check NEVER returns Fail. Missing prerequisites
 // surface as Warn; a healthy or merely informational state is Info.
-type arcCheck struct{}
-
-func (arcCheck) ID() string       { return "email.arc" }
-func (arcCheck) Category() string { return category }
-
-func (arcCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runARC(ctx context.Context, env *probe.Env) []report.Result {
 	out := make([]report.Result, 0, 3)
 	out = append(out, arcDKIMResult(ctx, env))
 	out = append(out, arcDMARCResult(env))
@@ -154,4 +150,4 @@ func arcGuidanceResult() report.Result {
 	}
 }
 
-func init() { registry.Register(arcCheck{}) }
+func init() { registry.Register(checkutil.Wrap("email.arc", category, runARC)) }

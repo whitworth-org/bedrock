@@ -11,17 +11,12 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-type daneCheck struct{}
-
-func (daneCheck) ID() string       { return "email.dane" }
-func (daneCheck) Category() string { return category }
-
-// Run looks up TLSA records for each MX at _25._tcp.<mx-host> per
+// runDANE looks up TLSA records for each MX at _25._tcp.<mx-host> per
 // RFC 7672 §2.2.3. DANE only provides its security guarantees when the
 // response is signed and validated — RFC 7672 §2.2.1 makes DNSSEC a hard
 // prerequisite — so we require the resolver's AD bit on the TLSA answer in
 // addition to validating each record's usage/selector/matching-type fields.
-func (daneCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runDANE(ctx context.Context, env *probe.Env) []report.Result {
 	ctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
 

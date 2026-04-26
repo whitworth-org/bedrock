@@ -121,12 +121,7 @@ func extractSTSID(raw string) string {
 	return ""
 }
 
-type mtastsTXTCheck struct{}
-
-func (mtastsTXTCheck) ID() string       { return "email.mtasts.txt" }
-func (mtastsTXTCheck) Category() string { return category }
-
-func (mtastsTXTCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runMTASTSTXT(ctx context.Context, env *probe.Env) []report.Result {
 	ctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
 
@@ -192,12 +187,7 @@ func (mtastsTXTCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 	}}
 }
 
-type mtastsPolicyCheck struct{}
-
-func (mtastsPolicyCheck) ID() string       { return "email.mtasts.policy" }
-func (mtastsPolicyCheck) Category() string { return category }
-
-func (mtastsPolicyCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runMTASTSPolicy(ctx context.Context, env *probe.Env) []report.Result {
 	const id = "email.mtasts.policy"
 	const title = "MTA-STS policy file fetched and well-formed"
 	refs := []string{"RFC 8461 §3.2"}
