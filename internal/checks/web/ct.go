@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -109,7 +108,7 @@ func runCTLookup(ctx context.Context, env *probe.Env) report.Result {
 		timeout = 30 * time.Second
 	}
 
-	entries, err := fetchCrtShEntries(ctx, env.Target, timeout)
+	entries, err := fetchCrtShEntries(ctx, env, env.Target, timeout)
 	if err != nil {
 		res.Status = report.Warn
 		res.Evidence = "could not query crt.sh: " + err.Error()
@@ -202,7 +201,7 @@ func runCTCAADiverge(ctx context.Context, env *probe.Env) *report.Result {
 	if timeout > 30*time.Second {
 		timeout = 30 * time.Second
 	}
-	entries, err := fetchCrtShEntries(ctx, env.Target, timeout)
+	entries, err := fetchCrtShEntries(ctx, env, env.Target, timeout)
 	if err != nil || len(entries) == 0 {
 		return nil
 	}
@@ -339,7 +338,7 @@ func stripPunct(s string) string {
 // fetchCrtShEntries hits crt.sh's JSON endpoint with a wildcard query
 // (%.<target>) so we get apex + subdomain hits in one round trip. Caches the
 // result on env so the lookup and CAA-diverge checks share a single fetch.
-func fetchCrtShEntries(ctx context.Context, target string, timeout time.Duration) ([]crtShEntry, error) {
+func fetchCrtShEntries(ctx context.Context, env *probe.Env, target string, timeout time.Duration) ([]crtShEntry, error) {
 	const cacheKey = "web.ct.crtsh"
 	// Ride along on env.cache via a process-local map keyed by target — but
 	// the env isn't passed in; we accept a tiny duplicate fetch in the rare
@@ -352,25 +351,14 @@ func fetchCrtShEntries(ctx context.Context, target string, timeout time.Duration
 	q.Set("output", "json")
 	u := "https://crt.sh/?" + q.Encode()
 
-	rctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(rctx, http.MethodGet, u, nil)
+	resp, err := env.HTTP.GetStrict(ctx, u)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", ctUserAgent)
-	req.Header.Set("Accept", "application/json")
-
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
+	if resp.Status != http.StatusOK {
+		return nil, fmt.Errorf("crt.sh returned HTTP %d", resp.Status)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("crt.sh returned HTTP %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20)) // 16 MiB cap
+	body := resp.Body // Body is already capped by the HTTP wrapper
 	if err != nil {
 		return nil, err
 	}

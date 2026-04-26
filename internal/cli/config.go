@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"time"
 )
@@ -28,18 +29,38 @@ type Config struct {
 
 // LoadConfig reads a JSON config file from path. An empty path returns the
 // zero value with no error so callers can unconditionally call this.
+// The file size is limited to 1 MiB and unknown fields are rejected.
 func LoadConfig(path string) (*Config, error) {
 	if path == "" {
 		return &Config{}, nil
 	}
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
+	defer func() {
+		_ = f.Close() // File close error is informational only in this read-only context
+	}()
+
+	// Limit file size to 1 MiB to prevent memory exhaustion
+	r := io.LimitReader(f, 1<<20)
+	decoder := json.NewDecoder(r)
+	decoder.DisallowUnknownFields()
+
 	var c Config
-	if err := json.Unmarshal(data, &c); err != nil {
+	if err := decoder.Decode(&c); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
+
+	// Ensure there's no second JSON value following the first
+	var dummy interface{}
+	if err := decoder.Decode(&dummy); err != io.EOF {
+		if err != nil {
+			return nil, fmt.Errorf("parse config %s: %w", path, err)
+		}
+		return nil, fmt.Errorf("config %s contains multiple JSON values", path)
+	}
+
 	return &c, nil
 }
 

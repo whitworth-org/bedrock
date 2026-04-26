@@ -193,6 +193,70 @@ func (h *HTTP) GetStrict(ctx context.Context, target string) (*Response, error) 
 	return resp, nil
 }
 
+// Do performs a custom HTTP request using the safe transport. The request
+// must have been created with a valid context. The URL must be absolute.
+// For mixed-scheme endpoints (HTTP/HTTPS), use Do. For HTTPS-only endpoints,
+// use DoStrict to enforce TLS 1.2+.
+func (h *HTTP) Do(req *http.Request) (*Response, error) {
+	return h.doWithClient(req, h.client)
+}
+
+// DoStrict performs a custom HTTP request using the strict safe transport
+// that enforces HTTPS with TLS 1.2+. The request must have been created
+// with a valid context and the URL must be HTTPS.
+func (h *HTTP) DoStrict(req *http.Request) (*Response, error) {
+	baseTr, ok := h.client.Transport.(*http.Transport)
+	if !ok {
+		return nil, errors.New("http transport is not *http.Transport")
+	}
+	strictTr := baseTr.Clone()
+	strictTr.TLSClientConfig = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+	strictTr.DialContext = safeDialContext(h.timeout, false)
+
+	strictCli := &http.Client{
+		Transport: strictTr,
+		Timeout:   h.timeout * 3,
+	}
+	return h.doWithClient(req, strictCli)
+}
+
+func (h *HTTP) doWithClient(req *http.Request, cli *http.Client) (*Response, error) {
+	//nolint:gosec // G704: This is the SSRF-safe HTTP client implementation itself
+	r, err := cli.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = r.Body.Close() }()
+
+	// Read up to maxBodyBytes+1 so we can detect truncation
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
+	truncated := false
+	if len(body) > maxBodyBytes {
+		body = body[:maxBodyBytes]
+		truncated = true
+	}
+
+	resp := &Response{
+		Status:    r.StatusCode,
+		URL:       r.Request.URL,
+		Headers:   r.Header.Clone(),
+		Body:      body,
+		Truncated: truncated,
+	}
+
+	// Extract TLS state if available
+	if r.TLS != nil {
+		resp.TLSState = r.TLS
+	}
+
+	return resp, nil
+}
+
 func (h *HTTP) fetch(ctx context.Context, cli *http.Client, u *url.URL) (*Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
