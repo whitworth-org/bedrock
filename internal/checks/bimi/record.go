@@ -7,10 +7,65 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
+
+// recordOnces holds a sync.Once per Env so the BIMI TXT lookup runs exactly
+// once per scan even when the parallel registry fires record / svg / vmc /
+// gmail checks concurrently. Pre-A1 the registry serialised these and the
+// recordCheck always populated the cache first; post-A1 the prelude wrapper
+// in bimi.go calls ensureRecord up-front for every downstream check.
+var (
+	recordOnceMu sync.Mutex
+	recordOnces  = map[*probe.Env]*sync.Once{}
+)
+
+// ensureRecord performs the BIMI TXT lookup for env.Target exactly once and
+// stores the parsed Record (or nothing, on failure) in env's cache under
+// cacheKeyBIMIRecord. It does NOT produce or alter Result entries — it is a
+// silent priming primitive. recordCheck.Run runs the same query on its own
+// because it must report the structured Pass/Fail for the TXT record itself.
+func ensureRecord(ctx context.Context, env *probe.Env) {
+	if env == nil {
+		return
+	}
+	if _, ok := env.CacheGet(cacheKeyBIMIRecord); ok {
+		return
+	}
+	recordOnceMu.Lock()
+	o, ok := recordOnces[env]
+	if !ok {
+		o = &sync.Once{}
+		recordOnces[env] = o
+	}
+	recordOnceMu.Unlock()
+	o.Do(func() {
+		// Reuse the same per-call timeout shape recordCheck uses. We
+		// silently swallow errors here — recordCheck.Run will report
+		// them through its own result.
+		cctx, cancel := env.WithTimeout(ctx)
+		defer cancel()
+		name := "default._bimi." + env.Target
+		txt, err := env.DNS.LookupTXT(cctx, name)
+		if err != nil {
+			return
+		}
+		for _, t := range txt {
+			if !hasBIMIPrefix(strings.TrimSpace(t)) {
+				continue
+			}
+			parsed, err := ParseRecord(t)
+			if err != nil {
+				return
+			}
+			env.CachePut(cacheKeyBIMIRecord, parsed)
+			return
+		}
+	})
+}
 
 // Record is a parsed BIMI assertion record. Tag syntax mirrors DMARC: a
 // semicolon-separated tag-list of "name=value" pairs (BIMI Group draft §4).
