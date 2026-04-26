@@ -8,6 +8,7 @@ import (
 
 	mdns "github.com/miekg/dns"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/registry"
 	"github.com/whitworth-org/bedrock/internal/report"
@@ -28,15 +29,15 @@ import (
 //     an RRSIG (RFC 7344 §4.1 requires it).
 //
 // We deliberately avoid trying to verify the RRSIG cryptographically here —
-// the chainCheck already exercises that machinery against DNSKEY/SOA. The CDS
+// runChain already exercises that machinery against DNSKEY/SOA. The CDS
 // check only needs to confirm the operator is telling the parent the right
 // thing.
-type cdsCheck struct{}
+// runCDS audits CDS / CDNSKEY publication at the apex.
+func runCDS(ctx context.Context, env *probe.Env) []report.Result {
+	// Make sure DS+DNSKEY are loaded into the cache; we read DS via cachedDSs
+	// below regardless of which check ran first.
+	ensureChainData(ctx, env)
 
-func (cdsCheck) ID() string       { return "dnssec.cds" }
-func (cdsCheck) Category() string { return category }
-
-func (cdsCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 	cctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
 
@@ -46,9 +47,8 @@ func (cdsCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 	cdsSet := extractCDS(cdsResp)
 	cdnskeySet := extractCDNSKEY(cdnskeyResp)
 
-	// DS at the parent — prefer the cached set populated by chainCheck so we
-	// don't re-query, but tolerate the case where chainCheck hasn't run yet
-	// (tests, partial runs).
+	// DS at the parent — populated by ensureChainData above; tolerate the
+	// case where the cache still misses (e.g. when the DS query failed).
 	dsSet := cachedDSs(env)
 	if dsSet == nil {
 		if dsResp, err := env.DNS.ExchangeWithDO(cctx, env.Target, mdns.TypeDS); err == nil {
@@ -385,4 +385,6 @@ func cdsRemediationLines(cdsSet []*mdns.CDS) string {
 	return strings.Join(lines, "\n")
 }
 
-func init() { registry.Register(cdsCheck{}) }
+func init() {
+	registry.Register(checkutil.Wrap("dnssec.cds", category, runCDS))
+}

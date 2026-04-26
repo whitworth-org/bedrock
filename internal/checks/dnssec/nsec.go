@@ -12,17 +12,13 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// nsecCheck queries a definitely-non-existent name beneath the apex and
+// runNSEC queries a definitely-non-existent name beneath the apex and
 // inspects the authority section of the negative answer. NSEC vs NSEC3
 // presence (and NSEC3 iteration count + salt length) is reported per
 // RFC 5155 + the operational guidance in RFC 9276 (informational): zero
 // iterations and an empty salt are now the recommendation.
-type nsecCheck struct{}
-
-func (nsecCheck) ID() string       { return "dnssec.nsec" }
-func (nsecCheck) Category() string { return category }
-
-func (nsecCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runNSEC(ctx context.Context, env *probe.Env) []report.Result {
+	ensureChainData(ctx, env)
 	signed, _ := env.CacheGet(cacheKeySigned)
 	if b, ok := signed.(bool); !ok || !b {
 		// Unsigned zones don't publish NSEC/NSEC3 — nothing to evaluate.
