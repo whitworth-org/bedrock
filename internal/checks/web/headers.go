@@ -9,15 +9,10 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// headersCheck inspects the security headers on the apex's HTTPS root.
+// runHeaders inspects the security headers on the apex's HTTPS root.
 // CSP is too project-specific to require — Warn if absent. nosniff and
 // frame-options (or CSP frame-ancestors) are required.
-type headersCheck struct{}
-
-func (headersCheck) ID() string       { return "web.headers" }
-func (headersCheck) Category() string { return category }
-
-func (headersCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runHeaders(ctx context.Context, env *probe.Env) []report.Result {
 	if !env.Active {
 		return []report.Result{{
 			ID: "web.headers", Category: category,

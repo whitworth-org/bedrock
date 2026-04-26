@@ -12,15 +12,10 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// certCheck inspects the leaf certificate served on the apex's HTTPS port:
+// runCert inspects the leaf certificate served on the apex's HTTPS port:
 // chain validity, hostname match (SAN), expiry, key strength, signature
 // algorithm, and lifespan vs the embedded profile's MaximumCertificateLifespan.
-type certCheck struct{}
-
-func (certCheck) ID() string       { return "web.cert" }
-func (certCheck) Category() string { return category }
-
-func (certCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runCert(ctx context.Context, env *probe.Env) []report.Result {
 	if !env.Active {
 		return []report.Result{{
 			ID: "web.cert.chain", Category: category,

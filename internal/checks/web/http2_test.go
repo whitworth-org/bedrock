@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/whitworth-org/bedrock/internal/registry"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
@@ -66,14 +67,21 @@ func TestClassifyHTTP2ALPN(t *testing.T) {
 }
 
 // TestHTTP2CheckRegistered confirms the check landed in the registry's WWW
-// category — registry.Register is called via init(), and the check's
-// Category() must match the package's `category` constant.
+// category. Registration happens through checkutil.Wrap in this file's
+// init(), so we look the entry up by id rather than instantiating the old
+// empty-struct type.
 func TestHTTP2CheckRegistered(t *testing.T) {
-	c := http2Check{}
-	if c.ID() != "web.http2" {
-		t.Errorf("ID() = %q, want %q", c.ID(), "web.http2")
+	found := false
+	for _, c := range registry.All() {
+		if c.ID() == "web.http2" {
+			found = true
+			if c.Category() != category {
+				t.Errorf("Category() = %q, want %q", c.Category(), category)
+			}
+			break
+		}
 	}
-	if c.Category() != category {
-		t.Errorf("Category() = %q, want %q", c.Category(), category)
+	if !found {
+		t.Errorf("web.http2 not registered")
 	}
 }
