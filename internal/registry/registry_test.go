@@ -2,6 +2,9 @@ package registry
 
 import (
 	"context"
+	"fmt"
+	"sort"
+	"sync/atomic"
 	"testing"
 
 	"github.com/whitworth-org/bedrock/internal/probe"
@@ -119,5 +122,84 @@ func TestRunEmptyRegistry(t *testing.T) {
 	out := Run(context.Background(), nil)
 	if len(out) != 0 {
 		t.Fatalf("empty registry should produce no results, got %+v", out)
+	}
+}
+
+// TestRunParallelManyChecks registers 100 checks across 5 categories, runs
+// them concurrently, and asserts result count plus stable (category, id)
+// ordering. Run with `go test -race -count=10 ./internal/registry/...` to
+// stress the per-check fan-out introduced for A1.
+//
+// This test mutates the package-level checks slice, so it cannot use
+// t.Parallel(); the race detector still gets full coverage of the
+// fan-out within a single Run call.
+func TestRunParallelManyChecks(t *testing.T) {
+	defer withEmptyRegistry(t)()
+
+	const cats = 5
+	const perCat = 20
+	var ran atomic.Int32
+	var registered []Check
+	for ci := 0; ci < cats; ci++ {
+		for ki := 0; ki < perCat; ki++ {
+			cat := fmt.Sprintf("cat%02d", ci)
+			id := fmt.Sprintf("%s.%03d", cat, ki)
+			registered = append(registered, stubCheck{id: id, cat: cat, run: func(context.Context, *probe.Env) []report.Result {
+				ran.Add(1)
+				return []report.Result{{ID: id, Category: cat, Status: report.Pass}}
+			}})
+		}
+	}
+	for _, c := range registered {
+		Register(c)
+	}
+
+	out := Run(context.Background(), nil)
+	if got, want := len(out), cats*perCat; got != want {
+		t.Fatalf("result count = %d, want %d", got, want)
+	}
+	if got := ran.Load(); got != int32(cats*perCat) {
+		t.Fatalf("ran count = %d, want %d", got, cats*perCat)
+	}
+	if !sort.SliceIsSorted(out, func(i, j int) bool {
+		if out[i].Category != out[j].Category {
+			return out[i].Category < out[j].Category
+		}
+		return out[i].ID < out[j].ID
+	}) {
+		t.Fatalf("results not sorted by (category, id)")
+	}
+}
+
+// TestRunPanicIsolatedToOneCheck confirms a single panicking check no longer
+// terminates its siblings inside the same category. After A1 the recover is
+// per check, not per category.
+func TestRunPanicIsolatedToOneCheck(t *testing.T) {
+	defer withEmptyRegistry(t)()
+
+	good := stubCheck{id: "ok", cat: "shared", run: func(context.Context, *probe.Env) []report.Result {
+		return []report.Result{{ID: "ok", Category: "shared", Status: report.Pass}}
+	}}
+	boom := stubCheck{id: "boom", cat: "shared", run: func(context.Context, *probe.Env) []report.Result {
+		panic("kaboom")
+	}}
+	Register(good)
+	Register(boom)
+
+	out := Run(context.Background(), nil)
+	var foundGood, foundPanic bool
+	for _, r := range out {
+		if r.ID == "ok" && r.Status == report.Pass {
+			foundGood = true
+		}
+		if r.ID == "registry.panic" && r.Category == "shared" && r.Status == report.Fail {
+			foundPanic = true
+		}
+	}
+	if !foundGood {
+		t.Fatalf("sibling check 'ok' must survive panic in same category: %+v", out)
+	}
+	if !foundPanic {
+		t.Fatalf("panic must surface as registry.panic Fail: %+v", out)
 	}
 }
