@@ -55,12 +55,7 @@ var takeoverPatterns = []struct {
 	{".azurewebsites.net", "Azure App Service", "404 Web Site not found"},
 }
 
-type danglingCheck struct{}
-
-func (danglingCheck) ID() string       { return "dns.dangling" }
-func (danglingCheck) Category() string { return category }
-
-func (danglingCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runDangling(ctx context.Context, env *probe.Env) []report.Result {
 	var results []report.Result
 
 	for _, label := range danglingHosts {

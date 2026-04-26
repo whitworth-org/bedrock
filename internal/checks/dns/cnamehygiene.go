@@ -15,14 +15,9 @@ import (
 // burn lookup budget. 8 mirrors what major recursors enforce in practice.
 const maxCNAMEChain = 8
 
-// cnameApexCheck: RFC 1912 §2.4 / RFC 2181 §10.3 — a CNAME at the apex
-// breaks SOA, NS, MX, and DNSSEC RRSIG/DNSKEY semantics.
-type cnameApexCheck struct{}
-
-func (cnameApexCheck) ID() string       { return "dns.cname.apex" }
-func (cnameApexCheck) Category() string { return category }
-
-func (cnameApexCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+// runCNAMEApex: RFC 1912 §2.4 / RFC 2181 §10.3 — a CNAME at the apex breaks
+// SOA, NS, MX, and DNSSEC RRSIG/DNSKEY semantics.
+func runCNAMEApex(ctx context.Context, env *probe.Env) []report.Result {
 	ctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
 
@@ -62,15 +57,10 @@ func (cnameApexCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 	}}
 }
 
-// cnameChainCheck walks the CNAME chain starting at www.<target>, the
-// most common host that operators chain through CDNs. We warn at >maxCNAMEChain
+// runCNAMEChain walks the CNAME chain starting at www.<target>, the most
+// common host that operators chain through CDNs. We warn at >maxCNAMEChain
 // hops or at a loop. Skipped (NotApplicable) if there is no CNAME at all.
-type cnameChainCheck struct{}
-
-func (cnameChainCheck) ID() string       { return "dns.cname.chain" }
-func (cnameChainCheck) Category() string { return category }
-
-func (cnameChainCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runCNAMEChain(ctx context.Context, env *probe.Env) []report.Result {
 	host := "www." + env.Target
 
 	visited := map[string]bool{}

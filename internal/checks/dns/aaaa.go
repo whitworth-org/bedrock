@@ -10,14 +10,9 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// aaaaApexCheck: RFC 3596 — AAAA on the apex. Many production zones still
-// don't publish IPv6, so this is a Warn (not Fail) when missing.
-type aaaaApexCheck struct{}
-
-func (aaaaApexCheck) ID() string       { return "dns.aaaa.apex" }
-func (aaaaApexCheck) Category() string { return category }
-
-func (aaaaApexCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+// runAAAAApex: RFC 3596 — AAAA on the apex. Many production zones still don't
+// publish IPv6, so this is a Warn (not Fail) when missing.
+func runAAAAApex(ctx context.Context, env *probe.Env) []report.Result {
 	ctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
 
