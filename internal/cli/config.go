@@ -10,8 +10,7 @@ import (
 // Config mirrors the flag set; supplied either via --config <path> or the
 // flag-only call site. Flag values override config values when both are set.
 type Config struct {
-	JSON           bool     `json:"json,omitempty"`
-	Markdown       bool     `json:"md,omitempty"`
+	NoColor        bool     `json:"no_color,omitempty"`
 	NoActive       bool     `json:"no_active,omitempty"`
 	Resolver       string   `json:"resolver,omitempty"`
 	Resolvers      []string `json:"resolvers,omitempty"`

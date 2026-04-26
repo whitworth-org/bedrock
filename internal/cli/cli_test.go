@@ -23,7 +23,7 @@ func TestLoadConfigEmptyPath(t *testing.T) {
 func TestLoadConfigValid(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "cfg.json")
-	body := `{"json":true,"timeout":"10s","only":["dns","email"]}`
+	body := `{"no_color":true,"timeout":"10s","only":["dns","email"]}`
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestLoadConfigValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if !c.JSON || c.Timeout != "10s" || !reflect.DeepEqual(c.Only, []string{"dns", "email"}) {
+	if !c.NoColor || c.Timeout != "10s" || !reflect.DeepEqual(c.Only, []string{"dns", "email"}) {
 		t.Fatalf("unexpected config: %+v", c)
 	}
 }
@@ -39,7 +39,7 @@ func TestLoadConfigValid(t *testing.T) {
 func TestLoadConfigMalformed(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "cfg.json")
-	if err := os.WriteFile(p, []byte(`{"json":`), 0o600); err != nil {
+	if err := os.WriteFile(p, []byte(`{"no_color":`), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if _, err := LoadConfig(p); err == nil {

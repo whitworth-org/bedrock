@@ -36,13 +36,15 @@ const usage = `bedrock: audit DNS, Email, and WWW security posture for a domain.
 
 usage: bedrock [flags] <domain>
 
+Output is always JSON. When stdout is a terminal (and NO_COLOR is unset
+and --no-color is not supplied), the JSON is ANSI syntax-highlighted.
+
 flags:
 `
 
 func main() {
 	var (
-		jsonOut        = flag.Bool("json", false, "emit JSON report to stdout")
-		mdOut          = flag.Bool("md", false, "emit Markdown report to stdout")
+		noColor        = flag.Bool("no-color", false, "force plain JSON output even on a TTY (also honours NO_COLOR env var)")
 		noActive       = flag.Bool("no-active", false, "skip active probes (SMTP STARTTLS, HTTPS GETs, VMC fetch)")
 		resolver       = flag.String("resolver", "", "DNS resolver: host:port, preset (cloudflare|google|quad9|opendns), or <preset>-dot/-doh, tls://host, https://url")
 		resolversCSV   = flag.String("resolvers", "", "CSV of multiple resolvers for cross-resolver propagation check (e.g. cloudflare,google,quad9)")
@@ -76,7 +78,7 @@ func main() {
 		os.Exit(2)
 	}
 	mergeConfig(cfg, &mergeArgs{
-		jsonOut: jsonOut, mdOut: mdOut, noActive: noActive,
+		noColor: noColor, noActive: noActive,
 		resolver: resolver, resolversCSV: resolversCSV, timeout: timeout,
 		onlyCSV: onlyCSV, excludeCSV: excludeCSV, severity: severity, idsCSV: idsCSV,
 		subdomains: subdomains, enableRBL: enableRBL, enableCT: enableCT,
@@ -91,11 +93,6 @@ func main() {
 	target, err := normalizeTarget(flag.Arg(0))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "invalid target:", err)
-		os.Exit(2)
-	}
-
-	if *jsonOut && *mdOut {
-		fmt.Fprintln(os.Stderr, "choose only one of --json or --md")
 		os.Exit(2)
 	}
 
@@ -145,30 +142,20 @@ func main() {
 			os.Exit(2)
 		}
 		regressions = baseline.Diff(base, rep)
+		if len(regressions) > 0 {
+			refs := make([]report.ResultRef, len(regressions))
+			for i, r := range regressions {
+				refs[i] = report.ResultRef{ID: r.ID, Title: r.Title}
+			}
+			rep.Regressions = refs
+		}
 	}
 
-	format := report.FormatText
-	if *jsonOut {
-		format = report.FormatJSON
-	} else if *mdOut {
-		format = report.FormatMarkdown
-	}
-	color := format == report.FormatText && isTTY(os.Stdout)
-	if err := report.Render(os.Stdout, rep, format, color); err != nil {
+	// Color decision: TTY stdout, --no-color not set, NO_COLOR env var unset.
+	color := !*noColor && isTTY(os.Stdout) && os.Getenv("NO_COLOR") == ""
+	if err := report.RenderJSON(os.Stdout, rep, color); err != nil {
 		fmt.Fprintln(os.Stderr, "render error:", err)
 		os.Exit(2)
-	}
-	if format == report.FormatText && len(regressions) > 0 {
-		fmt.Fprintf(os.Stdout, "\n== Regressions vs baseline (%s) ==\n", *baselinePath)
-		for _, r := range regressions {
-			// Sanitise ID + Title: regression entries are echoed outside the
-			// normal renderer, and the baseline file is attacker-influenceable
-			// if it was produced by a previous scan of an untrusted domain.
-			fmt.Fprintf(os.Stdout, "  [REGRESSION] %s — %s\n",
-				report.SanitizeForTerminal(r.ID),
-				report.SanitizeForTerminal(r.Title))
-		}
-		fmt.Fprintln(os.Stdout)
 	}
 
 	if *regressionOnly {
@@ -183,7 +170,7 @@ func main() {
 }
 
 type mergeArgs struct {
-	jsonOut, mdOut, noActive              *bool
+	noColor, noActive                     *bool
 	resolver, resolversCSV                *string
 	timeout                               *time.Duration
 	onlyCSV, excludeCSV, severity, idsCSV *string
@@ -201,11 +188,8 @@ func mergeConfig(cfg *cli.Config, m *mergeArgs) {
 	set := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
-	if !set["json"] && cfg.JSON {
-		*m.jsonOut = true
-	}
-	if !set["md"] && cfg.Markdown {
-		*m.mdOut = true
+	if !set["no-color"] && cfg.NoColor {
+		*m.noColor = true
 	}
 	if !set["no-active"] && cfg.NoActive {
 		*m.noActive = true
