@@ -121,6 +121,11 @@ func (dkimCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 	results := make([]report.Result, 0, len(selectors))
 
 	for _, sel := range selectors {
+		// Mid-flight ctx gate so a cancelled scan stops walking the
+		// selector list instead of issuing one TXT lookup per selector.
+		if err := ctx.Err(); err != nil {
+			break
+		}
 		results = append(results, probeDKIMSelector(ctx, env, sel, refs))
 	}
 

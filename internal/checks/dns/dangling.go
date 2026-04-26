@@ -64,6 +64,12 @@ func (danglingCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 	var results []report.Result
 
 	for _, label := range danglingHosts {
+		// Mid-flight ctx gate: a cancelled scan should stop fanning out
+		// per-label DNS lookups instead of pushing every remaining one
+		// through to its deadline.
+		if err := ctx.Err(); err != nil {
+			break
+		}
 		host := env.Target
 		if label != "" {
 			host = label + "." + env.Target
@@ -97,6 +103,11 @@ func danglingForHost(ctx context.Context, env *probe.Env, host string) *report.R
 		return nil
 	}
 	target = strings.TrimSuffix(strings.ToLower(target), ".")
+
+	// Mid-flight ctx gate between CNAME and A lookups.
+	if err := ctx.Err(); err != nil {
+		return nil
+	}
 
 	// Resolve the CNAME target. NXDOMAIN at the target is the cleanest
 	// dangling signal there is.
@@ -142,6 +153,11 @@ func danglingForHost(ctx context.Context, env *probe.Env, host string) *report.R
 				RFCRefs:  []string{"RFC 1912 §2.4"},
 			}
 		}
+		// Mid-flight ctx gate before the HTTPS probe.
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+
 		// Active marker check — HEAD won't include the body; do a GET.
 		// http.Get follows redirects and caps body at 1 MiB.
 		c3, cancel3 := env.WithTimeout(ctx)

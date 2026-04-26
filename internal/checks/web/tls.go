@@ -59,6 +59,11 @@ func (tlsCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 
 	var out []report.Result
 	for i, host := range hosts {
+		// Mid-flight ctx gate so a cancelled scan stops dialing more
+		// hosts instead of pushing each one through to handshake timeout.
+		if err := ctx.Err(); err != nil {
+			break
+		}
 		state, err := dialTLSPriority(ctx, host, env.Timeout)
 		if err != nil {
 			out = append(out, report.Result{

@@ -77,6 +77,18 @@ func (cnameChainCheck) Run(ctx context.Context, env *probe.Env) []report.Result 
 	chain := []string{host}
 	cur := host
 	for i := 0; i < maxCNAMEChain+2; i++ {
+		// Mid-flight ctx gate so a cancelled scan stops chasing the
+		// chain instead of issuing one more doomed lookup per hop.
+		if err := ctx.Err(); err != nil {
+			return []report.Result{{
+				ID:       "dns.cname.chain",
+				Category: category,
+				Title:    "CNAME chain length (www host)",
+				Status:   report.Warn,
+				Evidence: "context cancelled at " + cur + ": " + err.Error(),
+				RFCRefs:  []string{"RFC 1912 §2.4"},
+			}}
+		}
 		c, cancel := env.WithTimeout(ctx)
 		next, err := env.DNS.LookupCNAME(c, cur)
 		cancel()
