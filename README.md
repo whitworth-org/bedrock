@@ -214,11 +214,11 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 
 ### Subdomain discovery (opt-in `--subdomains`)
 
-Passive sources: **hackertarget**, **anubis**, **threatcrowd**, **wayback**. Each discovered host is probed for TLS reachability and certificate hygiene, and — when active probing is on — also fingerprinted with JA3S/JA4S, emitting `subdomain.tls.fingerprint.ja3s.<host>` and `subdomain.tls.fingerprint.ja4s.<host>` `INFO` results. Hostnames are allowlisted by regex (`^[a-zA-Z0-9._-]+$`) at source and at enumerate time; malformed lines are rejected pre-parse.
+Passive sources: **hackertarget**, **anubis**, **threatcrowd**, **wayback**. Discovered hosts are probed for TLS reachability and certificate hygiene; with active probing on they are also fingerprinted (`subdomain.tls.fingerprint.{ja3s,ja4s}.<host>`, INFO). Hostnames must match `^[a-zA-Z0-9._-]+$` at both the source-parse and enumerate stages; malformed lines are rejected before any DNS lookup.
 
 ## Output
 
-Output is JSON, always. When stdout is a terminal the JSON is colourised with ANSI; redirect or set `NO_COLOR=1` (or pass `--no-color`) for plain output. ANSI / C0 / C1 / DEL bytes in attacker-controlled evidence are replaced with `U+FFFD` so untrusted DNS TXT, certificate subjects, or HTTP header values cannot inject terminal escapes.
+Output is JSON. ANSI-coloured on a TTY; plain when redirected, when `NO_COLOR=1` is set, or with `--no-color`. C0 / C1 / DEL bytes in attacker-controlled fields are replaced with `U+FFFD` so untrusted DNS TXT, certificate subjects, and HTTP headers cannot inject terminal escapes.
 
 Schema:
 
@@ -325,7 +325,8 @@ Apache-2.0 is a clean drop-in if you need an explicit patent grant. GPL/AGPL wer
 ## Limitations
 
 - Output is English only.
-- JA3S and JA4S **server** fingerprints are computed natively by capturing the cleartext ServerHello off the wire — stdlib `crypto/tls` does not expose handshake bytes directly, so a `recordingConn` wraps the underlying `net.Conn` during a stdlib handshake. Apex and `www` are fingerprinted as `web.tls.fingerprint.{ja3s,ja4s}.<host>`; with `--subdomains` on, every discovered host is also fingerprinted as `subdomain.tls.fingerprint.{ja3s,ja4s}.<host>`. Client-side JA3/JA4 of bedrock's own outbound TLS is not emitted (bedrock is the client; its own fingerprint is uninteresting to operators auditing target infrastructure). Negotiated EC curve is detected via probe-and-detect (suppressed under `--no-active`).
+- Client-side JA3/JA4 (the fingerprint bedrock's own ClientHello presents to a target IDS) is not emitted; bedrock fingerprints what targets serve, not what it sends. Servers that refuse bedrock's stdlib handshake produce a check `FAIL`/`WARN` with no fingerprint.
+- Negotiated EC curve is detected via probe-and-detect (suppressed under `--no-active`).
 - The DKIM check probes a fixed selector list (44 well-known + ESP-specific derived from SPF includes). Custom per-tenant selectors (e.g. HubSpot's `hs1-<id>-<domain>` pattern) cannot be discovered without the customer ID; NSEC walking under `_domainkey` is deferred.
 - VMC chain validation uses `ExtKeyUsageAny` because the BIMI EKU OIDs are not in the Go standard library root-usage table. The BIMI-specific OID gate (`classifyMarkCert`) runs *before* chain verification.
 - `--enable-rbl` and `--enable-ct` issue live queries to third-party services; do not enable them for casual or repeated scans of domains you do not operate.
