@@ -214,7 +214,7 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 
 ### Subdomain discovery (opt-in `--subdomains`)
 
-Passive sources: **hackertarget**, **anubis**, **threatcrowd**, **wayback**. Each discovered host is probed for TLS reachability and certificate hygiene. Hostnames are allowlisted by regex (`^[a-zA-Z0-9._-]+$`) at source and at enumerate time; malformed lines are rejected pre-parse.
+Passive sources: **hackertarget**, **anubis**, **threatcrowd**, **wayback**. Each discovered host is probed for TLS reachability and certificate hygiene, and — when active probing is on — also fingerprinted with JA3S/JA4S, emitting `subdomain.tls.fingerprint.ja3s.<host>` and `subdomain.tls.fingerprint.ja4s.<host>` `INFO` results. Hostnames are allowlisted by regex (`^[a-zA-Z0-9._-]+$`) at source and at enumerate time; malformed lines are rejected pre-parse.
 
 ## Output
 
@@ -325,7 +325,7 @@ Apache-2.0 is a clean drop-in if you need an explicit patent grant. GPL/AGPL wer
 ## Limitations
 
 - Output is English only.
-- JA3S and JA4S **server** fingerprints (`web.tls.fingerprint.ja3s.<host>`, `web.tls.fingerprint.ja4s.<host>`) are computed natively by capturing the cleartext ServerHello off the wire — stdlib `crypto/tls` does not expose handshake bytes directly, so a `recordingConn` wraps the underlying `net.Conn` during a stdlib handshake. Client-side JA3/JA4 of bedrock's own outbound TLS is not emitted (and not interesting to most users — bedrock is the client). Negotiated EC curve is detected via probe-and-detect (suppressed under `--no-active`).
+- JA3S and JA4S **server** fingerprints are computed natively by capturing the cleartext ServerHello off the wire — stdlib `crypto/tls` does not expose handshake bytes directly, so a `recordingConn` wraps the underlying `net.Conn` during a stdlib handshake. Apex and `www` are fingerprinted as `web.tls.fingerprint.{ja3s,ja4s}.<host>`; with `--subdomains` on, every discovered host is also fingerprinted as `subdomain.tls.fingerprint.{ja3s,ja4s}.<host>`. Client-side JA3/JA4 of bedrock's own outbound TLS is not emitted (bedrock is the client; its own fingerprint is uninteresting to operators auditing target infrastructure). Negotiated EC curve is detected via probe-and-detect (suppressed under `--no-active`).
 - The DKIM check probes a fixed selector list (44 well-known + ESP-specific derived from SPF includes). Custom per-tenant selectors (e.g. HubSpot's `hs1-<id>-<domain>` pattern) cannot be discovered without the customer ID; NSEC walking under `_domainkey` is deferred.
 - VMC chain validation uses `ExtKeyUsageAny` because the BIMI EKU OIDs are not in the Go standard library root-usage table. The BIMI-specific OID gate (`classifyMarkCert`) runs *before* chain verification.
 - `--enable-rbl` and `--enable-ct` issue live queries to third-party services; do not enable them for casual or repeated scans of domains you do not operate.

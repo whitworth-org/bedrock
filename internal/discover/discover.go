@@ -57,6 +57,7 @@ func (discoverCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 
 	if env.Active {
 		out = append(out, probeHosts(ctx, env, hosts)...)
+		out = append(out, fingerprintHosts(ctx, env, hosts)...)
 	}
 
 	env.CachePut(probe.CacheKeySubdomains, hosts)
