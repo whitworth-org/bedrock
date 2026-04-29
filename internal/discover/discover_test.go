@@ -3,11 +3,12 @@ package discover
 import (
 	"context"
 	"errors"
-	"net/http"
 	"reflect"
 	"sort"
 	"testing"
 	"time"
+
+	"github.com/whitworth-org/bedrock/internal/probe"
 )
 
 func TestParseHackertarget(t *testing.T) {
@@ -150,7 +151,7 @@ type fakeSource struct {
 }
 
 func (f fakeSource) Name() string { return f.name }
-func (f fakeSource) Discover(_ context.Context, _ string, _ *http.Client) ([]string, error) {
+func (f fakeSource) Discover(_ context.Context, _ string, _ *probe.Env) ([]string, error) {
 	return f.hosts, f.err
 }
 
@@ -358,5 +359,6 @@ func TestEnumerateProductionPathSmoke(t *testing.T) {
 	t.Skip("skipped by default to avoid live HTTP; remove t.Skip to run manually")
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
 	defer cancel()
-	_, _ = enumerate(ctx, "example.com", 1*time.Millisecond)
+	env := &probe.Env{Target: "example.com", Timeout: 1 * time.Millisecond}
+	_, _ = enumerate(ctx, env, "example.com", 1*time.Millisecond)
 }

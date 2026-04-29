@@ -50,7 +50,7 @@ func NewHTTP(timeout time.Duration) *HTTP {
 			// to score the actual server posture against the embedded TLS profiles.
 			MinVersion: tls.VersionTLS10,
 		},
-		// Force a fresh handshake per request — keeps per-host state easy to reason about.
+		// Keep-alives disabled by default for safety; enabled per-target in Get/Do
 		DisableKeepAlives:     true,
 		DialContext:           safeDialContext(timeout, false),
 		TLSHandshakeTimeout:   timeout,
@@ -93,6 +93,11 @@ func (h *HTTP) Get(ctx context.Context, target string) (*Response, error) {
 
 	chain := []*url.URL{u}
 	cli := *h.client
+	// Enable keep-alives for this target domain to optimize back-to-back requests
+	baseTr := h.client.Transport.(*http.Transport)
+	targetTr := baseTr.Clone()
+	targetTr.DisableKeepAlives = false
+	cli.Transport = targetTr
 	cli.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) > 8 {
 			return errors.New("too many redirects (>8)")
@@ -190,6 +195,82 @@ func (h *HTTP) GetStrict(ctx context.Context, target string) (*Response, error) 
 	if resp != nil {
 		resp.RedirectCh = chain
 	}
+	return resp, nil
+}
+
+// Do performs a custom HTTP request using the safe transport. The request
+// must have been created with a valid context. The URL must be absolute.
+// For mixed-scheme endpoints (HTTP/HTTPS), use Do. For HTTPS-only endpoints,
+// use DoStrict to enforce TLS 1.2+.
+func (h *HTTP) Do(req *http.Request) (*Response, error) {
+	// Enable keep-alives for this target domain to optimize back-to-back requests
+	baseTr, ok := h.client.Transport.(*http.Transport)
+	if !ok {
+		return nil, errors.New("http transport is not *http.Transport")
+	}
+	targetTr := baseTr.Clone()
+	targetTr.DisableKeepAlives = false
+	targetCli := &http.Client{
+		Transport:     targetTr,
+		Timeout:       h.client.Timeout,
+		CheckRedirect: h.client.CheckRedirect,
+	}
+	return h.doWithClient(req, targetCli)
+}
+
+// DoStrict performs a custom HTTP request using the strict safe transport
+// that enforces HTTPS with TLS 1.2+. The request must have been created
+// with a valid context and the URL must be HTTPS.
+func (h *HTTP) DoStrict(req *http.Request) (*Response, error) {
+	baseTr, ok := h.client.Transport.(*http.Transport)
+	if !ok {
+		return nil, errors.New("http transport is not *http.Transport")
+	}
+	strictTr := baseTr.Clone()
+	strictTr.TLSClientConfig = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+	strictTr.DialContext = safeDialContext(h.timeout, false)
+
+	strictCli := &http.Client{
+		Transport: strictTr,
+		Timeout:   h.timeout * 3,
+	}
+	return h.doWithClient(req, strictCli)
+}
+
+func (h *HTTP) doWithClient(req *http.Request, cli *http.Client) (*Response, error) {
+	//nolint:gosec // G704: This is the SSRF-safe HTTP client implementation itself
+	r, err := cli.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = r.Body.Close() }()
+
+	// Read up to maxBodyBytes+1 so we can detect truncation
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
+	truncated := false
+	if len(body) > maxBodyBytes {
+		body = body[:maxBodyBytes]
+		truncated = true
+	}
+
+	resp := &Response{
+		Status:    r.StatusCode,
+		URL:       r.Request.URL,
+		Headers:   r.Header.Clone(),
+		Body:      body,
+		Truncated: truncated,
+	}
+
+	// Extract TLS state if available
+	if r.TLS != nil {
+		resp.TLSState = r.TLS
+	}
+
 	return resp, nil
 }
 

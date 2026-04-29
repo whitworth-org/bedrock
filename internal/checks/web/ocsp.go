@@ -7,7 +7,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
@@ -125,11 +124,11 @@ func (ocspCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 	// (possibly already-elapsed) parent timeout with two slow HTTP calls in a row.
 	rctx, rcancel := context.WithTimeout(ctx, env.Timeout*2)
 	defer rcancel()
-	responderRes := checkResponder(rctx, leaf, issuer, stapledResp)
+	responderRes := checkResponder(rctx, env, leaf, issuer, stapledResp)
 
 	cctx, ccancel := context.WithTimeout(ctx, env.Timeout*2)
 	defer ccancel()
-	crlRes := checkCRL(cctx, leaf)
+	crlRes := checkCRL(cctx, env, leaf)
 
 	return []report.Result{stapleRes, responderRes, crlRes}
 }
@@ -221,7 +220,7 @@ func checkStaple(state *tls.ConnectionState, issuer *x509.Certificate) (report.R
 // checkResponder POSTs an OCSP request to the leaf's AIA OCSPServer and
 // compares the result to the staple. Soft-fail (INFO) on transport errors —
 // the responder being temporarily down is not the domain operator's problem.
-func checkResponder(ctx context.Context, leaf, issuer *x509.Certificate, stapled *ocsp.Response) report.Result {
+func checkResponder(ctx context.Context, env *probe.Env, leaf, issuer *x509.Certificate, stapled *ocsp.Response) report.Result {
 	r := report.Result{
 		ID: "web.ocsp.responder", Category: category,
 		Title:   "Independent OCSP responder agrees with staple",
@@ -255,22 +254,18 @@ func checkResponder(ctx context.Context, leaf, issuer *x509.Certificate, stapled
 	req.Header.Set("Content-Type", "application/ocsp-request")
 	req.Header.Set("Accept", "application/ocsp-response")
 
-	// Dedicated client with a hard timeout — we don't want a stuck responder
-	// to wedge the whole web category run.
-	client := &http.Client{Timeout: timeoutFromContext(ctx)}
-	resp, err := client.Do(req)
+	resp, err := env.HTTP.Do(req)
 	if err != nil {
 		r.Status = report.Info
 		r.Evidence = fmt.Sprintf("could not contact OCSP responder %s: %v", url, err)
 		return r
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
+	if resp.Status != http.StatusOK {
 		r.Status = report.Info
-		r.Evidence = fmt.Sprintf("OCSP responder %s returned HTTP %d", url, resp.StatusCode)
+		r.Evidence = fmt.Sprintf("OCSP responder %s returned HTTP %d", url, resp.Status)
 		return r
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body := resp.Body
 	if err != nil {
 		r.Status = report.Info
 		r.Evidence = "could not read OCSP responder body: " + err.Error()
@@ -312,7 +307,7 @@ func checkResponder(ctx context.Context, leaf, issuer *x509.Certificate, stapled
 // checkCRL fetches the first CRLDistributionPoints URL and walks the
 // revocation list looking for the leaf's serial. CRLs may be DER or PEM
 // over HTTP — try DER first (the common case), fall back to PEM.
-func checkCRL(ctx context.Context, leaf *x509.Certificate) report.Result {
+func checkCRL(ctx context.Context, env *probe.Env, leaf *x509.Certificate) report.Result {
 	r := report.Result{
 		ID: "web.crl.status", Category: category,
 		Title:   "Leaf serial not on CRL",
@@ -330,26 +325,18 @@ func checkCRL(ctx context.Context, leaf *x509.Certificate) report.Result {
 		r.Evidence = "could not build CRL request: " + err.Error()
 		return r
 	}
-	client := &http.Client{Timeout: timeoutFromContext(ctx)}
-	resp, err := client.Do(req)
+	resp, err := env.HTTP.Do(req)
 	if err != nil {
 		r.Status = report.Info
 		r.Evidence = fmt.Sprintf("could not fetch CRL %s: %v", url, err)
 		return r
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
+	if resp.Status != http.StatusOK {
 		r.Status = report.Info
-		r.Evidence = fmt.Sprintf("CRL %s returned HTTP %d", url, resp.StatusCode)
+		r.Evidence = fmt.Sprintf("CRL %s returned HTTP %d", url, resp.Status)
 		return r
 	}
-	// CRLs are typically <10 MiB even for large CAs; cap at 32 MiB to be safe.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
-	if err != nil {
-		r.Status = report.Info
-		r.Evidence = "could not read CRL body: " + err.Error()
-		return r
-	}
+	body := resp.Body
 	crl, err := parseCRL(body)
 	if err != nil {
 		r.Status = report.Info

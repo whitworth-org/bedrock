@@ -10,7 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -19,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
@@ -57,25 +57,21 @@ const userAgent = "github.com/whitworth-org/bedrock/0.1 (+https://example.invali
 // trim, and scope-filter).
 type source interface {
 	Name() string
-	Discover(ctx context.Context, domain string, client *http.Client) ([]string, error)
+	Discover(ctx context.Context, domain string, env *probe.Env) ([]string, error)
 }
 
 // enumerate runs every source concurrently against the target domain,
 // dedups results (lowercased, trailing-dot stripped), and filters to the
 // in-scope set (apex or *.apex). Per-source errors become Info results
 // rather than aborting the whole enumeration — discovery is best-effort.
-func enumerate(parentCtx context.Context, domain string, timeout time.Duration) ([]string, []report.Result) {
+func enumerate(parentCtx context.Context, env *probe.Env, domain string, timeout time.Duration) ([]string, []report.Result) {
 	// Derive a cancellable context so any early return from this function
 	// (or cancellation by the caller) propagates to every source goroutine
 	// and tears down their in-flight HTTP requests promptly. B4-F6.
 	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
-	// Per-source HTTP timeout. The plan calls for 15s; we honor that as a
-	// hard floor independent of env.Timeout (env.Timeout is tuned for DNS,
-	// which is much faster than these archive APIs).
-	const perSourceTimeout = 15 * time.Second
-	client := &http.Client{Timeout: perSourceTimeout}
+	// Third-party API sources - all use HTTPS so we can use env.HTTP.GetStrict()
 
 	sources := []source{
 		hackertargetSource{},
@@ -99,7 +95,7 @@ func enumerate(parentCtx context.Context, domain string, timeout time.Duration) 
 			defer wg.Done()
 			// Use the derived ctx, not parentCtx, so cancel() above also
 			// cancels any in-flight source goroutine on early return.
-			hosts, err := s.Discover(ctx, domain, client)
+			hosts, err := s.Discover(ctx, domain, env)
 			if err != nil {
 				mu.Lock()
 				notes = append(notes, report.Result{
@@ -148,27 +144,21 @@ func enumerate(parentCtx context.Context, domain string, timeout time.Duration) 
 // httpGet issues a User-Agent-tagged GET and returns the body (capped at
 // 4 MiB to avoid blowing memory on a misbehaving source). Status codes
 // outside 2xx are turned into errors so the caller logs an Info note.
-func httpGet(ctx context.Context, client *http.Client, target string) ([]byte, error) {
+func httpGet(ctx context.Context, env *probe.Env, target string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "*/*")
-	resp, err := client.Do(req)
+	resp, err := env.HTTP.DoStrict(req)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
-	const maxBody = 4 << 20 // 4 MiB
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
-	if err != nil {
-		return nil, err
+	if resp.Status < 200 || resp.Status >= 300 {
+		return nil, fmt.Errorf("status %d", resp.Status)
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("status %d", resp.StatusCode)
-	}
-	return body, nil
+	return resp.Body, nil
 }
 
 // hackertargetSource queries https://api.hackertarget.com/hostsearch/.
@@ -177,8 +167,8 @@ type hackertargetSource struct{}
 
 func (hackertargetSource) Name() string { return "hackertarget" }
 
-func (hackertargetSource) Discover(ctx context.Context, domain string, client *http.Client) ([]string, error) {
-	body, err := httpGet(ctx, client, fmt.Sprintf("https://api.hackertarget.com/hostsearch/?q=%s", url.QueryEscape(domain)))
+func (hackertargetSource) Discover(ctx context.Context, domain string, env *probe.Env) ([]string, error) {
+	body, err := httpGet(ctx, env, fmt.Sprintf("https://api.hackertarget.com/hostsearch/?q=%s", url.QueryEscape(domain)))
 	if err != nil {
 		return nil, fmt.Errorf("hackertarget: %w", err)
 	}
@@ -214,8 +204,8 @@ type anubisSource struct{}
 
 func (anubisSource) Name() string { return "anubis" }
 
-func (anubisSource) Discover(ctx context.Context, domain string, client *http.Client) ([]string, error) {
-	body, err := httpGet(ctx, client, fmt.Sprintf("https://jonlu.ca/anubis/subdomains/%s", url.PathEscape(domain)))
+func (anubisSource) Discover(ctx context.Context, domain string, env *probe.Env) ([]string, error) {
+	body, err := httpGet(ctx, env, fmt.Sprintf("https://jonlu.ca/anubis/subdomains/%s", url.PathEscape(domain)))
 	if err != nil {
 		return nil, fmt.Errorf("anubis: %w", err)
 	}
@@ -241,8 +231,8 @@ type threatcrowdSource struct{}
 
 func (threatcrowdSource) Name() string { return "threatcrowd" }
 
-func (threatcrowdSource) Discover(ctx context.Context, domain string, client *http.Client) ([]string, error) {
-	body, err := httpGet(ctx, client, fmt.Sprintf("https://ci-www.threatcrowd.org/searchApi/v2/domain/report/?domain=%s", url.QueryEscape(domain)))
+func (threatcrowdSource) Discover(ctx context.Context, domain string, env *probe.Env) ([]string, error) {
+	body, err := httpGet(ctx, env, fmt.Sprintf("https://ci-www.threatcrowd.org/searchApi/v2/domain/report/?domain=%s", url.QueryEscape(domain)))
 	if err != nil {
 		return nil, fmt.Errorf("threatcrowd: %w", err)
 	}
@@ -271,9 +261,9 @@ type waybackSource struct{}
 func (waybackSource) Name() string { return "wayback" }
 
 // HTTPS-only: see threatcrowdSource for rationale. B1-F26.
-func (waybackSource) Discover(ctx context.Context, domain string, client *http.Client) ([]string, error) {
+func (waybackSource) Discover(ctx context.Context, domain string, env *probe.Env) ([]string, error) {
 	target := fmt.Sprintf("https://web.archive.org/cdx/search/cdx?url=*.%s/*&output=txt&fl=original&collapse=urlkey", url.QueryEscape(domain))
-	body, err := httpGet(ctx, client, target)
+	body, err := httpGet(ctx, env, target)
 	if err != nil {
 		return nil, fmt.Errorf("wayback: %w", err)
 	}

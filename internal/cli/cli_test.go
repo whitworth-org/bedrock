@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,6 +45,58 @@ func TestLoadConfigMalformed(t *testing.T) {
 	}
 	if _, err := LoadConfig(p); err == nil {
 		t.Fatal("expected parse error")
+	}
+}
+
+func TestLoadConfigTooLarge(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "cfg.json")
+	// Create a file larger than 1 MiB (1<<20 bytes)
+	largeContent := `{"no_color":true,"large_field":"` + strings.Repeat("x", 1<<20) + `"}`
+	if err := os.WriteFile(p, []byte(largeContent), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := LoadConfig(p)
+	if err == nil {
+		t.Fatal("expected error for file too large")
+	}
+	// The error should indicate it's a parse error due to truncation
+	if !strings.Contains(err.Error(), "parse config") {
+		t.Fatalf("unexpected error type: %v", err)
+	}
+}
+
+func TestLoadConfigUnknownFields(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "cfg.json")
+	// Include a field that doesn't exist in the Config struct
+	body := `{"no_color":true,"unknown_field":"value"}`
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := LoadConfig(p)
+	if err == nil {
+		t.Fatal("expected error for unknown field")
+	}
+	if !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("error should mention unknown field, got: %v", err)
+	}
+}
+
+func TestLoadConfigMultipleValues(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "cfg.json")
+	// Two separate JSON objects in one file
+	body := `{"no_color":true}{"timeout":"10s"}`
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := LoadConfig(p)
+	if err == nil {
+		t.Fatal("expected error for multiple JSON values")
+	}
+	if !strings.Contains(err.Error(), "multiple JSON values") {
+		t.Fatalf("error should mention multiple JSON values, got: %v", err)
 	}
 }
 
