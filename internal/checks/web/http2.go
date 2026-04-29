@@ -5,22 +5,18 @@ import (
 	"crypto/tls"
 	"net"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/registry"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// http2Check verifies that the target's HTTPS listener advertises HTTP/2 via
+// runHTTP2 verifies that the target's HTTPS listener advertises HTTP/2 via
 // ALPN (RFC 7301). HTTP/2 (RFC 9113, originally RFC 7540) requires ALPN for
 // negotiation over TLS, so this is the only authoritative way to check support
 // without a real h2 client. We do not issue a request — the TLS handshake's
 // negotiated protocol is sufficient evidence.
-type http2Check struct{}
-
-func (http2Check) ID() string       { return "web.http2" }
-func (http2Check) Category() string { return category }
-
-func (http2Check) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runHTTP2(ctx context.Context, env *probe.Env) []report.Result {
 	if !env.Active {
 		return []report.Result{{
 			ID:       "web.http2",
@@ -111,4 +107,4 @@ func classifyHTTP2ALPN(negotiated string) (status report.Status, evidence string
 	}
 }
 
-func init() { registry.Register(http2Check{}) }
+func init() { registry.Register(checkutil.Wrap("web.http2", category, runHTTP2)) }

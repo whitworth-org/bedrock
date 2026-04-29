@@ -55,7 +55,7 @@ func TestSanitizeZoneID(t *testing.T) {
 func TestRBLDisabled(t *testing.T) {
 	env := probe.NewEnv("example.com", time.Second, false, "")
 	// EnableRBL is false by default.
-	got := rblCheck{}.Run(context.Background(), env)
+	got := runRBL(context.Background(), env)
 	if len(got) != 1 {
 		t.Fatalf("disabled run: got %d results, want 1", len(got))
 	}

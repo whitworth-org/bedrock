@@ -12,19 +12,14 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// axfrCheck attempts an AXFR against each authoritative NS over TCP/53.
+// runAXFR attempts an AXFR against each authoritative NS over TCP/53.
 // RFC 5936 §6 makes clear that AXFR is privileged data; servers MUST refuse
 // it from unauthenticated peers. A successful transfer (or REFUSED-but-data)
 // is a Fail; REFUSED / NOTAUTH / NOTIMP / connection refused / timeout is a Pass.
 //
 // We don't add a new module for this — miekg/dns is already in go.mod and
 // the probe package didn't expose a transfer helper.
-type axfrCheck struct{}
-
-func (axfrCheck) ID() string       { return "dns.axfr" }
-func (axfrCheck) Category() string { return category }
-
-func (axfrCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runAXFR(ctx context.Context, env *probe.Env) []report.Result {
 	if !env.Active {
 		return []report.Result{{
 			ID:       "dns.axfr",

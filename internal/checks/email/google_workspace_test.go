@@ -37,7 +37,7 @@ func TestGoogleWorkspaceMX_LegacyFullSet(t *testing.T) {
 		{Preference: 10, Host: "ALT3.ASPMX.L.GOOGLE.COM"},
 		{Preference: 10, Host: "ALT4.ASPMX.L.GOOGLE.COM"},
 	})
-	got := googleWorkspaceMXCheck{}.Run(context.Background(), env)
+	got := runGoogleWorkspaceMX(context.Background(), env)
 	r, ok := findResult(got, "email.google_workspace_mx")
 	if !ok {
 		t.Fatalf("expected result, got none: %+v", got)
@@ -61,7 +61,7 @@ func TestGoogleWorkspaceMX_LegacyPrimaryOnly(t *testing.T) {
 	// A domain using only ASPMX.L.GOOGLE.COM without ALTs is still on the
 	// legacy layout and should be nudged.
 	env := newEnvWithMX(t, []probe.MX{{Preference: 1, Host: "aspmx.l.google.com"}})
-	got := googleWorkspaceMXCheck{}.Run(context.Background(), env)
+	got := runGoogleWorkspaceMX(context.Background(), env)
 	if _, ok := findResult(got, "email.google_workspace_mx"); !ok {
 		t.Fatalf("legacy-primary-only should emit INFO, got %+v", got)
 	}
@@ -72,7 +72,7 @@ func TestGoogleWorkspaceMX_MixedMigrationInProgress(t *testing.T) {
 		{Preference: 1, Host: "smtp.google.com"},
 		{Preference: 5, Host: "alt1.aspmx.l.google.com"},
 	})
-	got := googleWorkspaceMXCheck{}.Run(context.Background(), env)
+	got := runGoogleWorkspaceMX(context.Background(), env)
 	r, ok := findResult(got, "email.google_workspace_mx")
 	if !ok {
 		t.Fatalf("mixed setup should still emit INFO: %+v", got)
@@ -84,7 +84,7 @@ func TestGoogleWorkspaceMX_MixedMigrationInProgress(t *testing.T) {
 
 func TestGoogleWorkspaceMX_NewSingleOnlySuppresses(t *testing.T) {
 	env := newEnvWithMX(t, []probe.MX{{Preference: 1, Host: "smtp.google.com"}})
-	got := googleWorkspaceMXCheck{}.Run(context.Background(), env)
+	got := runGoogleWorkspaceMX(context.Background(), env)
 	if len(got) != 0 {
 		t.Fatalf("new single-MX form should emit nothing, got %+v", got)
 	}
@@ -95,7 +95,7 @@ func TestGoogleWorkspaceMX_NonGoogleSuppresses(t *testing.T) {
 		{Preference: 10, Host: "mx1.fastmail.com"},
 		{Preference: 20, Host: "mx2.fastmail.com"},
 	})
-	got := googleWorkspaceMXCheck{}.Run(context.Background(), env)
+	got := runGoogleWorkspaceMX(context.Background(), env)
 	if len(got) != 0 {
 		t.Fatalf("non-Google MX should emit nothing, got %+v", got)
 	}
@@ -103,7 +103,7 @@ func TestGoogleWorkspaceMX_NonGoogleSuppresses(t *testing.T) {
 
 func TestGoogleWorkspaceMX_NoMXSuppresses(t *testing.T) {
 	env := newEnvWithMX(t, nil)
-	got := googleWorkspaceMXCheck{}.Run(context.Background(), env)
+	got := runGoogleWorkspaceMX(context.Background(), env)
 	if len(got) != 0 {
 		t.Fatalf("empty MX set should emit nothing, got %+v", got)
 	}
@@ -117,7 +117,7 @@ func TestGoogleWorkspaceMX_TrailingDotAndDuplicate(t *testing.T) {
 		{Preference: 1, Host: "ASPMX.L.GOOGLE.COM."},
 		{Preference: 1, Host: "aspmx.l.google.com"},
 	})
-	got := googleWorkspaceMXCheck{}.Run(context.Background(), env)
+	got := runGoogleWorkspaceMX(context.Background(), env)
 	r, ok := findResult(got, "email.google_workspace_mx")
 	if !ok {
 		t.Fatalf("expected INFO result: %+v", got)

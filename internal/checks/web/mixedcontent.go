@@ -10,16 +10,11 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// mixedContentCheck does a lightweight scan of the HTTPS root body for
+// runMixedContent does a lightweight scan of the HTTPS root body for
 // http:// occurrences inside src= or href=. This is heuristic only — a real
 // mixed-content audit needs a full DOM/CSS/JS evaluator. We Warn (never
 // Fail) and cap at a handful of examples.
-type mixedContentCheck struct{}
-
-func (mixedContentCheck) ID() string       { return "web.mixedcontent" }
-func (mixedContentCheck) Category() string { return category }
-
-func (mixedContentCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runMixedContent(ctx context.Context, env *probe.Env) []report.Result {
 	if !env.Active {
 		return []report.Result{{
 			ID: "web.mixedcontent", Category: category,

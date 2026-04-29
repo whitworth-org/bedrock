@@ -21,15 +21,10 @@ const (
 	soaMinExpire  = 1209600 // 14 days
 )
 
-// zoneCheck verifies SOA presence and that its timer values match the
+// runZoneSOA verifies SOA presence and that its timer values match the
 // recommendations in RFC 1912 §2.2 / RFC 2308 §5. The SOA MNAME / NS-set
 // consistency check is folded in here because we already have the SOA.
-type zoneCheck struct{}
-
-func (zoneCheck) ID() string       { return "dns.zone.soa" }
-func (zoneCheck) Category() string { return category }
-
-func (zoneCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runZoneSOA(ctx context.Context, env *probe.Env) []report.Result {
 	ctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
 
@@ -58,6 +53,11 @@ func (zoneCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 	}
 
 	results := []report.Result{soaTimers(env.Target, soa)}
+
+	// Mid-flight ctx gate between SOA and NS lookups.
+	if err := ctx.Err(); err != nil {
+		return results
+	}
 
 	// MNAME / NS-set consistency: the SOA MNAME ("primary master") should
 	// itself appear in the apex NS RRset OR be intentionally hidden. We only
@@ -158,15 +158,10 @@ func soaRemediationExample(target string) string {
 )`, target, target, target)
 }
 
-// mxCheck verifies the apex either has an MX (RFC 1912 §2.5) or publishes
+// runZoneMX verifies the apex either has an MX (RFC 1912 §2.5) or publishes
 // the RFC 7505 "Null MX" assertion ("0 ."). Both are valid; missing MX with
 // no Null MX is a Warn (operational ambiguity).
-type mxCheck struct{}
-
-func (mxCheck) ID() string       { return "dns.zone.mx" }
-func (mxCheck) Category() string { return category }
-
-func (mxCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runZoneMX(ctx context.Context, env *probe.Env) []report.Result {
 	ctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
 

@@ -11,14 +11,11 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// algorithmsCheck scores DNSKEY algorithms and DS digest types against
-// RFC 8624 §3.1 and §3.3. The chain check has already populated the cache.
-type algorithmsCheck struct{}
-
-func (algorithmsCheck) ID() string       { return "dnssec.algorithms" }
-func (algorithmsCheck) Category() string { return category }
-
-func (algorithmsCheck) Run(_ context.Context, env *probe.Env) []report.Result {
+// runAlgorithms scores DNSKEY algorithms and DS digest types against
+// RFC 8624 §3.1 and §3.3. ensureChainData fetches the DS+DNSKEY data
+// (or returns the cached copy if a sibling check already did).
+func runAlgorithms(ctx context.Context, env *probe.Env) []report.Result {
+	ensureChainData(ctx, env)
 	signed, _ := env.CacheGet(cacheKeySigned)
 	if b, ok := signed.(bool); !ok || !b {
 		// Unsigned: nothing to score; chain check already reported Info.

@@ -14,20 +14,24 @@
 // CSP, cookie attributes, etc.
 package web
 
-import "github.com/whitworth-org/bedrock/internal/registry"
+import (
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
+	"github.com/whitworth-org/bedrock/internal/registry"
+)
 
 const category = "WWW"
 
 func init() {
-	// Order matters only loosely — the registry runs them sequentially within
-	// the category. tlsCheck runs first so it can populate the cached
-	// *tls.ConnectionState that several other checks consume.
-	registry.Register(tlsCheck{})
-	registry.Register(certCheck{})
-	registry.Register(redirectCheck{})
-	registry.Register(hstsCheck{})
-	registry.Register(headersCheck{})
-	registry.Register(cookiesCheck{})
-	registry.Register(caaCheck{})
-	registry.Register(mixedContentCheck{})
+	// Order is no longer load-bearing — the registry runs checks within a
+	// category in parallel. tlsCheck still produces a cached
+	// *tls.ConnectionState that certCheck prefers when available; certCheck
+	// has its own fallback path when the cache is missed.
+	registry.Register(checkutil.Wrap("web.tls.profile", category, runTLS))
+	registry.Register(checkutil.Wrap("web.cert", category, runCert))
+	registry.Register(checkutil.Wrap("web.redirect", category, runRedirect))
+	registry.Register(checkutil.Wrap("web.hsts", category, runHSTS))
+	registry.Register(checkutil.Wrap("web.headers", category, runHeaders))
+	registry.Register(checkutil.Wrap("web.cookies", category, runCookies))
+	registry.Register(checkutil.Wrap("web.caa", category, runCAA))
+	registry.Register(checkutil.Wrap("web.mixedcontent", category, runMixedContent))
 }

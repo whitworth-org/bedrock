@@ -11,16 +11,11 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// redirectCheck verifies HTTP→HTTPS redirect hygiene for both apex and www.
+// runRedirect verifies HTTP→HTTPS redirect hygiene for both apex and www.
 // Per BCP 195 / OWASP guidance: every plain-HTTP entrypoint MUST issue a
 // permanent (301/308) redirect to the same host over HTTPS, terminating in a
 // 2xx/3xx response on the HTTPS side.
-type redirectCheck struct{}
-
-func (redirectCheck) ID() string       { return "web.redirect" }
-func (redirectCheck) Category() string { return category }
-
-func (redirectCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runRedirect(ctx context.Context, env *probe.Env) []report.Result {
 	if !env.Active {
 		return []report.Result{{
 			ID: "web.redirect", Category: category,
@@ -43,6 +38,10 @@ func (redirectCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 
 	var out []report.Result
 	for _, h := range hosts {
+		// Mid-flight ctx gate between the apex and www HTTP probes.
+		if err := ctx.Err(); err != nil {
+			break
+		}
 		out = append(out, evaluateRedirect(ctx, env, h))
 	}
 	return out

@@ -9,17 +9,12 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// cookiesCheck enforces Secure / HttpOnly / SameSite on all Set-Cookie
+// runCookies enforces Secure / HttpOnly / SameSite on all Set-Cookie
 // headers from the apex's HTTPS root. RFC 6265 §4.1.2 defines the
 // attributes; modern guidance (BCP 195, OWASP) requires Secure on all
 // cookies served over HTTPS, HttpOnly on session cookies, and an explicit
 // SameSite to mitigate CSRF.
-type cookiesCheck struct{}
-
-func (cookiesCheck) ID() string       { return "web.cookies" }
-func (cookiesCheck) Category() string { return category }
-
-func (cookiesCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+func runCookies(ctx context.Context, env *probe.Env) []report.Result {
 	if !env.Active {
 		return []report.Result{{
 			ID: "web.cookies", Category: category,
