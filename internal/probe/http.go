@@ -211,8 +211,8 @@ func (h *HTTP) Do(req *http.Request) (*Response, error) {
 	targetTr := baseTr.Clone()
 	targetTr.DisableKeepAlives = false
 	targetCli := &http.Client{
-		Transport: targetTr,
-		Timeout:   h.client.Timeout,
+		Transport:     targetTr,
+		Timeout:       h.client.Timeout,
 		CheckRedirect: h.client.CheckRedirect,
 	}
 	return h.doWithClient(req, targetCli)
@@ -312,6 +312,13 @@ func (h *HTTP) fetch(ctx context.Context, cli *http.Client, u *url.URL) (*Respon
 		out.TLSState = &ts
 	}
 	return out, nil
+}
+
+// SafeDialContext is the exported form of safeDialContext for use by sibling
+// probe packages (e.g. internal/probe/tlsfp) that need to dial with the same
+// SSRF protections as the HTTP client. Behaviour and semantics are identical.
+func SafeDialContext(timeout time.Duration, allowPrivate bool) func(context.Context, string, string) (net.Conn, error) {
+	return safeDialContext(timeout, allowPrivate)
 }
 
 // safeDialContext returns a DialContext that rejects SSRF-vulnerable
