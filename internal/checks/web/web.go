@@ -34,4 +34,9 @@ func init() {
 	registry.Register(checkutil.Wrap("web.cookies", category, runCookies))
 	registry.Register(checkutil.Wrap("web.caa", category, runCAA))
 	registry.Register(checkutil.Wrap("web.mixedcontent", category, runMixedContent))
+	// JA3S/JA4S TLS server fingerprints. Native — no third-party deps. Each
+	// registration captures its own ServerHello on the first call and caches
+	// the parsed Result on env so the sibling registration reuses it.
+	registry.Register(checkutil.Wrap("web.tls.fingerprint.ja3s", category, runTLSFingerprintJA3S))
+	registry.Register(checkutil.Wrap("web.tls.fingerprint.ja4s", category, runTLSFingerprintJA4S))
 }
