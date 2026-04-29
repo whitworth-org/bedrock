@@ -47,10 +47,10 @@ Each `v*` tag push publishes linux / macOS / windows × amd64 / arm64 archives, 
 ## Quick start
 
 ```bash
-bedrock example.org                      # default audit, text output
-bedrock --json example.org | jq .        # canonical JSON
-bedrock --md   example.org > report.md   # Markdown table
-bedrock --no-active example.org          # DNS-only — no outbound TCP
+bedrock example.org              # default audit, JSON on stdout (ANSI-coloured on a TTY)
+bedrock example.org | jq .       # canonical JSON for tooling
+NO_COLOR=1 bedrock example.org   # plain JSON regardless of TTY
+bedrock --no-active example.org  # DNS-only — no outbound TCP
 ```
 
 ## Usage
@@ -66,8 +66,7 @@ bedrock [flags] <domain>
 | Flag                | Default         | Effect                                                                                               |
 |---------------------|-----------------|------------------------------------------------------------------------------------------------------|
 | `--version`         | —               | Print the version line and exit.                                                                    |
-| `--json`            | off             | Emit the report as JSON on stdout. Mutually exclusive with `--md`.                                   |
-| `--md`              | off             | Emit a GitHub-flavoured Markdown table. Mutually exclusive with `--json`.                            |
+| `--no-color`        | colour on TTY   | Suppress ANSI colouring. Honoured automatically when stdout is not a terminal or `NO_COLOR` is set.  |
 | `--no-active`       | probes on       | Skip active probes (SMTP STARTTLS, HTTPS GETs, MTA-STS fetch, VMC fetch, QUIC dial).                 |
 | `--resolver`        | system resolver | `host[:port]`, preset (`cloudflare` / `google` / `quad9` / `opendns`), `<preset>-dot`, `<preset>-doh`, `tls://host`, `https://url`. |
 | `--resolvers`       | —               | CSV of multiple resolvers; runs cross-resolver propagation comparison.                               |
@@ -210,6 +209,8 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 | `web.ocsp.responder`                  | Independent OCSP responder reachable.                                               |
 | `web.crl.status`                      | CRL distribution point reachable; leaf not listed.                                  |
 | `web.ct.lookup` (opt-in `--enable-ct`)| Certificate Transparency entries observed in crt.sh (RFC 9162).                     |
+| `web.tls.fingerprint.ja3s.<host>`     | JA3S server TLS fingerprint (Salesforce, MD5 over cleartext ServerHello). `INFO`.   |
+| `web.tls.fingerprint.ja4s.<host>`     | JA4S server TLS fingerprint (FoxIO; human-readable, SHA-256 truncated). `INFO`.     |
 
 ### Subdomain discovery (opt-in `--subdomains`)
 
@@ -217,13 +218,9 @@ Passive sources: **hackertarget**, **anubis**, **threatcrowd**, **wayback**. Eac
 
 ## Output
 
-### Text (default)
+Output is JSON, always. When stdout is a terminal the JSON is colourised with ANSI; redirect or set `NO_COLOR=1` (or pass `--no-color`) for plain output. ANSI / C0 / C1 / DEL bytes in attacker-controlled evidence are replaced with `U+FFFD` so untrusted DNS TXT, certificate subjects, or HTTP header values cannot inject terminal escapes.
 
-Colourised when stdout is a terminal; plain when redirected. ANSI / C0 / C1 / DEL bytes in attacker-controlled evidence are replaced with `U+FFFD`.
-
-### JSON (canonical)
-
-Text and Markdown are projections of the same `[]Result`. Schema:
+Schema:
 
 ```json
 {
@@ -242,10 +239,6 @@ Text and Markdown are projections of the same `[]Result`. Schema:
 }
 ```
 
-### Markdown
-
-GitHub-flavoured table. Multi-line `remediation` renders inside a fenced ` ```bash ` block; meta-characters are backslash-escaped; table-breaking pipes are neutralised.
-
 ### Exit codes
 
 | Code | Meaning                                                          |
@@ -257,7 +250,7 @@ GitHub-flavoured table. Multi-line `remediation` renders inside a fenced ` ```ba
 ## Regression tracking
 
 ```bash
-bedrock --json example.org > baseline.json
+bedrock example.org > baseline.json
 # … later …
 bedrock --baseline baseline.json --regression-only example.org
 ```
@@ -284,7 +277,7 @@ jobs:
           path: baseline.json
           key: bedrock-baseline-${{ github.repository }}
       - run: |
-          bedrock --json example.org > current.json
+          bedrock example.org > current.json
           [ -f baseline.json ] && bedrock --baseline baseline.json --regression-only example.org
           mv current.json baseline.json
 ```
@@ -309,7 +302,8 @@ Hermetic tests bypass the resolver-IP denylist via `BEDROCK_ALLOW_PRIVATE_RESOLV
 main.go                     flag parsing, target normalisation, signal handling, exit codes
 internal/registry/          check registration + parallel category execution + panic recovery
 internal/probe/             DNS (miekg/dns) + HTTP primitives, named resolvers, DoT, DoH, SSRF-safe dialer
-internal/report/            Result type + text / JSON / Markdown renderers + terminal sanitisation
+internal/probe/tlsfp/       Native ServerHello parser + JA3S/JA4S fingerprint compute (no third-party deps)
+internal/report/            Result type + JSON renderer + ANSI colouring + terminal sanitisation
 internal/cli/               result filters + JSON config loader
 internal/baseline/          baseline diff for --baseline / --regression-only (fail-closed on duplicate IDs)
 internal/version/           build-time version, populated via -ldflags
@@ -318,7 +312,7 @@ internal/checks/dns/        DNS checks
 internal/checks/dnssec/     DNSSEC chain, algorithms, NSEC, CDS/CDNSKEY
 internal/checks/email/      SPF, DKIM, DMARC, MTA-STS, TLS-RPT, DANE, Null MX, STARTTLS, ARC, RBL, Google Workspace MX
 internal/checks/bimi/       BIMI TXT, SVG Tiny PS, VMC + RFC 3709 logotype ASN.1
-internal/checks/web/        TLS profile, certs, HSTS, headers, cookies, CAA, redirect, mixed content, CT, OCSP, CRL, EC curves, HTTP/2, HTTP/3
+internal/checks/web/        TLS profile, certs, HSTS, headers, cookies, CAA, redirect, mixed content, CT, OCSP, CRL, EC curves, HTTP/2, HTTP/3, JA3S/JA4S fingerprints
 testdata/golden/            integration-test fixtures
 ```
 
@@ -331,7 +325,7 @@ Apache-2.0 is a clean drop-in if you need an explicit patent grant. GPL/AGPL wer
 ## Limitations
 
 - Output is English only.
-- Stdlib `crypto/tls` does not expose received TLS extensions, so JA3/JA4 server fingerprinting is not implemented. Negotiated EC curve is detected via probe-and-detect (suppressed under `--no-active`).
+- JA3S and JA4S **server** fingerprints (`web.tls.fingerprint.ja3s.<host>`, `web.tls.fingerprint.ja4s.<host>`) are computed natively by capturing the cleartext ServerHello off the wire — stdlib `crypto/tls` does not expose handshake bytes directly, so a `recordingConn` wraps the underlying `net.Conn` during a stdlib handshake. Client-side JA3/JA4 of bedrock's own outbound TLS is not emitted (and not interesting to most users — bedrock is the client). Negotiated EC curve is detected via probe-and-detect (suppressed under `--no-active`).
 - The DKIM check probes a fixed selector list (44 well-known + ESP-specific derived from SPF includes). Custom per-tenant selectors (e.g. HubSpot's `hs1-<id>-<domain>` pattern) cannot be discovered without the customer ID; NSEC walking under `_domainkey` is deferred.
 - VMC chain validation uses `ExtKeyUsageAny` because the BIMI EKU OIDs are not in the Go standard library root-usage table. The BIMI-specific OID gate (`classifyMarkCert`) runs *before* chain verification.
 - `--enable-rbl` and `--enable-ct` issue live queries to third-party services; do not enable them for casual or repeated scans of domains you do not operate.
