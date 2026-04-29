@@ -531,6 +531,20 @@
       ]
     },
     {
+      "id": "web.tls.fingerprint.ja3s",
+      "category": "WWW",
+      "title": "TLS fingerprint (ja3s)",
+      "status": "N/A",
+      "evidence": "active probing disabled (--no-active)"
+    },
+    {
+      "id": "web.tls.fingerprint.ja4s",
+      "category": "WWW",
+      "title": "TLS fingerprint (ja4s)",
+      "status": "N/A",
+      "evidence": "active probing disabled (--no-active)"
+    },
+    {
       "id": "web.tls.profile",
       "category": "WWW",
       "title": "TLS profile",
