@@ -314,6 +314,13 @@ func (h *HTTP) fetch(ctx context.Context, cli *http.Client, u *url.URL) (*Respon
 	return out, nil
 }
 
+// SafeDialContext is the exported form of safeDialContext for use by sibling
+// probe packages (e.g. internal/probe/tlsfp) that need to dial with the same
+// SSRF protections as the HTTP client. Behaviour and semantics are identical.
+func SafeDialContext(timeout time.Duration, allowPrivate bool) func(context.Context, string, string) (net.Conn, error) {
+	return safeDialContext(timeout, allowPrivate)
+}
+
 // safeDialContext returns a DialContext that rejects SSRF-vulnerable
 // destinations: loopback, link-local, multicast, unspecified, private
 // (RFC 1918), unique-local (IPv6 ULA fc00::/7), CGNAT (100.64.0.0/10), and
