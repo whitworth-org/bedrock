@@ -4,7 +4,7 @@ go 1.26.2
 
 require (
 	github.com/miekg/dns v1.1.72
-	github.com/quic-go/quic-go v0.59.0
+	github.com/quic-go/quic-go v0.59.1
 	golang.org/x/crypto v0.50.0
 	golang.org/x/net v0.53.0
 )
