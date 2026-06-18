@@ -156,7 +156,8 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 |----------------------------------------------|----------------------------------------------------------------------------------|
 | `email.spf.record`                           | Exactly one `v=spf1` TXT, valid syntax, terminating `-all` / `~all`.             |
 | `email.dkim.selector.<name>`                 | Probes ~44 well-known selectors plus ESP-specific ones derived from SPF includes.|
-| `email.dmarc.record`                         | `_dmarc` TXT exact-match `v=DMARC1`, strict `pct=`, `rua`/`ruf` scheme allowlist, duplicate-tag rejection. |
+| `email.dmarc.record`                         | `_dmarc` TXT exact-match `v=DMARC1`, strict tag parsing, `rua`/`ruf` scheme allowlist, duplicate-tag rejection; RFC 9989 `np`/`psd`/`t` tags (`pct` parsed, flagged deprecated). |
+| `email.dmarc.np`                             | Non-existent-subdomain policy (RFC 9989 §4.7): `PASS` on `np=reject`, `WARN` on quarantine/none; notes explicit vs inherited (`np`←`sp`←`p`). |
 | `email.mtasts.txt`                           | `_mta-sts` TXT well-formed, `v=STSv1`, `id=` opaque token.                       |
 | `email.mtasts.policy`                        | HTTPS fetch of `mta-sts.<domain>/.well-known/mta-sts.txt` (no redirects, TLS 1.2 floor, strict chain). |
 | `email.tlsrpt.record`                        | `_smtp._tls` TXT, `v=TLSRPTv1`, valid `rua=` schemes.                            |
@@ -233,7 +234,7 @@ Schema:
       "status": "FAIL",
       "evidence": "p=none observed in _dmarc.example.org TXT",
       "remediation": "_dmarc.example.org. IN TXT \"v=DMARC1; p=quarantine; rua=mailto:dmarc@example.org\"",
-      "rfc_refs": ["RFC 7489 §6.3"]
+      "rfc_refs": ["RFC 9989 §4.7"]
     }
   ]
 }

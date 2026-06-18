@@ -90,7 +90,7 @@ func hasDKIMRecord(txt []string) bool {
 func arcDMARCResult(env *probe.Env) report.Result {
 	const id = "email.arc.dmarc"
 	const title = "DMARC enforcement complements ARC"
-	refs := []string{"RFC 8617 §5", "RFC 7489"}
+	refs := []string{"RFC 8617 §5", "RFC 9989"}
 
 	cached, ok := env.CacheGet(probe.CacheKeyDMARC)
 	if !ok || cached == nil {
