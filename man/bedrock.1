@@ -1,7 +1,7 @@
 .\" bedrock(1) man page
 .\" Section 1: user commands.
 .\" Source: man/bedrock.1 in the bedrock repository.
-.TH BEDROCK 1 "April 2026" "bedrock 0.1.0" "User Commands"
+.TH BEDROCK 1 "2026-06-18" "bedrock 1.1.0" "User Commands"
 .SH NAME
 bedrock \- CLI auditor for fundamental domain security controls (DNS, DNSSEC, Email, BIMI, Web/TLS)
 .SH SYNOPSIS
@@ -42,19 +42,11 @@ may be an internationalised domain name; it is normalised to ASCII
 .B \-\-version
 Print the version line and exit.
 .TP
-.B \-\-json
-Emit the report as JSON on standard output.
-The schema is
-.RI { target ", " results []} ,
-where each result has
-.IR id ", " category ", " title ", " status ", " evidence ", " remediation ", " rfc_refs .
-Mutually exclusive with
-.BR \-\-md .
-.TP
-.B \-\-md
-Emit the report as GitHub-flavoured Markdown on standard output.
-Mutually exclusive with
-.BR \-\-json .
+.B \-\-no\-color
+Force plain (un-highlighted) JSON output even when standard output is a
+terminal. Colour is also suppressed when the
+.B NO_COLOR
+environment variable is set, or when standard output is not a TTY.
 .TP
 .B \-\-no\-active
 Skip active probes.
@@ -174,18 +166,20 @@ Pre-existing failures that have not changed are ignored.
 Useful as a CI gate that won't fail on legacy issues you've consciously
 deferred.
 .SH OUTPUT
-By default the tool writes a colourised text report to standard output
-when standard output is a terminal; colour is suppressed when redirected.
-Each result line shows category, status, check ID, and a one-line evidence
-string.
-Failures additionally show a remediation block.
-ANSI, C0, C1, and DEL bytes in attacker-controlled evidence are replaced
-with U+FFFD.
+The tool always writes a single JSON document to standard output. The
+schema is
+.RI { target ", " results []} ,
+where each result has
+.IR id ", " category ", " title ", " status ", " evidence ", " remediation ", " rfc_refs .
+When standard output is a terminal and colour is not suppressed (see
+.BR \-\-no\-color ),
+the JSON is ANSI syntax-highlighted; otherwise it is emitted plain so it
+pipes cleanly into
+.BR jq (1)
+and other consumers.
 .PP
-The JSON output is the canonical projection; the text and Markdown
-formats are derived from the same
-.I [ ]Result
-view.
+ANSI, C0, C1, and DEL bytes in attacker-controlled evidence are replaced
+with U+FFFD before rendering.
 .SH SEVERITY
 Each check returns one of five statuses:
 .TP
@@ -244,16 +238,16 @@ Pin a recursive resolver for reproducibility:
 $ bedrock \-\-resolver 1.1.1.1:53 example.org
 .EE
 .TP
-Emit JSON, then filter to just failures with
+Filter the JSON to just failures with
 .BR jq (1):
 .EX
-$ bedrock \-\-json example.org | \\
+$ bedrock example.org | \\
     jq '.results[] | select(.status == "FAIL")'
 .EE
 .TP
-Generate a Markdown report for review:
+Save a plain-JSON report to a file for review:
 .EX
-$ bedrock \-\-md example.org > example.org.report.md
+$ bedrock example.org > example.org.report.json
 .EE
 .TP
 DNS-only audit of a third-party domain (no outbound TCP beyond DNS):
@@ -264,7 +258,7 @@ $ bedrock \-\-no\-active partner.example.com
 Use in a CI pipeline; non-zero exit fails the job on any
 .B FAIL :
 .EX
-$ bedrock \-\-json prod.example.com > posture.json || \\
+$ bedrock prod.example.com > posture.json || \\
     { cat posture.json; exit 1; }
 .EE
 .SH FILES
