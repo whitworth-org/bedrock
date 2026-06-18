@@ -149,7 +149,7 @@
       "remediation": "_dmarc.test.invalid. IN TXT \"v=DMARC1; p=quarantine; pct=100; rua=mailto:dmarc@test.invalid; adkim=s; aspf=s\"",
       "rfc_refs": [
         "Gmail BIMI requirements",
-        "RFC 7489 §6.3"
+        "RFC 9989 §4.7"
       ]
     },
     {
@@ -246,7 +246,7 @@
       "evidence": "no DMARC record cached; ARC adds value primarily once DMARC enforcement is in place",
       "rfc_refs": [
         "RFC 8617 §5",
-        "RFC 7489"
+        "RFC 9989"
       ]
     },
     {
@@ -285,6 +285,16 @@
       ]
     },
     {
+      "id": "email.dmarc.np",
+      "category": "Email",
+      "title": "DMARC non-existent subdomain policy (np)",
+      "status": "N/A",
+      "evidence": "no DMARC record to evaluate np against (see email.dmarc.record)",
+      "rfc_refs": [
+        "RFC 9989 §4.7"
+      ]
+    },
+    {
       "id": "email.dmarc.record",
       "category": "Email",
       "title": "DMARC record present and well-formed",
@@ -292,9 +302,9 @@
       "evidence": "no v=DMARC1 TXT record at _dmarc.test.invalid",
       "remediation": "_dmarc.test.invalid. IN TXT \"v=DMARC1; p=reject; rua=mailto:dmarc-reports@test.invalid; adkim=s; aspf=s\"",
       "rfc_refs": [
-        "RFC 7489 §6.3",
-        "RFC 7489 §6.4",
-        "RFC 7489 §11.2"
+        "RFC 9989 §4.7",
+        "RFC 9989 §4.8",
+        "RFC 9989 §11"
       ]
     },
     {

@@ -31,7 +31,7 @@ func (gmailGateCheck) Category() string { return category }
 func (gmailGateCheck) Run(_ context.Context, env *probe.Env) []report.Result {
 	const id = "bimi.gmail.dmarc"
 	const title = "BIMI Gmail gate: DMARC must be quarantine|reject, pct=100, strict alignment"
-	refs := []string{"Gmail BIMI requirements", "RFC 7489 §6.3"}
+	refs := []string{"Gmail BIMI requirements", "RFC 9989 §4.7"}
 
 	v, ok := env.CacheGet(probe.CacheKeyDMARC)
 	if !ok {
