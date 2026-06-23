@@ -1,0 +1,62 @@
+name: Kite Preemption Retry
+
+# Recovers a Kite Agentic Review run whose self-hosted Spot runner was preempted
+# mid-job. GitHub does not re-queue a job whose runner vanished, so on a failed run
+# this watcher re-runs the failed jobs. Re-running re-queues the self-hosted job,
+# which the on-demand autoscaler then provisions a fresh runner for.
+#
+# It retries only when a self-hosted job (agent/detection) failed — the signature of
+# a lost/preempted runner. A hosted-gate failure (activation, lockdown, stale lock)
+# is deterministic and must not loop. The run_attempt budget caps total attempts, so
+# even a self-hosted job that fails for a non-preemption reason retries at most once.
+on:
+  workflow_run: # zizmor: ignore[dangerous-triggers] no artifact download or PR checkout; only reads the jobs API and re-runs
+    workflows: ["Kite Agentic Review"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  MAX_ATTEMPTS: "2"
+
+concurrency:
+  group: kite-preemption-retry-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  retry:
+    runs-on: ubuntu-latest
+    # Only auto-retry PR-triggered failures; workflow_dispatch runs are manual.
+    if: >
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'pull_request'
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+    steps:
+      - name: Retry failed self-hosted jobs when within the attempt budget
+        run: |
+          set -euo pipefail
+          if [ "$RUN_ATTEMPT" -ge "$MAX_ATTEMPTS" ]; then
+            echo "attempt budget exhausted ($RUN_ATTEMPT/$MAX_ATTEMPTS); not retrying"
+            exit 0
+          fi
+
+          # A preemption fails the agent/detection jobs that run on the ephemeral
+          # self-hosted Spot runner. A failure confined to the hosted gate jobs is
+          # deterministic, so retrying it would just loop until the budget is spent.
+          gh api "repos/$REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=100" > jobs.json
+          self_hosted_failed="$(jq '[.jobs[]
+            | select(.name == "agent" or .name == "detection")
+            | select(.conclusion == "failure")] | length' jobs.json)"
+
+          if [ "$self_hosted_failed" -gt 0 ]; then
+            echo "self-hosted job failed (preemption signature) on attempt $RUN_ATTEMPT; re-running failed jobs"
+            gh run rerun "$RUN_ID" --failed
+          else
+            echo "no self-hosted job failed; deterministic/hosted failure, not retrying"
+          fi
