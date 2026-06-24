@@ -1,0 +1,89 @@
+name: Kite Skip Notice
+
+# Makes a deliberately-skipped kite review legible instead of looking like a broken
+# install. The agentic review is skipped for fork PRs (the self-hosted runner and
+# secrets are never exposed to fork code) and for draft PRs; today that skip is
+# silent. This always-on hosted job posts/updates a single explanatory PR comment so
+# the author knows why kite did not run and what the supported path is.
+#
+# It runs as pull_request_target because a pull_request job gets a read-only token on
+# fork PRs and cannot comment. It NEVER checks out or executes PR code — it only reads
+# event metadata (fork/draft booleans, the PR number) and posts a comment — so the
+# elevated token is not exposed to untrusted code. zizmor's dangerous-triggers finding
+# is suppressed for exactly that reason.
+on:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] no checkout/execution of PR code; comment-only
+    types: [opened, reopened, ready_for_review, converted_to_draft]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  # Serialize per PR so two rapid events cannot both create a duplicate comment.
+  group: kite-skip-notice-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  MARKER: "<!-- kite-skip-notice -->"
+  BODY_FORK: |
+    <!-- kite-skip-notice -->
+    **kite did not run on this pull request.**
+
+    kite's security review is skipped for pull requests from forks: the self-hosted
+    runner, secrets, and the engine API key are deliberately not exposed to code from
+    forked repositories.
+
+    To get a review, a maintainer can bring this branch into the repository and open a
+    pull request from there. The `/kite` comment responder works on this PR but does
+    not run the full RAPTOR analysis.
+  BODY_DRAFT: |
+    <!-- kite-skip-notice -->
+    **kite did not run on this pull request.**
+
+    kite's security review is skipped while a pull request is a draft. Mark this PR
+    **Ready for review** to trigger it.
+  BODY_ELIGIBLE: |
+    <!-- kite-skip-notice -->
+    kite's security review is enabled for this pull request and runs on the
+    self-hosted runner.
+
+jobs:
+  notice:
+    runs-on: ubuntu-latest
+    env:
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      IS_FORK: ${{ github.event.pull_request.head.repo.id != github.event.pull_request.base.repo.id }}
+      IS_DRAFT: ${{ github.event.pull_request.draft }}
+    steps:
+      - name: Post or update the skip notice
+        run: |
+          set -euo pipefail
+
+          # Fork takes precedence over draft; a non-fork ready PR is eligible.
+          if [ "$IS_FORK" = "true" ]; then
+            body="$BODY_FORK"
+          elif [ "$IS_DRAFT" = "true" ]; then
+            body="$BODY_DRAFT"
+          else
+            body="$BODY_ELIGIBLE"
+          fi
+
+          # Find a prior notice (idempotent upsert keyed by the hidden marker).
+          existing="$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.body | startswith("<!-- kite-skip-notice -->")) | .id' \
+            | head -n1 || true)"
+
+          if [ -n "$existing" ]; then
+            # Update in place so a draft->ready or fork transition stays a single comment.
+            gh api -X PATCH "repos/$REPO/issues/comments/$existing" -f "body=$body" >/dev/null
+            echo "updated kite skip notice ($existing)"
+          elif [ "$IS_FORK" = "true" ] || [ "$IS_DRAFT" = "true" ]; then
+            # Only create a comment when there is an actual skip to explain.
+            gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" -f "body=$body" >/dev/null
+            echo "created kite skip notice"
+          else
+            echo "PR is eligible and has no prior notice; nothing to do"
+          fi

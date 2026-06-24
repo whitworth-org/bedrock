@@ -1,0 +1,33 @@
+name: Kite Install Baseline Dispatch
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - ".github/workflows/raptor-baseline-scan.lock.yml"
+      - ".github/workflows/raptor-agentic-review.lock.yml"
+      - ".github/scripts/run_raptor_agentic_review.sh"
+      - ".github/scripts/select_skills.py"
+  workflow_dispatch: {}
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    if: github.ref_name == github.event.repository.default_branch
+    steps:
+      - name: Dispatch baseline scan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run raptor-baseline-scan.lock.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF_NAME" \
+            -f max_findings="${KITE_BASELINE_MAX_FINDINGS:-20}" \
+            -f enable_codeql=true \
+            -f raptor_image="${KITE_RAPTOR_IMAGE:-raptor:latest}" \
+            -f openai_second_opinion=true
