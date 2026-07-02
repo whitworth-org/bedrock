@@ -14,6 +14,7 @@ package bimi
 import (
 	"context"
 
+	"github.com/whitworth-org/bedrock/internal/checks/email"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/registry"
 	"github.com/whitworth-org/bedrock/internal/report"
@@ -39,6 +40,23 @@ func (p prelude) Run(ctx context.Context, env *probe.Env) []report.Result {
 	return p.inner.Run(ctx, env)
 }
 
+// dmarcPrelude wraps the Gmail gate so the shared DMARC cache is primed before
+// the gate reads it. The gate consumes probe.CacheKeyDMARC (published by the
+// Email package's DMARC check), not the BIMI record, so it needs its own
+// priming rather than the record-priming prelude above. Without this, under
+// the parallel registry the gate can run before the DMARC producer and
+// spuriously report Info ("DMARC not parsed") instead of the real verdict.
+type dmarcPrelude struct {
+	inner registry.Check
+}
+
+func (p dmarcPrelude) ID() string       { return p.inner.ID() }
+func (p dmarcPrelude) Category() string { return p.inner.Category() }
+func (p dmarcPrelude) Run(ctx context.Context, env *probe.Env) []report.Result {
+	email.EnsureDMARC(ctx, env)
+	return p.inner.Run(ctx, env)
+}
+
 func init() {
 	registry.Register(recordCheck{})
 	registry.Register(prelude{svgFetchCheck{}})
@@ -47,5 +65,5 @@ func init() {
 	registry.Register(prelude{vmcFetchCheck{}})
 	registry.Register(prelude{vmcChainCheck{}})
 	registry.Register(prelude{vmcLogotypeCheck{}})
-	registry.Register(prelude{gmailGateCheck{}})
+	registry.Register(dmarcPrelude{gmailGateCheck{}})
 }
