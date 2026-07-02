@@ -25,6 +25,12 @@ var (
 	Date    = ""
 )
 
+// readBuildInfo is a seam over debug.ReadBuildInfo so tests can drive the
+// fallback deterministically. Production always uses debug.ReadBuildInfo;
+// `go test` may or may not stamp vcs.* into the test binary, which would
+// otherwise make the fallback's output depend on the build environment.
+var readBuildInfo = debug.ReadBuildInfo
+
 // resolve returns the effective version, commit, and date. Values baked in
 // via ldflags win; otherwise it falls back to runtime/debug.ReadBuildInfo so
 // a `go install path@version` build still reports the module version, VCS
@@ -32,7 +38,7 @@ var (
 // leaves Main.Version as "(devel)", in which case the version stays "dev".
 func resolve() (v, commit, date string) {
 	v, commit, date = Version, Commit, Date
-	if info, ok := debug.ReadBuildInfo(); ok {
+	if info, ok := readBuildInfo(); ok {
 		if v == "dev" && info.Main.Version != "" && info.Main.Version != "(devel)" {
 			v = info.Main.Version
 		}
