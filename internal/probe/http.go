@@ -44,9 +44,12 @@ func NewHTTP(timeout time.Duration) *HTTP {
 	h := &HTTP{timeout: timeout}
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
-			// Reasonable security baseline; checks will inspect TLSState
-			// to score the actual server posture against the embedded TLS profiles.
-			MinVersion: tls.VersionTLS10,
+			// TLS 1.2 floor for the verified fetch path: this client's responses
+			// may be trusted (bodies are parsed), so it must meet the modern
+			// baseline. Legacy servers stay inspectable — the TLS-profile check
+			// dials them directly (see tls.go dialTLSPriority), and Get's degraded
+			// retry re-attempts with a relaxed, body-dropping config.
+			MinVersion: tls.VersionTLS12,
 		},
 		// Keep-alives disabled by default for safety; enabled per-target in Get/Do
 		DisableKeepAlives:     true,
@@ -108,13 +111,16 @@ func (h *HTTP) Get(ctx context.Context, target string) (*Response, error) {
 
 	resp, chainErr := h.fetch(ctx, &cli, u)
 	if chainErr != nil {
-		// Chain validation failed — try again with verification off so we
-		// can still inspect what the server served (TLSState, headers). The
-		// body from this retry is NOT trustworthy (no peer identity), so we
-		// drop it.
+		// Chain validation failed — retry once with verification disabled so we
+		// can still inspect what the server served (status, headers, TLSState).
 		insecureCli := *h.client
 		baseTr := h.client.Transport.(*http.Transport)
 		insecureTr := baseTr.Clone()
+		// SECURITY: diagnostic-only, intentionally relaxed. We permit TLS 1.0 and
+		// skip certificate verification on purpose to inspect legacy or
+		// misconfigured servers after normal validation failed. The response body
+		// from this path is untrusted and is discarded below; it must never be
+		// used for trusted content retrieval.
 		insecureTr.TLSClientConfig = &tls.Config{
 			MinVersion:         tls.VersionTLS10,
 			InsecureSkipVerify: true,
@@ -299,7 +305,7 @@ func (h *HTTP) fetch(ctx context.Context, cli *http.Client, u *url.URL) (*Respon
 	out := &Response{
 		Status:    r.StatusCode,
 		URL:       r.Request.URL,
-		Headers:   r.Header,
+		Headers:   r.Header.Clone(),
 		Body:      body,
 		Truncated: truncated,
 	}
