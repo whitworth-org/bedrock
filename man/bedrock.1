@@ -1,7 +1,7 @@
 .\" bedrock(1) man page
 .\" Section 1: user commands.
 .\" Source: man/bedrock.1 in the bedrock repository.
-.TH BEDROCK 1 "2026-06-18" "bedrock 1.1.0" "User Commands"
+.TH BEDROCK 1 "2026-07-02" "bedrock 1.1.1" "User Commands"
 .SH NAME
 bedrock \- CLI auditor for fundamental domain security controls (DNS, DNSSEC, Email, BIMI, Web/TLS)
 .SH SYNOPSIS
@@ -27,8 +27,9 @@ pass
 .B \-\-no\-active
 to confine the run to DNS lookups.
 .PP
-The HTTP client denylists RFC 1918, loopback, link-local, ULA, CGNAT, and
-cloud-metadata addresses to neutralise SSRF via attacker-influenced DNS.
+The HTTP client blocks denylisted RFC 1918, loopback, link-local, ULA,
+CGNAT, and cloud-metadata addresses to neutralise SSRF via
+attacker-influenced DNS.
 Resolvers pointing at private address space are rejected unless the
 .B BEDROCK_ALLOW_PRIVATE_RESOLVER
 environment variable is set to a non-empty value (intended for hermetic
@@ -136,15 +137,21 @@ not
 since false positives and stale entries are common. Off by default.
 .TP
 .B \-\-subdomains
-Enumerate subdomains via passive sources
+Enumerate subdomains via passive third-party sources
 .RB ( hackertarget ,
 .BR anubis ,
 .BR threatcrowd ,
 .BR wayback )
 and probe each discovered host for TLS reachability and certificate
-hygiene. Hostnames are allowlisted against
+hygiene. These providers are external services with varying coverage and
+freshness, and querying them may disclose the domains under investigation.
+Hostnames are allowlisted against
 .B ^[a-zA-Z0-9._-]+$
-at both source and enumerate time. Off by default.
+at both source and enumerate time; the underscore is permitted so service
+labels such as
+.B _dmarc
+are not discarded (an injection-safety filter, not an RFC 1123 hostname
+validator). Off by default.
 .TP
 .BI \-\-baseline " path"
 Path to a previously-saved JSON report. Results are diffed against the
@@ -273,11 +280,17 @@ is not supplied.
 When set to a non-empty value, bypasses the resolver-IP denylist so
 loopback / RFC 1918 resolvers can be used. Intended for hermetic test
 environments only; production callers must leave this unset.
+.TP
+.B NO_COLOR
+When set to a non-empty value, suppresses ANSI colouring of the JSON
+output regardless of whether standard output is a terminal (see
+.BR \-\-no\-color ).
 .PP
 Otherwise
 .B bedrock
-ignores all environment variables other than those consulted by the
-Go runtime
+ignores all environment variables other than
+.B NO_COLOR
+and those consulted by the Go runtime
 .RB ( SSL_CERT_FILE ", " SSL_CERT_DIR )
 for system root certificates and any standard OS resolver configuration.
 .SH STANDARDS
