@@ -61,7 +61,6 @@ type ctSummary struct {
 
 const (
 	ctRecentWindow  = 7 * 24 * time.Hour
-	ctUserAgent     = "github.com/whitworth-org/bedrock/0.1 (+https://example.invalid/)"
 	ctMinSCTs       = 2 // Chrome CT policy floor for publicly trusted certs.
 	ctRFCCore       = "RFC 6962"
 	ctRFCv2         = "RFC 9162"

@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"os"
 	"time"
+
+	"github.com/whitworth-org/bedrock/internal/version"
 )
 
 // HTTP wraps net/http with a custom Transport that captures the TLS state
@@ -279,7 +281,7 @@ func (h *HTTP) fetch(ctx context.Context, cli *http.Client, u *url.URL) (*Respon
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "github.com/whitworth-org/bedrock/0.1 (+https://example.invalid/)")
+	req.Header.Set("User-Agent", version.UserAgent())
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
 	r, err := cli.Do(req)

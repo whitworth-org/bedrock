@@ -55,6 +55,17 @@ func TestStringWithCommitOnly(t *testing.T) {
 	}
 }
 
+func TestUserAgentCarriesResolvedVersion(t *testing.T) {
+	defer withVars(t, "1.2.3", "", "")()
+	ua := UserAgent()
+	if !strings.HasPrefix(ua, "github.com/whitworth-org/bedrock/") {
+		t.Fatalf("UserAgent should start with the module product token: %q", ua)
+	}
+	if !strings.Contains(ua, "1.2.3") {
+		t.Fatalf("UserAgent should carry the build version: %q", ua)
+	}
+}
+
 func TestShortRev(t *testing.T) {
 	if got := shortRev(""); got != "" {
 		t.Fatalf("empty -> %q", got)
