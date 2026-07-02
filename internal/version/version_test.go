@@ -3,6 +3,7 @@ package version
 import (
 	"fmt"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -14,6 +15,15 @@ func withVars(t *testing.T, v, c, d string) func() {
 	return func() {
 		Version, Commit, Date = ov, oc, od
 	}
+}
+
+// withReadBuildInfo swaps the debug.ReadBuildInfo seam so a test can force the
+// fallback branch deterministically, then restores it.
+func withReadBuildInfo(t *testing.T, f func() (*debug.BuildInfo, bool)) func() {
+	t.Helper()
+	orig := readBuildInfo
+	readBuildInfo = f
+	return func() { readBuildInfo = orig }
 }
 
 func TestStringDefaultHasVersionAndArch(t *testing.T) {
@@ -28,7 +38,7 @@ func TestStringDefaultHasVersionAndArch(t *testing.T) {
 }
 
 func TestStringWithCommitAndDate(t *testing.T) {
-	defer withVars(t, "1.2.3", "deadbeefcafe", "2026-04-17T00:00:00Z")()
+	defer withVars(t, "1.2.3", "deadbeefcafe", "1970-01-01T00:00:00Z")()
 	out := String()
 	if !strings.Contains(out, "bedrock 1.2.3") {
 		t.Fatalf("missing version: %q", out)
@@ -36,22 +46,34 @@ func TestStringWithCommitAndDate(t *testing.T) {
 	if !strings.Contains(out, "deadbeefcafe") {
 		t.Fatalf("missing commit: %q", out)
 	}
-	if !strings.Contains(out, "2026-04-17T00:00:00Z") {
+	if !strings.Contains(out, "1970-01-01T00:00:00Z") {
 		t.Fatalf("missing date: %q", out)
 	}
 }
 
 func TestStringWithCommitOnly(t *testing.T) {
 	defer withVars(t, "9.9.9", "short", "")()
+	// Force the fallback to report nothing, so with an empty Date the commit
+	// renders bare — no trailing date — regardless of the test binary's stamp.
+	defer withReadBuildInfo(t, func() (*debug.BuildInfo, bool) { return nil, false })()
 	out := String()
-	if !strings.Contains(out, "(short)") {
-		// The BuildInfo fallback may populate Date when Commit is a
-		// recognisable vcs.revision. If it didn't, the commit should
-		// appear bare without a trailing date.
-		t.Logf("commit-only render (may include BuildInfo date): %q", out)
+	if !strings.HasPrefix(out, "bedrock 9.9.9 (short) ") {
+		t.Fatalf("commit-only render should be 'bedrock 9.9.9 (short) <platform>': %q", out)
 	}
-	if !strings.Contains(out, "short") {
-		t.Fatalf("commit 'short' missing from %q", out)
+}
+
+func TestStringCommitWithBuildInfoDate(t *testing.T) {
+	defer withVars(t, "9.9.9", "short", "")()
+	// Empty Date falls back to vcs.time from BuildInfo; the resolved date is
+	// appended to the already-set commit.
+	defer withReadBuildInfo(t, func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{Settings: []debug.BuildSetting{
+			{Key: "vcs.time", Value: "1970-01-01T00:00:00Z"},
+		}}, true
+	})()
+	out := String()
+	if !strings.Contains(out, "bedrock 9.9.9 (short 1970-01-01T00:00:00Z)") {
+		t.Fatalf("commit+BuildInfo-date render wrong: %q", out)
 	}
 }
 
