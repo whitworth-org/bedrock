@@ -32,10 +32,6 @@ type Response struct {
 	Body       []byte // capped at maxBodyBytes
 	TLSState   *tls.ConnectionState
 	RedirectCh []*url.URL // each URL in the chain, including the final
-	// CertChainError is non-nil when the served chain is incomplete or invalid
-	// against the system trust store, captured BEFORE InsecureSkipVerify lets us
-	// continue. Always nil when we connect over plain HTTP.
-	CertChainError error
 	// Truncated is true when Body hit the maxBodyBytes cap and additional
 	// bytes were discarded on the wire. Callers that require full bodies
 	// should treat Truncated==true as a failure case.
@@ -85,8 +81,7 @@ const maxBodyBytes = 1 << 20 // 1 MiB
 //
 // IMPORTANT: the insecure-retry path explicitly drops the response body
 // (sets Body = nil) before returning. Callers that care about the body must
-// use GetStrict, which fails closed on chain errors. CertChainError remains
-// set on the returned Response so callers can detect the degraded path.
+// use GetStrict, which fails closed on chain errors.
 func (h *HTTP) Get(ctx context.Context, target string) (*Response, error) {
 	u, err := url.Parse(target)
 	if err != nil {
@@ -114,9 +109,9 @@ func (h *HTTP) Get(ctx context.Context, target string) (*Response, error) {
 	resp, chainErr := h.fetch(ctx, &cli, u)
 	if chainErr != nil {
 		// Chain validation failed — try again with verification off so we
-		// can still inspect what the server served. Record the original
-		// error in Response.CertChainError. The body from this retry is
-		// NOT trustworthy (no peer identity), so we drop it.
+		// can still inspect what the server served (TLSState, headers). The
+		// body from this retry is NOT trustworthy (no peer identity), so we
+		// drop it.
 		insecureCli := *h.client
 		baseTr := h.client.Transport.(*http.Transport)
 		insecureTr := baseTr.Clone()
@@ -139,7 +134,6 @@ func (h *HTTP) Get(ctx context.Context, target string) (*Response, error) {
 		resp2, _ := h.fetch(ctx, &insecureCli, u)
 		if resp2 != nil {
 			resp2.RedirectCh = insecureChain
-			resp2.CertChainError = chainErr
 			// Defensive: an un-verified body can be anything; drop it so
 			// downstream parsers cannot be tricked by attacker content
 			// served over an invalid chain.
