@@ -27,7 +27,10 @@ import (
 // bodies may contain attacker-chosen bytes — we reject anything that isn't
 // a plain DNS-label character so downstream consumers (report renderers,
 // TLS SNI, log lines) never see a control character, quote, backslash,
-// whitespace, angle bracket, or non-ASCII byte.
+// whitespace, angle bracket, or non-ASCII byte. The underscore is
+// intentionally permitted so service labels such as _dmarc are not
+// dropped; this is an injection-safety allowlist, not an RFC 1123
+// hostname validator.
 var hostnameRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
 // isValidHostname enforces the hostnameRe allowlist and additionally rejects

@@ -215,7 +215,7 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 
 ### Subdomain discovery (opt-in `--subdomains`)
 
-Passive sources: **hackertarget**, **anubis**, **threatcrowd**, **wayback**. Discovered hosts are probed for TLS reachability and certificate hygiene; with active probing on they are also fingerprinted (`subdomain.tls.fingerprint.{ja3s,ja4s}.<host>`, INFO). Hostnames must match `^[a-zA-Z0-9._-]+$` at both the source-parse and enumerate stages; malformed lines are rejected before any DNS lookup.
+Passive third-party sources: **hackertarget**, **anubis**, **threatcrowd**, **wayback** — external services with varying coverage and freshness, and querying them may disclose the domains under investigation. Discovered hosts are probed for TLS reachability and certificate hygiene; with active probing on they are also fingerprinted (`subdomain.tls.fingerprint.{ja3s,ja4s}.<host>`, INFO). Hostnames must match `^[a-zA-Z0-9._-]+$` at both the source-parse and enumerate stages (the underscore is permitted so service labels like `_dmarc` survive — an injection-safety filter, not an RFC 1123 validator); malformed lines are rejected before any DNS lookup.
 
 ## Output
 
