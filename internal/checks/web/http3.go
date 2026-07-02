@@ -14,6 +14,7 @@ import (
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/registry"
 	"github.com/whitworth-org/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/version"
 )
 
 // runHTTP3 probes for HTTP/3 (QUIC) support via two independent signals:
@@ -140,7 +141,7 @@ func dialHTTP3(ctx context.Context, env *probe.Env) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	req.Header.Set("User-Agent", "github.com/whitworth-org/bedrock/0.1 (+https://example.invalid/)")
+	req.Header.Set("User-Agent", version.UserAgent())
 
 	resp, err := client.Do(req)
 	if err != nil {

@@ -25,17 +25,14 @@ var (
 	Date    = ""
 )
 
-// String returns a human-readable version line suitable for `--version`.
-func String() string {
-	v := Version
-	commit := Commit
-	date := Date
-
+// resolve returns the effective version, commit, and date. Values baked in
+// via ldflags win; otherwise it falls back to runtime/debug.ReadBuildInfo so
+// a `go install path@version` build still reports the module version, VCS
+// revision, and commit time the Go toolchain recorded. Local `go build .`
+// leaves Main.Version as "(devel)", in which case the version stays "dev".
+func resolve() (v, commit, date string) {
+	v, commit, date = Version, Commit, Date
 	if info, ok := debug.ReadBuildInfo(); ok {
-		// When Version wasn't baked in via ldflags, fall back to the Go
-		// toolchain's record of the module version set by `go install
-		// path@version`. Local `go build .` leaves this as "(devel)";
-		// in that case we keep v as "dev".
 		if v == "dev" && info.Main.Version != "" && info.Main.Version != "(devel)" {
 			v = info.Main.Version
 		}
@@ -52,7 +49,12 @@ func String() string {
 			}
 		}
 	}
+	return v, commit, date
+}
 
+// String returns a human-readable version line suitable for `--version`.
+func String() string {
+	v, commit, date := resolve()
 	out := fmt.Sprintf("bedrock %s", v)
 	if commit != "" {
 		out += " (" + commit
@@ -63,6 +65,15 @@ func String() string {
 	}
 	out += fmt.Sprintf(" %s/%s", runtime.GOOS, runtime.GOARCH)
 	return out
+}
+
+// UserAgent returns the HTTP User-Agent string identifying bedrock and its
+// build version to the third-party services and hosts it probes. The version
+// segment is resolved exactly as String resolves it, so the User-Agent and
+// `--version` never disagree (…/dev for local builds).
+func UserAgent() string {
+	v, _, _ := resolve()
+	return "github.com/whitworth-org/bedrock/" + v + " (+https://example.invalid/)"
 }
 
 // shortRev returns s if len(s) <= 12, otherwise s[:12].

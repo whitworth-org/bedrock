@@ -20,6 +20,7 @@ import (
 
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/version"
 )
 
 // hostnameRe is the conservative allowlist every candidate hostname derived
@@ -48,11 +49,6 @@ func isValidHostname(h string) bool {
 	}
 	return hostnameRe.MatchString(h)
 }
-
-// userAgent is shared across all sources. Kept consistent with the
-// project-wide HTTP client identity in probe/http.go so operators see one
-// User-Agent string in their access logs.
-const userAgent = "github.com/whitworth-org/bedrock/0.1 (+https://example.invalid/)"
 
 // source is the minimal interface every passive enumeration backend
 // satisfies. Each implementation does a single GET, parses the body, and
@@ -152,7 +148,7 @@ func httpGet(ctx context.Context, env *probe.Env, target string) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", version.UserAgent())
 	req.Header.Set("Accept", "*/*")
 	resp, err := env.HTTP.DoStrict(req)
 	if err != nil {
