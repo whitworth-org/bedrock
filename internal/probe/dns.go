@@ -230,11 +230,42 @@ func answerMatches(rr dns.RR, queried string) bool {
 	return dns.CanonicalName(rr.Header().Name) == dns.CanonicalName(dns.Fqdn(queried))
 }
 
+// minRetransmitBudget is the smallest per-operation timeout at which
+// exchangeOnUpstream splits its budget into two attempts. Below it, a single
+// full-budget attempt runs so a deliberately small --timeout is never carved
+// into slices too short for a healthy resolver to answer.
+const minRetransmitBudget = 4 * time.Second
+
 func (d *DNS) exchangeOnUpstream(ctx context.Context, m *dns.Msg, u upstream) (*dns.Msg, error) {
 	// Tight per-upstream deadline so a single slow resolver cannot consume
 	// the caller's whole budget when we fan out across upstreams.
 	ctx, cancel := context.WithTimeout(ctx, d.timeout)
 	defer cancel()
+
+	// A dropped UDP datagram or a transiently throttled resolver (Cloudflare's
+	// 1.1.1.1 rate-limits aggressive probing) otherwise surfaces as a spurious
+	// lookup FAIL. DNS queries are idempotent, so when the budget is comfortable
+	// we retransmit once within the SAME budget: two attempts of d.timeout/2
+	// recover a lost datagram without adding wall-clock on the fast-answer path.
+	perAttempt, attempts := d.timeout, 1
+	if d.timeout >= minRetransmitBudget {
+		perAttempt, attempts = d.timeout/2, 2
+	}
+
+	var resp *dns.Msg
+	var err error
+	for i := 0; i < attempts; i++ {
+		actx, acancel := context.WithTimeout(ctx, perAttempt)
+		resp, err = d.exchangeOnce(actx, m, u)
+		acancel()
+		if err == nil || ctx.Err() != nil || !isTransientNetErr(err) {
+			break
+		}
+	}
+	return resp, err
+}
+
+func (d *DNS) exchangeOnce(ctx context.Context, m *dns.Msg, u upstream) (*dns.Msg, error) {
 	switch u.protocol {
 	case protoDoH:
 		return dohExchange(ctx, d.httpClient, u.addr, m)
@@ -251,6 +282,24 @@ func (d *DNS) exchangeOnUpstream(ctx context.Context, m *dns.Msg, u upstream) (*
 		}
 		return resp, err
 	}
+}
+
+// isTransientNetErr reports whether err is a transient network condition worth
+// retransmitting an idempotent DNS query for: a timeout (a dropped datagram or
+// a throttled upstream) or another temporary net.Error. A caller cancellation
+// is deliberately NOT transient — that is a shutdown signal, not a lost packet.
+func isTransientNetErr(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) {
+		return ne.Timeout()
+	}
+	return false
 }
 
 // LookupTXT returns concatenated TXT strings per record. Each TXT record can

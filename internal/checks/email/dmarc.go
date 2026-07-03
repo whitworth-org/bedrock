@@ -408,6 +408,12 @@ func ensureDMARC(ctx context.Context, env *probe.Env) {
 	})
 }
 
+// EnsureDMARC primes probe.CacheKeyDMARC with the parsed DMARC record for
+// env.Target exactly once per scan. It exists so consumers in other packages
+// — specifically the BIMI Gmail gate — can read the DMARC verdict race-free
+// regardless of check scheduling, without importing this package's parser.
+func EnsureDMARC(ctx context.Context, env *probe.Env) { ensureDMARC(ctx, env) }
+
 // runDMARCNonExistentPolicy evaluates the RFC 9989 §4.7 `np` tag — the policy
 // a Domain Owner applies to mail from *non-existent* subdomains of the
 // Organizational Domain. It is the headline new externally-observable control
