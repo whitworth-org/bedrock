@@ -10,7 +10,7 @@ A single-binary CLI auditor for DNS, DNSSEC, Email (incl. BIMI), and Web / TLS. 
 
 ## Install
 
-Requires **Go 1.26** or newer.
+Requires **Go 1.26.5** or newer.
 
 ### Preferred: `go install`
 
