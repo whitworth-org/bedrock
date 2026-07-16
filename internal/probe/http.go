@@ -137,7 +137,7 @@ func (h *HTTP) Get(ctx context.Context, target string) (*Response, error) {
 			insecureChain = append(insecureChain, req.URL)
 			return nil
 		}
-		resp2, _ := h.fetch(ctx, &insecureCli, u)
+		resp2, insecureErr := h.fetch(ctx, &insecureCli, u)
 		if resp2 != nil {
 			resp2.RedirectCh = insecureChain
 			// Defensive: an un-verified body can be anything; drop it so
@@ -146,6 +146,12 @@ func (h *HTTP) Get(ctx context.Context, target string) (*Response, error) {
 			resp2.Body = nil
 			resp2.Truncated = false
 			return resp2, nil
+		}
+		// Both fetches failed. chainErr stays the primary (wrapped) error —
+		// it names the validation failure callers care about — with the
+		// diagnostic retry's failure appended instead of silently dropped.
+		if insecureErr != nil {
+			return nil, fmt.Errorf("%w (insecure diagnostic retry also failed: %v)", chainErr, insecureErr)
 		}
 		return nil, chainErr
 	}
@@ -176,7 +182,6 @@ func (h *HTTP) GetStrict(ctx context.Context, target string) (*Response, error) 
 	}
 	strictTr.DialContext = safeDialContext(h.timeout, false)
 
-	chain := []*url.URL{u}
 	strictCli := &http.Client{
 		Transport: strictTr,
 		Timeout:   h.timeout * 3,
@@ -195,7 +200,9 @@ func (h *HTTP) GetStrict(ctx context.Context, target string) (*Response, error) 
 		return nil, err
 	}
 	if resp != nil {
-		resp.RedirectCh = chain
+		// Redirects are refused above, so the chain is always exactly the
+		// requested URL.
+		resp.RedirectCh = []*url.URL{u}
 	}
 	return resp, nil
 }
@@ -237,6 +244,12 @@ func (h *HTTP) DoStrict(req *http.Request) (*Response, error) {
 	strictCli := &http.Client{
 		Transport: strictTr,
 		Timeout:   h.timeout * 3,
+		// Same redirect policy as Do and Get: cap the chain at 8 and refuse
+		// https→http downgrades. The total redirect refusal in GetStrict is
+		// an RFC 8461 §3.3 requirement specific to authenticated policy
+		// fetches; DoStrict callers (discovery API sources) may be
+		// legitimately redirected within HTTPS.
+		CheckRedirect: h.client.CheckRedirect,
 	}
 	return h.doWithClient(req, strictCli)
 }

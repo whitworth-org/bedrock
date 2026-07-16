@@ -160,6 +160,10 @@ func readDMARC(v any) (dmarcView, error) {
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 			out.Pct = int(f.Uint())
 		}
+	} else {
+		// No Pct field at all: assume the DMARC default of 100 so the pct
+		// gate never fires on a struct that never carried the tag.
+		out.Pct = 100
 	}
 	return out, nil
 }

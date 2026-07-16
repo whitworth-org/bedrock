@@ -84,6 +84,22 @@ func TestGmailGate_PctNot100(t *testing.T) {
 	}
 }
 
+// pctlessDMARC is DMARC-shaped but carries no Pct field at all; readDMARC
+// must assume the default of 100 rather than tripping the pct gate.
+type pctlessDMARC struct {
+	Policy string
+	Adkim  string
+	Aspf   string
+}
+
+func TestGmailGate_NoPctField(t *testing.T) {
+	env := newEnvWithDMARC(t, &pctlessDMARC{Policy: "reject", Adkim: "s", Aspf: "s"})
+	results := runGmail(t, env)
+	if len(results) != 1 || results[0].Status != report.Pass {
+		t.Fatalf("want single Pass for a DMARC view without a Pct field; got %+v", results)
+	}
+}
+
 func TestGmailGate_TestModeY(t *testing.T) {
 	env := newEnvWithDMARC(t, &fakeDMARC{Policy: "reject", Pct: 100, Adkim: "s", Aspf: "s", TestMode: "y"})
 	results := runGmail(t, env)
