@@ -12,11 +12,12 @@ import (
 // fakeDMARC mirrors the field shape of email.DMARC so the reflection-based
 // reader in gmail.go can pull values without an import on the email package.
 type fakeDMARC struct {
-	Policy string
-	Pct    int
-	Adkim  string
-	Aspf   string
-	Raw    string
+	Policy   string
+	Pct      int
+	Adkim    string
+	Aspf     string
+	TestMode string
+	Raw      string
 }
 
 func newEnvWithDMARC(t *testing.T, d any) *probe.Env {
@@ -80,6 +81,21 @@ func TestGmailGate_PctNot100(t *testing.T) {
 	}
 	if failCount != 1 {
 		t.Errorf("want 1 fail (pct), got %d (%+v)", failCount, results)
+	}
+}
+
+func TestGmailGate_TestModeY(t *testing.T) {
+	env := newEnvWithDMARC(t, &fakeDMARC{Policy: "reject", Pct: 100, Adkim: "s", Aspf: "s", TestMode: "y"})
+	results := runGmail(t, env)
+	if len(results) != 1 {
+		t.Fatalf("want 1 result; got %d: %+v", len(results), results)
+	}
+	r := results[0]
+	if r.Status != report.Fail {
+		t.Errorf("want Fail for t=y; got %s (evidence=%q)", r.Status, r.Evidence)
+	}
+	if r.Remediation == "" {
+		t.Error("Fail must carry a remediation")
 	}
 }
 

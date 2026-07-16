@@ -155,18 +155,48 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 | Check ID                                     | What it verifies                                                                 |
 |----------------------------------------------|----------------------------------------------------------------------------------|
 | `email.spf.record`                           | Exactly one `v=spf1` TXT, valid syntax, terminating `-all` / `~all`.             |
-| `email.dkim.selector.<name>`                 | Probes ~44 well-known selectors plus ESP-specific ones derived from SPF includes.|
-| `email.dmarc.record`                         | `_dmarc` TXT exact-match `v=DMARC1`, strict tag parsing, `rua`/`ruf` scheme allowlist, duplicate-tag rejection; RFC 9989 `np`/`psd`/`t` tags (`pct` parsed, flagged deprecated). |
+| `email.dkim.selector.<name>`                 | Probes ~44 well-known selectors plus ESP-specific ones derived from SPF includes; accepts `v=DKIM1` and `v=DKIM2` records, validates `k=` (`rsa`/`ed25519`) and that ed25519 keys decode to 32 bytes (RFC 8463). |
+| `email.dkim2.readiness`                      | DNS-observable DKIM2 signals (draft-ietf-dkim-dkim2-spec): `PASS` on published `v=DKIM2` keys, `INFO` on ed25519-only or DKIM1/rsa-only posture. Never fails — DKIM2 is a draft. |
+| `email.dmarc.record`                         | Effective DMARC policy via the RFC 9989 §4.8 DNS tree walk (≤8 queries; replaces the Public Suffix List): strict tag parsing, `rua`/`ruf` scheme allowlist, duplicate-tag rejection, `np`/`psd`/`t` tags, retired `pct`/`rf`/`ri` flagged, `t=y` steps the effective policy down one level. Subdomains inherit the organizational record through `sp=`. |
+| `email.dmarc.discovery`                      | How discovery resolved: Organizational Domain and the RFC 9989 selection rule (`psd=n`, `psd=y` one-below, fewest labels), the policy domain, queries used, and any malformed/multiple records the walk ignored. |
 | `email.dmarc.np`                             | Non-existent-subdomain policy (RFC 9989 §4.7): `PASS` on `np=reject`, `WARN` on quarantine/none; notes explicit vs inherited (`np`←`sp`←`p`). |
+| `email.dmarc.np.rfc8020`                     | np enforceability: probes a random nonexistent subdomain of the Organizational Domain; `PASS` on NXDOMAIN (RFC 8020), `WARN` on wildcard or NOERROR zones where receivers cannot apply `np=`. |
+| `email.dmarc.extdest`                        | RFC 9990 external-destination consent: `rua`/`ruf` hosts outside the Organizational Domain must publish `v=DMARC1` at `<policy-domain>._report._dmarc.<dest>`, or compliant generators refuse to report. |
+| `email.dmarc.reject_dkim`                    | RFC 9989 `p=reject` requirement: publishers MUST apply DKIM and MUST NOT rely on SPF alone; `WARN` when no DKIM key is discoverable on common selectors. |
 | `email.mtasts.txt`                           | `_mta-sts` TXT well-formed, `v=STSv1`, `id=` opaque token.                       |
 | `email.mtasts.policy`                        | HTTPS fetch of `mta-sts.<domain>/.well-known/mta-sts.txt` (no redirects, TLS 1.2 floor, strict chain). |
 | `email.tlsrpt.record`                        | `_smtp._tls` TXT, `v=TLSRPTv1`, valid `rua=` schemes.                            |
 | `email.dane.<mx-host>`                       | TLSA under `_25._tcp.<mx>`; usage/selector/matching validation; DNSSEC AD-bit enforced. |
 | `email.nullmx`                               | RFC 7505 null-MX declaration (`0 .`).                                            |
 | `email.smtp.starttls.<mx-host>`              | Connect to each MX, EHLO, STARTTLS advertisement, handshake success + version.   |
-| `email.arc.*`                                | ARC deployment guidance (DKIM availability, DMARC enforcement alignment).        |
+| `email.arc.*`                                | ARC deployment guidance (DKIM availability, DMARC enforcement alignment); RFC 8617 is headed to Historic — guidance now steers new deployments toward DKIM2. |
 | `email.rbl` (opt-in via `--enable-rbl`)      | Apex and MX IPs vs Spamhaus, Barracuda, SpamCop, SORBS, Surriel PSBL.            |
 | `email.google_workspace_mx`                  | **INFO only** — detects legacy `ASPMX.L.GOOGLE.COM` layout and recommends migration to the new single `SMTP.GOOGLE.COM` MX. Silent for non-Google MX and domains already on the new form. |
+
+### DMARCbis and DKIM2
+
+DMARC policy discovery follows RFC 9989 (DMARCbis, obsoletes RFC 7489 and RFC 9091): a DNS
+tree walk of at most eight queries replaces the Public Suffix List, so a subdomain with no
+`_dmarc` record of its own is evaluated against the organizational record it actually
+inherits. Aggregate and failure reporting are audited per RFC 9990 and RFC 9991.
+
+```bash
+# Just the DMARCbis surface: effective policy, discovery, np, reporting consent
+bedrock --no-active --ids email.dmarc.record,email.dmarc.discovery,email.dmarc.np,email.dmarc.extdest example.org
+
+# DKIM2 posture alongside the p=reject DKIM requirement
+bedrock --no-active --ids email.dkim2.readiness,email.dmarc.reject_dkim example.org
+```
+
+DKIM2 (draft-ietf-dkim-dkim2-spec) keys live at the same `<selector>._domainkey.<domain>`
+location as DKIM1 and sign with ed25519, so a published key record looks like:
+
+```
+sel1._domainkey.example.org. IN TXT "v=DKIM2; k=ed25519; p=11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
+```
+
+The `Message-Instance` / `DKIM2-Signature` chain of custody exists only in mail flow — a
+DNS scan can verify published keys and algorithms, not live signature chains.
 
 ### BIMI
 
@@ -179,7 +209,7 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 | `bimi.vmc.fetch`      | VMC PEM fetched over HTTPS via the strict client.                                     |
 | `bimi.vmc.chain`      | Leaf passes BIMI EKU gate (`1.3.6.1.5.5.7.3.31` VMC or `…3.32` CMC); chain validates against system roots; ≤16 PEM blocks. |
 | `bimi.vmc.logotype`   | RFC 3709 LogotypeExtn ASN.1 decoded; SHA-256 of SVG matches the hash in the cert.     |
-| `bimi.gmail.dmarc`    | Gmail BIMI requirements: DMARC enforcement, `pct=100`, strict alignment.              |
+| `bimi.gmail.dmarc`    | Gmail BIMI requirements: DMARC `quarantine`/`reject` enforced (no `t=y` test mode, no sampling via retired `pct`), strict alignment. |
 
 ### Web / TLS
 

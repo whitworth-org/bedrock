@@ -143,10 +143,10 @@
     {
       "id": "bimi.gmail.dmarc",
       "category": "Email",
-      "title": "BIMI Gmail gate: DMARC must be quarantine|reject, pct=100, strict alignment",
+      "title": "BIMI Gmail gate: DMARC quarantine|reject enforced, strict alignment",
       "status": "INFO",
       "evidence": "DMARC not parsed (no entry at email.dmarc.parsed)",
-      "remediation": "_dmarc.test.invalid. IN TXT \"v=DMARC1; p=quarantine; pct=100; rua=mailto:dmarc@test.invalid; adkim=s; aspf=s\"",
+      "remediation": "_dmarc.test.invalid. IN TXT \"v=DMARC1; p=quarantine; rua=mailto:dmarc@test.invalid; adkim=s; aspf=s\"",
       "rfc_refs": [
         "Gmail BIMI requirements",
         "RFC 9989 §4.7"
@@ -254,11 +254,13 @@
       "category": "Email",
       "title": "ARC (Authenticated Received Chain) deployment guidance",
       "status": "INFO",
-      "evidence": "ARC preserves authentication results across legitimate intermediaries (mailing lists, forwarders) by stamping ARC-Authentication-Results, ARC-Message-Signature, and ARC-Seal headers on each hop.",
-      "remediation": "Deploy at MTA / mail-gateway: stamp three headers per hop using the AMS+AS sealing pair defined in RFC 8617 §4 (ARC-Authentication-Results, ARC-Message-Signature, ARC-Seal). Use the same DKIM key infrastructure as the domain's outbound DKIM signer.",
+      "evidence": "ARC preserves authentication results across legitimate intermediaries (mailing lists, forwarders) by stamping ARC-Authentication-Results, ARC-Message-Signature, and ARC-Seal headers on each hop. RFC 8617 is being reclassified as Historic (draft-ietf-dmarc-arc-to-historic); DKIM2 absorbs this role with a per-hop DKIM2-Signature chain.",
+      "remediation": "Prefer DKIM2 adoption (draft-ietf-dkim-dkim2-spec) over new ARC deployments — ARC (RFC 8617) is headed to Historic. Where ARC is still required by a provider, stamp the three RFC 8617 §4 headers per hop (AAR, AMS, AS) using the same DKIM key infrastructure as the domain's outbound signer; that key material carries over to DKIM2.",
       "rfc_refs": [
         "RFC 8617 §4",
-        "RFC 8617 §5"
+        "RFC 8617 §5",
+        "draft-ietf-dmarc-arc-to-historic",
+        "draft-ietf-dkim-dkim2-spec-04"
       ]
     },
     {
@@ -285,6 +287,39 @@
       ]
     },
     {
+      "id": "email.dkim2.readiness",
+      "category": "Email",
+      "title": "DKIM2 readiness signals (draft-ietf-dkim-dkim2-spec)",
+      "status": "N/A",
+      "evidence": "no DKIM keys discoverable on common selectors; see email.dkim.selector.none",
+      "rfc_refs": [
+        "draft-ietf-dkim-dkim2-spec-04",
+        "RFC 8463"
+      ]
+    },
+    {
+      "id": "email.dmarc.discovery",
+      "category": "Email",
+      "title": "DMARC discovery: RFC 9989 tree walk and Organizational Domain",
+      "status": "N/A",
+      "evidence": "no v=DMARC1 records on the tree walk (2 of 8 queries); see email.dmarc.record",
+      "rfc_refs": [
+        "RFC 9989 §4.8",
+        "RFC 9990"
+      ]
+    },
+    {
+      "id": "email.dmarc.extdest",
+      "category": "Email",
+      "title": "External DMARC report destinations authorized (RFC 9990)",
+      "status": "N/A",
+      "evidence": "no DMARC record; no report destinations to authorize",
+      "rfc_refs": [
+        "RFC 9990",
+        "RFC 9991"
+      ]
+    },
+    {
       "id": "email.dmarc.np",
       "category": "Email",
       "title": "DMARC non-existent subdomain policy (np)",
@@ -299,12 +334,23 @@
       "category": "Email",
       "title": "DMARC record present and well-formed",
       "status": "FAIL",
-      "evidence": "no v=DMARC1 TXT record at _dmarc.test.invalid",
+      "evidence": "no v=DMARC1 record at _dmarc.test.invalid or any tree-walk ancestor (RFC 9989 §4.8, 2 of 8 queries)",
       "remediation": "_dmarc.test.invalid. IN TXT \"v=DMARC1; p=reject; rua=mailto:dmarc-reports@test.invalid; adkim=s; aspf=s\"",
       "rfc_refs": [
         "RFC 9989 §4.7",
         "RFC 9989 §4.8",
-        "RFC 9989 §11"
+        "RFC 9990"
+      ]
+    },
+    {
+      "id": "email.dmarc.reject_dkim",
+      "category": "Email",
+      "title": "p=reject requires DKIM, not SPF alone (RFC 9989)",
+      "status": "N/A",
+      "evidence": "no DMARC record; the requirement applies to p=reject publishers",
+      "rfc_refs": [
+        "RFC 9989",
+        "RFC 6376"
       ]
     },
     {
