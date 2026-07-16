@@ -19,6 +19,12 @@ import (
 // validate live ARC chains; we can only verify that the domain owns the
 // cryptographic and policy machinery ARC depends on.
 //
+// RFC 8617 is being reclassified as Historic (draft-ietf-dmarc-arc-to-
+// historic): DKIM2 (draft-ietf-dkim-dkim2-spec) absorbs ARC's role with a
+// chain of DKIM2-Signature headers instead of the AAR/AMS/AS triple. The
+// prerequisites audited here (DKIM keys, DMARC enforcement) carry over to
+// DKIM2 unchanged, so the checks stay useful either way.
+//
 // Status policy: ARC adoption is an enhancement, never a baseline
 // requirement, so this check NEVER returns Fail. Missing prerequisites
 // surface as Warn; a healthy or merely informational state is Info.
@@ -140,13 +146,23 @@ func policyOrNone(p string) string {
 // consumers and operators reading the source can still find the guidance.
 func arcGuidanceResult() report.Result {
 	return report.Result{
-		ID:          "email.arc.guidance",
-		Category:    category,
-		Title:       "ARC (Authenticated Received Chain) deployment guidance",
-		Status:      report.Info,
-		Evidence:    "ARC preserves authentication results across legitimate intermediaries (mailing lists, forwarders) by stamping ARC-Authentication-Results, ARC-Message-Signature, and ARC-Seal headers on each hop.",
-		Remediation: "Deploy at MTA / mail-gateway: stamp three headers per hop using the AMS+AS sealing pair defined in RFC 8617 §4 (ARC-Authentication-Results, ARC-Message-Signature, ARC-Seal). Use the same DKIM key infrastructure as the domain's outbound DKIM signer.",
-		RFCRefs:     []string{"RFC 8617 §4", "RFC 8617 §5"},
+		ID:       "email.arc.guidance",
+		Category: category,
+		Title:    "ARC (Authenticated Received Chain) deployment guidance",
+		Status:   report.Info,
+		Evidence: "ARC preserves authentication results across legitimate intermediaries (mailing " +
+			"lists, forwarders) by stamping ARC-Authentication-Results, ARC-Message-Signature, and " +
+			"ARC-Seal headers on each hop. RFC 8617 is being reclassified as Historic " +
+			"(draft-ietf-dmarc-arc-to-historic); DKIM2 absorbs this role with a per-hop " +
+			"DKIM2-Signature chain.",
+		Remediation: "Prefer DKIM2 adoption (draft-ietf-dkim-dkim2-spec) over new ARC deployments — " +
+			"ARC (RFC 8617) is headed to Historic. Where ARC is still required by a provider, stamp " +
+			"the three RFC 8617 §4 headers per hop (AAR, AMS, AS) using the same DKIM key " +
+			"infrastructure as the domain's outbound signer; that key material carries over to DKIM2.",
+		RFCRefs: []string{
+			"RFC 8617 §4", "RFC 8617 §5",
+			"draft-ietf-dmarc-arc-to-historic", "draft-ietf-dkim-dkim2-spec-04",
+		},
 	}
 }
 

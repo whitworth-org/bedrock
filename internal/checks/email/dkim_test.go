@@ -13,6 +13,7 @@ func TestParseDKIM(t *testing.T) {
 		wantErr bool
 		wantP   string
 		wantK   string
+		wantV   string
 	}{
 		{
 			name:  "minimal RFC 6376 §3.6.1 example",
@@ -35,9 +36,25 @@ func TestParseDKIM(t *testing.T) {
 			wantP: "ABC", wantK: "rsa",
 		},
 		{
+			name:  "DKIM2 key record (draft-ietf-dkim-dkim2-spec)",
+			raw:   "v=DKIM2; k=ed25519; p=11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+			wantP: "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+			wantK: "ed25519", wantV: "DKIM2",
+		},
+		{
+			name:  "DKIM2 version folds case",
+			raw:   "v=dkim2; k=ed25519; p=ABC",
+			wantP: "ABC", wantK: "ed25519", wantV: "DKIM2",
+		},
+		{
 			name:    "wrong version",
-			raw:     "v=DKIM2; p=ABC",
+			raw:     "v=DKIM3; p=ABC",
 			wantErr: true,
+		},
+		{
+			name:  "h tag stored",
+			raw:   "v=DKIM1; h=sha256; p=ABC",
+			wantP: "ABC", wantK: "rsa",
 		},
 		{
 			name:    "malformed tag",
@@ -62,6 +79,9 @@ func TestParseDKIM(t *testing.T) {
 			}
 			if got.KeyType != tc.wantK {
 				t.Errorf("KeyType = %q, want %q", got.KeyType, tc.wantK)
+			}
+			if tc.wantV != "" && got.Version != tc.wantV {
+				t.Errorf("Version = %q, want %q", got.Version, tc.wantV)
 			}
 		})
 	}

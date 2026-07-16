@@ -1,7 +1,7 @@
 .\" bedrock(1) man page
 .\" Section 1: user commands.
 .\" Source: man/bedrock.1 in the bedrock repository.
-.TH BEDROCK 1 "2026-07-02" "bedrock 1.1.1" "User Commands"
+.TH BEDROCK 1 "2026-07-17" "bedrock 1.2.0" "User Commands"
 .SH NAME
 bedrock \- CLI auditor for fundamental domain security controls (DNS, DNSSEC, Email, BIMI, Web/TLS)
 .SH SYNOPSIS
@@ -304,8 +304,14 @@ RFC 4033, 4034, 4035, 4509, 5011, 5155, 6605, 6781, 7344, 8624 (DNSSEC)
 .IP \(bu 2
 RFC 5321, 3207, 7505 (SMTP / STARTTLS / Null MX)
 .IP \(bu 2
-RFC 7208 (SPF), 6376 (DKIM), 9989 (DMARC), 8617 (ARC),
-8460 (TLS-RPT), 8461 (MTA-STS), 7672 (DANE-SMTP), 5782 (DNSBL)
+RFC 7208 (SPF), 6376 (DKIM), 8463 (ed25519 DKIM),
+draft-ietf-dkim-dkim2-spec (DKIM2)
+.IP \(bu 2
+RFC 9989 (DMARC; obsoletes 7489 and 9091), 9990 (DMARC aggregate
+reporting), 9991 (DMARC failure reporting), 8020 (NXDOMAIN semantics),
+8617 (ARC; Historic-track per draft-ietf-dmarc-arc-to-historic)
+.IP \(bu 2
+RFC 8460 (TLS-RPT), 8461 (MTA-STS), 7672 (DANE-SMTP), 5782 (DNSBL)
 .IP \(bu 2
 RFC 5280, 6125, 6797 (HSTS), 7525 / BCP 195 (TLS), 8659 (CAA),
 6066 / 6960 (OCSP), 9162 (CT), 9113 (HTTP/2), 9114 (HTTP/3)

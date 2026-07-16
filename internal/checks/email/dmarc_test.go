@@ -142,6 +142,30 @@ func TestParseDMARC(t *testing.T) {
 	}
 }
 
+func TestParseDMARCRetiredTags(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{name: "none retired", raw: "v=DMARC1; p=none", want: nil},
+		{name: "pct recorded", raw: "v=DMARC1; p=none; pct=50", want: []string{"pct"}},
+		{name: "rf and ri recorded, values unvalidated", raw: "v=DMARC1; p=none; rf=bogus; ri=whenever", want: []string{"rf", "ri"}},
+		{name: "record order preserved", raw: "v=DMARC1; p=none; ri=86400; pct=100; rf=afrf", want: []string{"ri", "pct", "rf"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ParseDMARC(tc.raw)
+			if err != nil {
+				t.Fatalf("ParseDMARC(%q): %v", tc.raw, err)
+			}
+			if !reflect.DeepEqual(got.RetiredTags, tc.want) {
+				t.Errorf("RetiredTags = %v, want %v", got.RetiredTags, tc.want)
+			}
+		})
+	}
+}
+
 func TestRunDMARCNonExistentPolicy(t *testing.T) {
 	const id = "email.dmarc.np"
 	cases := []struct {

@@ -36,8 +36,8 @@ linters:
         # would make the CLI unusable.
         - G304
         # Integer-overflow warnings: each use-site is bounded by validated
-        # structure (DMARC pct is 0..100 per RFC 7489; CSS hex-escape
-        # scalar is capped by the six-digit loop).
+        # structure (DMARC pct is 0..100, retired in RFC 9989 but still
+        # parsed; CSS hex-escape scalar is capped by the six-digit loop).
         - G115
         # Test-only permissive mkdir/writefile modes for golden fixtures.
         - G301

@@ -26,10 +26,14 @@ test-race:
 lint:
 	golangci-lint run
 
+# go test refuses -fuzz patterns matching more than one target, so fuzz each
+# Fuzz function individually.
 fuzz:
 	@for t in $$(grep -rl '^func Fuzz' --include='*_test.go' . | xargs -I{} dirname {} | sort -u); do \
-	  echo "=== $$t ==="; \
-	  (cd $$t && go test -run=^$$ -fuzz=. -fuzztime=30s ./...) || exit 1; \
+	  for f in $$(sed -n 's/^func \(Fuzz[A-Za-z0-9_]*\).*/\1/p' $$t/*_test.go); do \
+	    echo "=== $$t $$f ==="; \
+	    (cd $$t && go test -run='^$$' -fuzz="^$$f\$$" -fuzztime=30s .) || exit 1; \
+	  done; \
 	done
 
 vulncheck:
