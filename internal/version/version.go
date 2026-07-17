@@ -76,10 +76,12 @@ func String() string {
 // UserAgent returns the HTTP User-Agent string identifying bedrock and its
 // build version to the third-party services and hosts it probes. The version
 // segment is resolved exactly as String resolves it, so the User-Agent and
-// `--version` never disagree (…/dev for local builds).
+// `--version` never disagree (…/dev for local builds). The +URL comment
+// follows the crawler convention of linking to a page that identifies the
+// client, so operators of probed hosts can find out what contacted them.
 func UserAgent() string {
 	v, _, _ := resolve()
-	return "github.com/whitworth-org/bedrock/" + v + " (+https://example.invalid/)"
+	return "github.com/whitworth-org/bedrock/" + v + " (+https://github.com/whitworth-org/bedrock)"
 }
 
 // shortRev returns s if len(s) <= 12, otherwise s[:12].
