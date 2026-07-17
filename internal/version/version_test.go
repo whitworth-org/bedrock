@@ -77,14 +77,25 @@ func TestStringCommitWithBuildInfoDate(t *testing.T) {
 	}
 }
 
-func TestUserAgentCarriesResolvedVersion(t *testing.T) {
-	defer withVars(t, "1.2.3", "", "")()
-	ua := UserAgent()
-	if !strings.HasPrefix(ua, "github.com/whitworth-org/bedrock/") {
-		t.Fatalf("UserAgent should start with the module product token: %q", ua)
+func TestUserAgentFullFormat(t *testing.T) {
+	// Stub out BuildInfo so both cases render from the injected vars alone:
+	// the "dev" fallback would otherwise pick up whatever version the test
+	// binary's module stamp happens to carry.
+	defer withReadBuildInfo(t, func() (*debug.BuildInfo, bool) { return nil, false })()
+	cases := []struct {
+		version string
+		want    string
+	}{
+		{"1.2.3", "github.com/whitworth-org/bedrock/1.2.3 (+https://github.com/whitworth-org/bedrock)"},
+		{"dev", "github.com/whitworth-org/bedrock/dev (+https://github.com/whitworth-org/bedrock)"},
 	}
-	if !strings.Contains(ua, "1.2.3") {
-		t.Fatalf("UserAgent should carry the build version: %q", ua)
+	for _, tc := range cases {
+		restore := withVars(t, tc.version, "", "")
+		ua := UserAgent()
+		restore()
+		if ua != tc.want {
+			t.Errorf("UserAgent() with Version=%q = %q, want %q", tc.version, ua, tc.want)
+		}
 	}
 }
 
