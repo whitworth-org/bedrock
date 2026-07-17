@@ -104,9 +104,11 @@ func TestExchangeSingleAttemptBelowThreshold(t *testing.T) {
 	spec, cleanup := startFlakyResolver(t, h)
 	defer cleanup()
 
-	// Below minRetransmitBudget → exactly one attempt; the dropped datagram
-	// yields a timeout with no retry.
-	d := NewDNS(spec, 500*time.Millisecond)
+	// Below minRetransmitBudget (4s) → exactly one attempt; the dropped
+	// datagram yields a timeout with no retry. 2s leaves slow CI machines
+	// ample time to get the query onto the wire before the client gives up,
+	// so the h.count() assertion below stays reliable.
+	d := NewDNS(spec, 2*time.Second)
 	if _, err := d.LookupA(context.Background(), "flaky.test"); err == nil {
 		t.Fatal("below-threshold budget must not retry; expected a timeout error")
 	}
