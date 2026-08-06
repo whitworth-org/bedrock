@@ -7,7 +7,7 @@ package web
 // redirects are permitted (§3), unlike the MTA-STS policy fetch. Absence is a
 // Warn — publishing security.txt is optional — while a published file that
 // breaches a MUST (§2.5, §3) is a Fail and a SHOULD breach is a Warn. Parser
-// caps follow the §6.1 hardening guidance: ≤32 KB, ≤1000 lines, ≤2048 bytes
+// caps follow the §5.4 hardening guidance: ≤32 KB, ≤1000 lines, ≤2048 bytes
 // per field value.
 
 import (
@@ -38,9 +38,16 @@ const (
 )
 
 // secTxtWebURIFields are the optional fields whose values, when web URIs,
-// MUST use https (§2.4). Encryption legitimately uses non-web schemes
-// (dns:, openpgp4fpr:), so only an explicit http:// value is flagged.
-var secTxtWebURIFields = []string{"acknowledgments", "canonical", "encryption", "hiring", "policy"}
+// MUST use https, each per its own field definition. Encryption legitimately
+// uses non-web schemes (dns:, openpgp4fpr:), so only an explicit http://
+// value is flagged.
+var secTxtWebURIFields = []struct{ name, section string }{
+	{"acknowledgments", "§2.5.1"},
+	{"canonical", "§2.5.2"},
+	{"encryption", "§2.5.4"},
+	{"hiring", "§2.5.6"},
+	{"policy", "§2.5.7"},
+}
 
 // securityTxt is a parsed file: field name (lowercased) → values in order,
 // plus whether the file carried an OpenPGP cleartext signature (§2.3).
@@ -75,8 +82,8 @@ func runSecurityTxt(ctx context.Context, env *probe.Env) []report.Result {
 func classifySecTxt(ctx context.Context, env *probe.Env, origin string, resp *probe.Response) []report.Result {
 	if resp.Truncated {
 		return []report.Result{secTxtResult(report.Fail,
-			origin+" exceeds the 1 MiB fetch cap; §6.1 advises rejecting files over 32 KB",
-			securityTxtRemediation(env.Target, time.Now()), "RFC 9116 §6.1")}
+			origin+" exceeds the 1 MiB fetch cap; §5.4 advises rejecting files over 32 KB",
+			securityTxtRemediation(env.Target, time.Now()), "RFC 9116 §5.4")}
 	}
 	ctIssue := secTxtContentTypeIssue(resp.Headers.Get("Content-Type"))
 	st, perr := parseSecurityTxt(string(resp.Body))
@@ -181,14 +188,14 @@ func secTxtContentTypeIssue(header string) string {
 // signature is noted, never verified).
 func parseSecurityTxt(body string) (*securityTxt, error) {
 	if len(body) > maxSecTxtBytes {
-		return nil, fmt.Errorf("%d bytes exceeds the %d-byte cap (§6.1)", len(body), maxSecTxtBytes)
+		return nil, fmt.Errorf("%d bytes exceeds the %d-byte cap (§5.4)", len(body), maxSecTxtBytes)
 	}
 	body = strings.TrimPrefix(body, "\uFEFF")
 	body, signed := stripClearsign(body)
 	body = strings.ReplaceAll(body, "\r\n", "\n")
 	lines := strings.Split(body, "\n")
 	if len(lines) > maxSecTxtLines {
-		return nil, fmt.Errorf("%d lines exceeds the %d-line cap (§6.1)", len(lines), maxSecTxtLines)
+		return nil, fmt.Errorf("%d lines exceeds the %d-line cap (§5.4)", len(lines), maxSecTxtLines)
 	}
 	st := &securityTxt{fields: map[string][]string{}, signed: signed}
 	for i, raw := range lines {
@@ -203,7 +210,7 @@ func parseSecurityTxt(body string) (*securityTxt, error) {
 		name := strings.ToLower(strings.TrimSpace(line[:colon]))
 		value := strings.TrimSpace(line[colon+1:])
 		if len(value) > maxSecTxtFieldLen {
-			return nil, fmt.Errorf("line %d value is %d bytes; cap is %d (§6.1)", i+1, len(value), maxSecTxtFieldLen)
+			return nil, fmt.Errorf("line %d value is %d bytes; cap is %d (§5.4)", i+1, len(value), maxSecTxtFieldLen)
 		}
 		if value == "" {
 			return nil, fmt.Errorf("line %d has an empty value for %q", i+1, name)
@@ -276,7 +283,7 @@ func secTxtContactIssues(st *securityTxt) []string {
 			out = append(out, fmt.Sprintf(
 				"Contact %q is not an absolute URI — use mailto:, tel: or https:// (§2.5.3)", c))
 		case u.Scheme == "http":
-			out = append(out, fmt.Sprintf("Contact %q uses http; web URIs must be https (§2.4)", c))
+			out = append(out, fmt.Sprintf("Contact %q uses http; web URIs must be https (§2.5.3)", c))
 		}
 	}
 	return out
@@ -311,9 +318,9 @@ func secTxtExpiresIssues(st *securityTxt, now time.Time) (violations, warnings, 
 func secTxtWebURIIssues(st *securityTxt) []string {
 	var out []string
 	for _, f := range secTxtWebURIFields {
-		for _, v := range st.values(f) {
+		for _, v := range st.values(f.name) {
 			if strings.HasPrefix(strings.ToLower(v), "http://") {
-				out = append(out, fmt.Sprintf("%s %q must begin with https:// (§2.4)", f, v))
+				out = append(out, fmt.Sprintf("%s %q must begin with https:// (%s)", f.name, v, f.section))
 			}
 		}
 	}
