@@ -232,6 +232,7 @@ DNS scan can verify published keys and algorithms, not live signature chains.
 | `web.header.permissions-policy`       | `Permissions-Policy` present.                                                       |
 | `web.cookies`                         | `Set-Cookie` attributes: `Secure`, `HttpOnly`, `SameSite`.                          |
 | `web.caa`                             | CAA RRset present (RFC 8659).                                                       |
+| `web.securitytxt`                     | RFC 9116 `security.txt` at `/.well-known/`: required `Contact`/`Expires`, HTTPS URIs, freshness. |
 | `web.redirect.<host>`                 | HTTP→HTTPS redirect chain (no protocol downgrade, no cross-host hop).               |
 | `web.mixedcontent`                    | Apex body (first 1 MiB) scanned for `http://` src/href references.                  |
 | `web.http2`                           | HTTP/2 advertised via ALPN (`h2`).                                                  |

@@ -576,6 +576,16 @@
       ]
     },
     {
+      "id": "web.securitytxt",
+      "category": "WWW",
+      "title": "security.txt disclosure policy (RFC 9116)",
+      "status": "N/A",
+      "evidence": "active probing disabled (--no-active)",
+      "rfc_refs": [
+        "RFC 9116"
+      ]
+    },
+    {
       "id": "web.tls.curves",
       "category": "WWW",
       "title": "TLS elliptic curves accepted",
