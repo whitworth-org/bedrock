@@ -342,11 +342,13 @@ func secTxtCanonicalIssue(st *securityTxt, finalURL string) string {
 }
 
 // securityTxtRemediation is a minimal conformant file: the two required
-// fields, expiring one year out (§2.5.5 recommends staying under a year).
+// fields, expiring six months out. A full year via AddDate(1, 0, 0) can
+// span 366 days across a leap year and trip the §2.5.5 under-a-year WARN
+// this check itself applies.
 func securityTxtRemediation(domain string, now time.Time) string {
 	return fmt.Sprintf(
 		"https://%s/.well-known/security.txt (Content-Type: text/plain; charset=utf-8):\n"+
 			"Contact: mailto:security@%s\n"+
 			"Expires: %s",
-		domain, domain, now.AddDate(1, 0, 0).UTC().Format(time.RFC3339))
+		domain, domain, now.AddDate(0, 6, 0).UTC().Format(time.RFC3339))
 }
