@@ -33,6 +33,8 @@ func init() {
 	registry.Register(checkutil.Wrap("web.headers", category, runHeaders))
 	registry.Register(checkutil.Wrap("web.cookies", category, runCookies))
 	registry.Register(checkutil.Wrap("web.caa", category, runCAA))
+	registry.Register(checkutil.Wrap(securityTxtID, category, runSecurityTxt,
+		checkutil.RequireActive(securityTxtTitle, "RFC 9116")))
 	registry.Register(checkutil.Wrap("web.mixedcontent", category, runMixedContent))
 	// JA3S/JA4S TLS server fingerprints. Native — no third-party deps. Each
 	// registration captures its own ServerHello on the first call and caches
