@@ -21,7 +21,7 @@ go install github.com/whitworth-org/bedrock@latest
 Or pin a specific release:
 
 ```bash
-go install github.com/whitworth-org/bedrock@v1.0.1
+go install github.com/whitworth-org/bedrock@v1.2.2
 ```
 
 The binary is placed in `$GOBIN` (or `$GOPATH/bin`, which defaults to `~/go/bin` when `GOPATH` is unset). Make sure that directory is on your `PATH`:
@@ -156,7 +156,7 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 |----------------------------------------------|----------------------------------------------------------------------------------|
 | `email.spf.record`                           | Exactly one `v=spf1` TXT, valid syntax, terminating `-all` / `~all`.             |
 | `email.dkim.selector.<name>`                 | Probes ~44 well-known selectors plus ESP-specific ones derived from SPF includes; accepts `v=DKIM1` and `v=DKIM2` records, validates `k=` (`rsa`/`ed25519`) and that ed25519 keys decode to 32 bytes (RFC 8463). |
-| `email.dkim2.readiness`                      | DNS-observable DKIM2 signals (draft-ietf-dkim-dkim2-spec): `PASS` on published `v=DKIM2` keys, `INFO` on ed25519-only or DKIM1/rsa-only posture. Never fails — DKIM2 is a draft. |
+| `email.dkim2.readiness`                      | DNS-observable DKIM2 signals (draft-ietf-dkim-dkim2-spec): `PASS` on published `v=DKIM2` keys, `INFO` on ed25519-only or DKIM1/rsa-only posture. Never fails: DKIM2 is a draft. |
 | `email.dmarc.record`                         | Effective DMARC policy via the RFC 9989 §4.8 DNS tree walk (≤8 queries; replaces the Public Suffix List): strict tag parsing, `rua`/`ruf` scheme allowlist, duplicate-tag rejection, `np`/`psd`/`t` tags, retired `pct`/`rf`/`ri` flagged, `t=y` steps the effective policy down one level. Subdomains inherit the organizational record through `sp=`. |
 | `email.dmarc.discovery`                      | How discovery resolved: Organizational Domain and the RFC 9989 selection rule (`psd=n`, `psd=y` one-below, fewest labels), the policy domain, queries used, and any malformed/multiple records the walk ignored. |
 | `email.dmarc.np`                             | Non-existent-subdomain policy (RFC 9989 §4.7): `PASS` on `np=reject`, `WARN` on quarantine/none; notes explicit vs inherited (`np`←`sp`←`p`). |
@@ -169,7 +169,7 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 | `email.dane.<mx-host>`                       | TLSA under `_25._tcp.<mx>`; usage/selector/matching validation; DNSSEC AD-bit enforced. |
 | `email.nullmx`                               | RFC 7505 null-MX declaration (`0 .`).                                            |
 | `email.smtp.starttls.<mx-host>`              | Connect to each MX, EHLO, STARTTLS advertisement, handshake success + version.   |
-| `email.arc.*`                                | ARC deployment guidance (DKIM availability, DMARC enforcement alignment); RFC 8617 is headed to Historic — guidance now steers new deployments toward DKIM2. |
+| `email.arc.*`                                | ARC deployment guidance (DKIM availability, DMARC enforcement alignment); RFC 8617 is headed to Historic, so guidance steers new deployments toward DKIM2. |
 | `email.rbl` (opt-in via `--enable-rbl`)      | Apex and MX IPs vs Spamhaus, Barracuda, SpamCop, SORBS, Surriel PSBL.            |
 | `email.google_workspace_mx`                  | **INFO only** — detects legacy `ASPMX.L.GOOGLE.COM` layout and recommends migration to the new single `SMTP.GOOGLE.COM` MX. Silent for non-Google MX and domains already on the new form. |
 
@@ -246,7 +246,7 @@ DNS scan can verify published keys and algorithms, not live signature chains.
 
 ### Subdomain discovery (opt-in `--subdomains`)
 
-Passive third-party sources: **hackertarget**, **anubis**, **threatcrowd**, **wayback** — external services with varying coverage and freshness, and querying them may disclose the domains under investigation. Discovered hosts are probed for TLS reachability and certificate hygiene; with active probing on they are also fingerprinted (`subdomain.tls.fingerprint.{ja3s,ja4s}.<host>`, INFO). Hostnames must match `^[a-zA-Z0-9._-]+$` at both the source-parse and enumerate stages (the underscore is permitted so service labels like `_dmarc` survive — an injection-safety filter, not an RFC 1123 validator); malformed lines are rejected before any DNS lookup.
+Passive third-party sources: hackertarget, anubis, threatcrowd, wayback. These are external services with varying coverage and freshness, and querying them may disclose the domains under investigation. Discovered hosts are probed for TLS reachability and certificate hygiene; with active probing on they are also fingerprinted (`subdomain.tls.fingerprint.{ja3s,ja4s}.<host>`, INFO). Hostnames must match `^[a-zA-Z0-9._-]+$` at both the source-parse and enumerate stages (the underscore is permitted so service labels like `_dmarc` survive — an injection-safety filter, not an RFC 1123 validator); malformed lines are rejected before any DNS lookup.
 
 ## Output
 
@@ -295,7 +295,7 @@ bedrock example.org > baseline.json
 bedrock --baseline baseline.json --regression-only example.org
 ```
 
-Duplicate IDs in a baseline file cause every current `FAIL` for that ID to be reported as a regression (fails closed — an ambiguous baseline cannot mask a regression).
+Duplicate IDs in a baseline file cause every current `FAIL` for that ID to be reported as a regression (fails closed: an ambiguous baseline cannot mask a regression).
 
 ## CI integration
 
