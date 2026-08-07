@@ -7,6 +7,7 @@ package report
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 )
 
@@ -84,12 +85,80 @@ type ResultRef struct {
 	Title string `json:"title"`
 }
 
-// Report is the top-level rendered structure. Regressions, when set, is
+// StatusCounts tallies results by status; Total is the row sum. The JSON
+// keys are stable lowercase forms of the Status strings ("na" for "N/A").
+type StatusCounts struct {
+	Pass          int `json:"pass"`
+	Warn          int `json:"warn"`
+	Fail          int `json:"fail"`
+	Info          int `json:"info"`
+	NotApplicable int `json:"na"`
+	Total         int `json:"total"`
+}
+
+// add tallies one status into the counts. Unknown future statuses still
+// count toward Total so the row sums stay honest.
+func (s *StatusCounts) add(st Status) {
+	switch st {
+	case Pass:
+		s.Pass++
+	case Warn:
+		s.Warn++
+	case Fail:
+		s.Fail++
+	case Info:
+		s.Info++
+	case NotApplicable:
+		s.NotApplicable++
+	}
+	s.Total++
+}
+
+// CategoryCounts is one summary row: a category and its status tallies.
+type CategoryCounts struct {
+	Category string       `json:"category"`
+	Counts   StatusCounts `json:"counts"`
+}
+
+// Summary totals the rendered results per category and overall. It
+// describes the report as filtered for output, not the full check run.
+type Summary struct {
+	Categories []CategoryCounts `json:"categories"`
+	Totals     StatusCounts     `json:"totals"`
+}
+
+// Summarize tallies results into a Summary. Categories are sorted so the
+// output is deterministic; the slice is always non-nil so the plain
+// encoder emits [] (not null), keeping the colored renderer in parity.
+func Summarize(results []Result) *Summary {
+	byCat := map[string]*StatusCounts{}
+	var order []string
+	out := &Summary{Categories: make([]CategoryCounts, 0, 8)}
+	for _, r := range results {
+		c, ok := byCat[r.Category]
+		if !ok {
+			c = &StatusCounts{}
+			byCat[r.Category] = c
+			order = append(order, r.Category)
+		}
+		c.add(r.Status)
+		out.Totals.add(r.Status)
+	}
+	sort.Strings(order)
+	for _, cat := range order {
+		out.Categories = append(out.Categories, CategoryCounts{Category: cat, Counts: *byCat[cat]})
+	}
+	return out
+}
+
+// Report is the top-level rendered structure. Summary, when set, totals
+// the rendered results per category and status. Regressions, when set, is
 // a non-empty list of (id, title) for every check that regressed against
 // the supplied --baseline.
 type Report struct {
 	Target      string      `json:"target"`
 	Results     []Result    `json:"results"`
+	Summary     *Summary    `json:"summary,omitempty"`
 	Regressions []ResultRef `json:"regressions,omitempty"`
 }
 

@@ -19,14 +19,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 )
 
 // ANSI color codes. Kept inline so the renderer has zero third-party deps.
-// Numbers / booleans / null tokens never appear in the current Report
-// shape (Status is rendered as a string), so only the string-applicable
-// colors are wired in. Keep magenta/yellow constants ready for a future
-// schema extension without re-surveying the codebase.
+// Number tokens appear only in the summary block (writeNumber, yellow);
+// booleans / null never appear in the Report shape (Status is rendered as
+// a string).
 const (
 	ansiReset  = "\x1b[0m"
 	ansiCyan   = "\x1b[36m"
@@ -59,6 +59,19 @@ func sanitizeReport(r Report) Report {
 	}
 	for i, res := range r.Results {
 		out.Results[i] = sanitizeResultJSON(res)
+	}
+	if r.Summary != nil {
+		s := Summary{
+			Categories: make([]CategoryCounts, len(r.Summary.Categories)),
+			Totals:     r.Summary.Totals,
+		}
+		for i, c := range r.Summary.Categories {
+			s.Categories[i] = CategoryCounts{
+				Category: SanitizeForTerminal(c.Category),
+				Counts:   c.Counts,
+			}
+		}
+		out.Summary = &s
 	}
 	out.Regressions = make([]ResultRef, len(r.Regressions))
 	for i, ref := range r.Regressions {
@@ -117,6 +130,12 @@ func renderColoredJSON(w io.Writer, r Report) error {
 
 	cw.field("results", 1)
 	cw.writeResults(r.Results, 1)
+
+	if r.Summary != nil {
+		cw.comma()
+		cw.field("summary", 1)
+		cw.writeSummary(r.Summary, 1)
+	}
 
 	if len(r.Regressions) > 0 {
 		cw.comma()
@@ -280,6 +299,71 @@ func (c *colorWriter) writeRegressions(refs []ResultRef, level int) {
 		}
 	}
 	c.closeArr(level)
+}
+
+// writeSummary mirrors encoding/json's rendering of the Summary struct:
+// categories array (always present, [] when empty) then totals.
+func (c *colorWriter) writeSummary(s *Summary, level int) {
+	c.write("{\n")
+	c.field("categories", level+1)
+	if len(s.Categories) == 0 {
+		c.write("[]")
+	} else {
+		c.openArr()
+		for i, cat := range s.Categories {
+			c.indent(level + 2)
+			c.write("{\n")
+			c.field("category", level+3)
+			c.writeString(cat.Category, "")
+			c.comma()
+			c.field("counts", level+3)
+			c.writeStatusCounts(cat.Counts, level+3)
+			c.newline()
+			c.closeObj(level + 2)
+			if i < len(s.Categories)-1 {
+				c.comma()
+			} else {
+				c.newline()
+			}
+		}
+		c.closeArr(level + 1)
+	}
+	c.comma()
+	c.field("totals", level+1)
+	c.writeStatusCounts(s.Totals, level+1)
+	c.newline()
+	c.closeObj(level)
+}
+
+// writeStatusCounts emits one StatusCounts object in struct-tag order —
+// the same order the plain encoder derives from the field declarations.
+func (c *colorWriter) writeStatusCounts(sc StatusCounts, level int) {
+	c.write("{\n")
+	rows := []struct {
+		name string
+		v    int
+	}{
+		{"pass", sc.Pass}, {"warn", sc.Warn}, {"fail", sc.Fail},
+		{"info", sc.Info}, {"na", sc.NotApplicable}, {"total", sc.Total},
+	}
+	for i, r := range rows {
+		c.field(r.name, level+1)
+		c.writeNumber(r.v)
+		if i < len(rows)-1 {
+			c.comma()
+		} else {
+			c.newline()
+		}
+	}
+	c.closeObj(level)
+}
+
+// writeNumber emits an integer token. Numbers entered the schema with the
+// summary block; yellow keeps them distinct from cyan keys and status hues.
+func (c *colorWriter) writeNumber(n int) {
+	c.write(ansiYellow)
+	c.write(strconv.Itoa(n))
+	c.write(ansiReset)
 }
 
 // statusColorFor returns the ANSI escape that should wrap a status string.

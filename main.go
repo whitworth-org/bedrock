@@ -132,7 +132,9 @@ func main() {
 	}
 	results = filter.Apply(results)
 
-	rep := report.Report{Target: target, Results: results}
+	// Summary describes the rendered report: it is computed after the
+	// --only/--exclude/--severity/--ids filters so totals match the output.
+	rep := report.Report{Target: target, Results: results, Summary: report.Summarize(results)}
 
 	var regressions []report.Result
 	if *baselinePath != "" {
