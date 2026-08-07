@@ -266,3 +266,27 @@ func TestSecTxtVerdictStatuses(t *testing.T) {
 		t.Errorf("clean verdict = %v evidence=%q, want PASS", pass.Status, pass.Evidence)
 	}
 }
+
+// TestRemediationExpiresInsideHorizon pins the remediation template against
+// the check's own Expires rules: the example it tells operators to publish
+// must never trip a violation or the under-a-year warning. now is fixed
+// just before a leap day, the case where a one-year AddDate spans 366 days.
+func TestRemediationExpiresInsideHorizon(t *testing.T) {
+	now := time.Date(2024, 2, 28, 12, 0, 0, 0, time.UTC)
+	rem := securityTxtRemediation("example.com", now)
+	var exp string
+	for _, line := range strings.Split(rem, "\n") {
+		if v, ok := strings.CutPrefix(line, "Expires: "); ok {
+			exp = v
+		}
+	}
+	if exp == "" {
+		t.Fatalf("remediation has no Expires line:\n%s", rem)
+	}
+	st := &securityTxt{fields: map[string][]string{"expires": {exp}}}
+	viol, warn, _ := secTxtExpiresIssues(st, now)
+	if len(viol) > 0 || len(warn) > 0 {
+		t.Errorf("remediation Expires %q trips the check itself: violations=%v warnings=%v",
+			exp, viol, warn)
+	}
+}
