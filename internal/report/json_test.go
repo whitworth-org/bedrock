@@ -320,3 +320,65 @@ func TestStatusColorFor(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderJSON_SummaryParityAndRoundTrip covers the summary block in both
+// renderers: the colored output must byte-match the plain output modulo
+// ANSI, the plain output must round-trip, and the summary must precede
+// regressions in the document.
+func TestRenderJSON_SummaryParityAndRoundTrip(t *testing.T) {
+	rep := sampleReport()
+	rep.Summary = Summarize(rep.Results)
+	rep.Regressions = []ResultRef{{ID: "demo.fail", Title: "fail with multi-line fix"}}
+
+	var plain bytes.Buffer
+	if err := RenderJSON(&plain, rep, false); err != nil {
+		t.Fatalf("plain RenderJSON: %v", err)
+	}
+	var colored bytes.Buffer
+	if err := RenderJSON(&colored, rep, true); err != nil {
+		t.Fatalf("colored RenderJSON: %v", err)
+	}
+	stripped := stripANSI.ReplaceAll(colored.Bytes(), []byte{})
+	if !bytes.Equal(stripped, plain.Bytes()) {
+		t.Errorf("colored output (stripped) != plain output with summary")
+		t.Logf("plain:\n%s", plain.String())
+		t.Logf("colored (stripped):\n%s", stripped)
+	}
+
+	var decoded Report
+	if err := json.Unmarshal(plain.Bytes(), &decoded); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if decoded.Summary == nil {
+		t.Fatal("summary lost in round-trip")
+	}
+	if decoded.Summary.Totals != rep.Summary.Totals {
+		t.Errorf("totals = %+v, want %+v", decoded.Summary.Totals, rep.Summary.Totals)
+	}
+	sumIdx := strings.Index(plain.String(), `"summary"`)
+	regIdx := strings.Index(plain.String(), `"regressions"`)
+	if sumIdx < 0 || regIdx < 0 || sumIdx > regIdx {
+		t.Errorf("field order: summary at %d, regressions at %d; want summary first", sumIdx, regIdx)
+	}
+}
+
+// TestRenderJSON_EmptySummaryCategories pins the []-not-null contract that
+// keeps the two renderers in parity when a report has zero results.
+func TestRenderJSON_EmptySummaryCategories(t *testing.T) {
+	rep := Report{Target: "empty.example", Summary: Summarize(nil)}
+	var plain bytes.Buffer
+	if err := RenderJSON(&plain, rep, false); err != nil {
+		t.Fatalf("plain RenderJSON: %v", err)
+	}
+	if !strings.Contains(plain.String(), `"categories": []`) {
+		t.Errorf("empty categories must render as [], got:\n%s", plain.String())
+	}
+	var colored bytes.Buffer
+	if err := RenderJSON(&colored, rep, true); err != nil {
+		t.Fatalf("colored RenderJSON: %v", err)
+	}
+	stripped := stripANSI.ReplaceAll(colored.Bytes(), []byte{})
+	if !bytes.Equal(stripped, plain.Bytes()) {
+		t.Errorf("colored (stripped) != plain for empty summary")
+	}
+}

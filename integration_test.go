@@ -143,7 +143,7 @@ func TestIntegrationEmpty(t *testing.T) {
 		t.Fatal("registry returned zero results — checks may not have registered")
 	}
 
-	rep := report.Report{Target: target, Results: results}
+	rep := report.Report{Target: target, Results: results, Summary: report.Summarize(results)}
 
 	var sb strings.Builder
 	if err := report.RenderJSON(&sb, rep, false); err != nil {

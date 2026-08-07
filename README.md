@@ -267,9 +267,17 @@ Schema:
       "remediation": "_dmarc.example.org. IN TXT \"v=DMARC1; p=quarantine; rua=mailto:dmarc@example.org\"",
       "rfc_refs": ["RFC 9989 §4.7"]
     }
-  ]
+  ],
+  "summary": {
+    "categories": [
+      { "category": "Email", "counts": { "pass": 0, "warn": 0, "fail": 1, "info": 0, "na": 0, "total": 1 } }
+    ],
+    "totals": { "pass": 0, "warn": 0, "fail": 1, "info": 0, "na": 0, "total": 1 }
+  }
 }
 ```
+
+The `summary` block totals the rendered results per category and per status. It is computed after `--only` / `--exclude` / `--severity` / `--ids` filtering, so the counts always match the `results` array it accompanies.
 
 ### Exit codes
 
