@@ -10,7 +10,7 @@ A single-binary CLI auditor for DNS, DNSSEC, Email (incl. BIMI), and Web / TLS. 
 
 ## Install
 
-Requires **Go 1.26.5** or newer.
+Requires **Go 1.27.0** or newer.
 
 ### Preferred: `go install`
 
@@ -21,7 +21,7 @@ go install github.com/whitworth-org/bedrock@latest
 Or pin a specific release:
 
 ```bash
-go install github.com/whitworth-org/bedrock@v1.2.2
+go install github.com/whitworth-org/bedrock@v1.2.3
 ```
 
 The binary is placed in `$GOBIN` (or `$GOPATH/bin`, which defaults to `~/go/bin` when `GOPATH` is unset). Make sure that directory is on your `PATH`:
@@ -308,11 +308,13 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: { go-version: '1.26' }
-      - run: go install github.com/whitworth-org/bedrock@latest
-      - uses: actions/cache@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version: '1.27.0' }
+      - run: go install github.com/whitworth-org/bedrock@v1.2.3
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: baseline.json
           key: bedrock-baseline-${{ github.repository }}

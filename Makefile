@@ -37,7 +37,10 @@ fuzz:
 	done
 
 vulncheck:
-	govulncheck ./...
+	@tmp=$$(mktemp); \
+	  trap 'rm -f "$$tmp"' EXIT; \
+	  CGO_ENABLED=0 go build -trimpath -o "$$tmp" .; \
+	  govulncheck -mode=binary "$$tmp"
 
 install:
 	CGO_ENABLED=0 go install -trimpath -ldflags "$(LDFLAGS)" .
@@ -47,4 +50,4 @@ clean:
 	rm -rf dist/
 
 release-check: lint test-race vulncheck
-	@echo "ready to tag"
+	goreleaser release --snapshot --clean

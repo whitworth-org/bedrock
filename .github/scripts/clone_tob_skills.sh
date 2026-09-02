@@ -56,16 +56,16 @@ require_tool git
 require_tool curl
 require_tool python3
 
-TOB_SKILLS_REF=${TOB_SKILLS_REF:-d5fe2e6a7896236c3102fd5477e833623ad70298}
-TOB_SKILLS_CURATED_REF=${TOB_SKILLS_CURATED_REF:-022fa0948818c9f2f738a428f4546cc65c427767}
+TOB_SKILLS_REF=${TOB_SKILLS_REF:-14e5a1070020c5d101e8362756f3201fb677b467}
+TOB_SKILLS_CURATED_REF=${TOB_SKILLS_CURATED_REF:-6d05be4889017b06fb15069f371afd220daffb62}
 # deps.dev (google) is not a Trail of Bits repo; only the single scan-dependencies
 # SKILL.md is needed, so fetch that one pinned file rather than clone the monorepo.
-DEPS_DEV_REF=${DEPS_DEV_REF:-7863f23c450a8b8e0b21c23d11cbb191842984a3}
+DEPS_DEV_REF=${DEPS_DEV_REF:-dc936a45c6574bb6e6bd5433de8c74e4cdff1276}
 DEPS_DEV_SKILL_PATH=examples/skills/scan-dependencies/SKILL.md
 # MITRE ATLAS publishes monthly AI-threat data releases. Fetch only the latest
 # distributable YAML from the pinned release tag so AI/agentic findings can cite
 # real AML tactic/technique IDs without cloning the full repository.
-MITRE_ATLAS_REF=${MITRE_ATLAS_REF:-v2026.05}
+MITRE_ATLAS_REF=${MITRE_ATLAS_REF:-41d4f5ca4112f0e492ffaa3ebff07dc80a75afa5}
 MITRE_ATLAS_DATA_PATH=dist/ATLAS-latest.yaml
 TOB_SKILLS_ROOT=${TOB_SKILLS_ROOT:-"${RUNNER_TEMP:?}/tob-skills"}
 AGENT_CONTEXT_DIR=${AGENT_CONTEXT_DIR:-/tmp/gh-aw/agent/raptor-review}

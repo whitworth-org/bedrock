@@ -11,3 +11,6 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      # gh-aw pins are generated together by the checksummed compiler.
+      - dependency-name: "github/gh-aw-actions/*"

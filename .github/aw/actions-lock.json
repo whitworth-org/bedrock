@@ -1,0 +1,14 @@
+{
+  "entries": {
+    "github/gh-aw-actions/setup-cli@afc709f45ed6a3f756eb4551856c6a9c42e15b2c": {
+      "repo": "github/gh-aw-actions/setup-cli",
+      "version": "afc709f45ed6a3f756eb4551856c6a9c42e15b2c",
+      "sha": "afc709f45ed6a3f756eb4551856c6a9c42e15b2c"
+    },
+    "github/gh-aw-actions/setup@afc709f45ed6a3f756eb4551856c6a9c42e15b2c": {
+      "repo": "github/gh-aw-actions/setup",
+      "version": "afc709f45ed6a3f756eb4551856c6a9c42e15b2c",
+      "sha": "afc709f45ed6a3f756eb4551856c6a9c42e15b2c"
+    }
+  }
+}
