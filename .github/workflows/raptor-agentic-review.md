@@ -181,10 +181,10 @@ steps:
       printf 'KITE_PHASE_TIMING phase=startup duration_seconds=%s\n' "$((phase_end - phase_start))"
   - name: Clone skill libraries
     env:
-      TOB_SKILLS_REF: d5fe2e6a7896236c3102fd5477e833623ad70298
-      TOB_SKILLS_CURATED_REF: 022fa0948818c9f2f738a428f4546cc65c427767
-      DEPS_DEV_REF: 7863f23c450a8b8e0b21c23d11cbb191842984a3
-      MITRE_ATLAS_REF: v2026.05
+      TOB_SKILLS_REF: 14e5a1070020c5d101e8362756f3201fb677b467
+      TOB_SKILLS_CURATED_REF: 6d05be4889017b06fb15069f371afd220daffb62
+      DEPS_DEV_REF: dc936a45c6574bb6e6bd5433de8c74e4cdff1276
+      MITRE_ATLAS_REF: 41d4f5ca4112f0e492ffaa3ebff07dc80a75afa5 # v2026.08
     run: |
       phase_start=$(date +%s)
       bash .github/scripts/clone_tob_skills.sh

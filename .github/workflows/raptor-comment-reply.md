@@ -50,8 +50,8 @@ safe-outputs:
 steps:
   - name: Clone Trail of Bits skill libraries
     env:
-      TOB_SKILLS_REF: d5fe2e6a7896236c3102fd5477e833623ad70298
-      TOB_SKILLS_CURATED_REF: 022fa0948818c9f2f738a428f4546cc65c427767
+      TOB_SKILLS_REF: 14e5a1070020c5d101e8362756f3201fb677b467
+      TOB_SKILLS_CURATED_REF: 6d05be4889017b06fb15069f371afd220daffb62
     run: bash .github/scripts/clone_tob_skills.sh
 ---
 
