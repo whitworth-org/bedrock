@@ -304,6 +304,8 @@ name: Domain audit
 on:
   schedule: [{ cron: '0 6 * * *' }]
   workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   audit:
     runs-on: ubuntu-latest
