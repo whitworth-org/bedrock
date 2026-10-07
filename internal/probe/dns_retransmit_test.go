@@ -2,7 +2,6 @@ package probe
 
 import (
 	"context"
-	"net"
 	"sync"
 	"testing"
 	"time"
@@ -42,25 +41,6 @@ func (h *dropFirstHandler) ServeDNS(w mdns.ResponseWriter, req *mdns.Msg) {
 	_ = w.WriteMsg(resp)
 }
 
-func startFlakyResolver(t *testing.T, h mdns.Handler) (spec string, cleanup func()) {
-	t.Helper()
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen udp: %v", err)
-	}
-	srv := &mdns.Server{PacketConn: pc, Handler: h}
-	started := make(chan struct{})
-	srv.NotifyStartedFunc = func() { close(started) }
-	go func() { _ = srv.ActivateAndServe() }()
-	select {
-	case <-started:
-	case <-time.After(2 * time.Second):
-		_ = srv.Shutdown()
-		t.Fatal("flaky DNS server did not start within 2s")
-	}
-	return pc.LocalAddr().String(), func() { _ = srv.Shutdown() }
-}
-
 // TestExchangeRetransmitsDroppedDatagram proves that with a comfortable budget
 // a single dropped UDP datagram is retransmitted within the same budget and the
 // lookup still succeeds. Without the retransmit the first (dropped) attempt
@@ -72,8 +52,7 @@ func TestExchangeRetransmitsDroppedDatagram(t *testing.T) {
 	}
 	t.Setenv(allowPrivateResolverEnv, "1")
 	h := &dropFirstHandler{dropN: 1, answer: rr}
-	spec, cleanup := startFlakyResolver(t, h)
-	defer cleanup()
+	spec := startUDPResolver(t, h)
 
 	// 4s == minRetransmitBudget → two 2s attempts. Attempt 1 is dropped and
 	// times out at 2s; attempt 2 is answered immediately.
@@ -101,8 +80,7 @@ func TestExchangeSingleAttemptBelowThreshold(t *testing.T) {
 	}
 	t.Setenv(allowPrivateResolverEnv, "1")
 	h := &dropFirstHandler{dropN: 1, answer: rr}
-	spec, cleanup := startFlakyResolver(t, h)
-	defer cleanup()
+	spec := startUDPResolver(t, h)
 
 	// Below minRetransmitBudget (4s) → exactly one attempt; the dropped
 	// datagram yields a timeout with no retry. 2s leaves slow CI machines

@@ -47,9 +47,9 @@ func NewEnv(target string, timeout time.Duration, active bool, resolver string) 
 	}
 }
 
-// NewEnvMulti builds an Env that talks to several upstreams in parallel.
-// Single-shot lookups still use the first upstream; the full set is exposed
-// via DNS.ExchangeAll for the propagation check.
+// NewEnvMulti builds an Env that knows several upstreams. Single-shot
+// lookups use the first upstream; the DNS.ExchangeAll* methods reach them
+// all, as the dnssec.sentinel check does.
 func NewEnvMulti(target string, timeout time.Duration, active bool, resolvers []string) (*Env, error) {
 	d, err := NewMultiDNS(resolvers, timeout)
 	if err != nil {

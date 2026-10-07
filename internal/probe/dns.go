@@ -22,7 +22,7 @@ import (
 // records via Env.cache, and an in-memory record cache would mask resolver
 // quirks the tool is meant to surface.
 type DNS struct {
-	upstreams []upstream // primary at index 0; additional entries for propagation
+	upstreams []upstream // primary at index 0; the ExchangeAll* methods reach them all
 	timeout   time.Duration
 	// specErr captures a parse failure from NewDNS so the first lookup can
 	// return a clean error rather than silently falling back to system DNS
@@ -61,8 +61,9 @@ func NewDNS(server string, timeout time.Duration) *DNS {
 }
 
 // NewMultiDNS returns a DNS client that knows about multiple upstreams.
-// The first upstream is used for all normal lookups; the full list is
-// exposed via ExchangeAll for the dns.propagation check.
+// The first upstream serves every normal lookup; ExchangeAllWithDO and
+// ExchangeAllCheckingDisabled query them all, as the dnssec.sentinel check
+// does.
 func NewMultiDNS(specs []string, timeout time.Duration) (*DNS, error) {
 	if len(specs) == 0 {
 		return NewDNS("", timeout), nil
@@ -76,16 +77,6 @@ func NewMultiDNS(specs []string, timeout time.Duration) (*DNS, error) {
 		d.upstreams = append(d.upstreams, up)
 	}
 	return d, nil
-}
-
-// Upstreams returns the labels of every configured upstream, in order.
-// Used by the propagation check to title evidence.
-func (d *DNS) Upstreams() []string {
-	out := make([]string, 0, len(d.upstreams))
-	for _, u := range d.upstreams {
-		out = append(out, u.label)
-	}
-	return out
 }
 
 func (d *DNS) ensureClients() {
@@ -120,13 +111,23 @@ func systemUpstreams() ([]upstream, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read /etc/resolv.conf: %w", err)
 	}
+	return configUpstreams(conf)
+}
+
+// configUpstreams lists conf's nameservers in order. Their labels are
+// positional (system-1, system-2, ...) so a shared report does not carry the
+// operator's local network addresses.
+func configUpstreams(conf *dns.ClientConfig) ([]upstream, error) {
 	if len(conf.Servers) == 0 {
 		return nil, errors.New("no system resolvers configured")
 	}
 	out := make([]upstream, 0, len(conf.Servers))
-	for _, s := range conf.Servers {
-		addr := net.JoinHostPort(s, conf.Port)
-		out = append(out, upstream{label: addr, addr: addr, protocol: protoUDP})
+	for i, s := range conf.Servers {
+		out = append(out, upstream{
+			label:    fmt.Sprintf("system-%d", i+1),
+			addr:     net.JoinHostPort(s, conf.Port),
+			protocol: protoUDP,
+		})
 	}
 	return out, nil
 }
@@ -170,23 +171,42 @@ func (d *DNS) ExchangeWithDO(ctx context.Context, name string, qtype uint16) (*d
 	return d.exchangeOnUpstream(ctx, m, d.upstreams[0])
 }
 
-// MultiResp is one upstream's answer in a propagation query.
+// MultiResp is one upstream's answer to a query sent to every upstream.
 type MultiResp struct {
 	Upstream string
 	Msg      *dns.Msg
 	Err      error
 }
 
-// ExchangeAll runs the same query against every configured upstream in
-// parallel and returns one MultiResp per upstream, in upstream order. Used
-// by the dns.propagation check. Goroutine fan-out is capped at 16 so a
-// large --resolvers list cannot trip rate limits or starve the host.
-func (d *DNS) ExchangeAll(ctx context.Context, name string, qtype uint16) []MultiResp {
+// ExchangeAllWithDO runs the same query, with the DNSSEC OK bit set so
+// validating upstreams report the AD bit (RFC 6840 §5.8), against every
+// configured upstream in parallel. It returns one MultiResp per upstream, in
+// upstream order; an upstream's SERVFAIL comes back as a MultiResp whose Msg
+// has Rcode 2 and whose Err is nil.
+func (d *DNS) ExchangeAllWithDO(ctx context.Context, name string, qtype uint16) []MultiResp {
+	return d.exchangeAll(ctx, buildQuery(name, qtype, true))
+}
+
+// ExchangeAllCheckingDisabled is ExchangeAllWithDO with the Checking Disabled
+// bit also set (RFC 4035 §3.2.2): a validating upstream returns the records
+// and their RRSIGs without validating them, so it answers even when it
+// cannot validate.
+func (d *DNS) ExchangeAllCheckingDisabled(
+	ctx context.Context, name string, qtype uint16,
+) []MultiResp {
+	m := buildQuery(name, qtype, true)
+	m.CheckingDisabled = true
+	return d.exchangeAll(ctx, m)
+}
+
+// exchangeAll sends m to every upstream. Each call caps its own fan-out at 16
+// concurrent queries so a large --resolvers list cannot trip rate limits or
+// starve the host; concurrent calls do not share the cap.
+func (d *DNS) exchangeAll(ctx context.Context, m *dns.Msg) []MultiResp {
 	if err := d.ensureUpstreams(); err != nil {
 		return []MultiResp{{Err: err}}
 	}
 	d.ensureClients()
-	m := buildQuery(name, qtype, false)
 	out := make([]MultiResp, len(d.upstreams))
 	sem := make(chan struct{}, 16)
 	var wg sync.WaitGroup
