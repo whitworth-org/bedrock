@@ -26,7 +26,8 @@ clone_at_ref() {
   local ref=$2
   local dest=$3
 
-  printf 'Cloning %s at %s into %s\n' "$repo" "$ref" "$dest"
+  # Callers capture stdout as the cloned commit, so progress goes to stderr.
+  printf 'Cloning %s at %s into %s\n' "$repo" "$ref" "$dest" >&2
   git clone --filter=blob:none --no-tags "https://github.com/${repo}.git" "$dest"
   git -C "$dest" checkout --detach "$ref"
   git -C "$dest" rev-parse HEAD
