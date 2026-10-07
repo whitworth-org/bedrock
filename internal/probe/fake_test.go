@@ -7,10 +7,11 @@
 // Two flavors are provided:
 //
 //   - newFakeUDPResolver: a real miekg/dns UDP server bound to 127.0.0.1
-//     on a random port. This is the path the project's root-level
-//     integration_test.go uses indirectly: it just spawns its own UDP
-//     resolver via the same primitives. It is the cleanest fake because
-//     the production NewDNS(spec, ...) parses the host:port spec normally.
+//     on a random port (startUDPResolver serves any handler that way). This
+//     is the path the project's root-level integration_test.go uses
+//     indirectly: it just spawns its own UDP resolver via the same
+//     primitives. It is the cleanest fake because the production
+//     NewDNS(spec, ...) parses the host:port spec normally.
 //
 //   - newFakeDoHDNS: builds a *DNS directly with a DoH upstream pointed at
 //     an httptest.Server (plain HTTP). Achieves a pure-process fake without
@@ -103,43 +104,39 @@ func (h fakeHandler) ServeDNS(w mdns.ResponseWriter, req *mdns.Msg) {
 
 // newFakeUDPResolver starts a real miekg/dns UDP server on 127.0.0.1 on a
 // random free port. Returns the host:port spec usable directly with
-// probe.NewDNS / probe.NewEnv, plus a cleanup func and a zone you can
-// seed with answers BEFORE or AFTER the server starts.
-func newFakeUDPResolver(t *testing.T) (spec string, zone *fakeZone, cleanup func()) {
+// probe.NewDNS / probe.NewEnv, and a zone you can seed with answers BEFORE or
+// AFTER the server starts. The server shuts down when the test ends.
+func newFakeUDPResolver(t *testing.T) (spec string, zone *fakeZone) {
 	t.Helper()
 	zone = newFakeZone()
+	return startUDPResolver(t, fakeHandler{z: zone}), zone
+}
 
-	// Bind to a random port by listening on :0 first, then handing the
-	// PacketConn to dns.Server via ActivateAndServe.
+// startUDPResolver serves h on a random loopback UDP port until the test
+// ends and returns the host:port spec.
+func startUDPResolver(t *testing.T, h mdns.Handler) string {
+	t.Helper()
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen udp: %v", err)
 	}
-	srv := &mdns.Server{
-		PacketConn: pc,
-		Handler:    fakeHandler{z: zone},
-	}
+	serve(t, &mdns.Server{PacketConn: pc, Handler: h})
+	return pc.LocalAddr().String()
+}
+
+// serve starts srv, waits until it accepts queries, and shuts it down when
+// the test ends.
+func serve(t *testing.T, srv *mdns.Server) {
+	t.Helper()
 	started := make(chan struct{})
 	srv.NotifyStartedFunc = func() { close(started) }
-
-	go func() {
-		// ActivateAndServe blocks until Shutdown is called or an error
-		// occurs. Errors after shutdown are expected and ignored.
-		_ = srv.ActivateAndServe()
-	}()
+	go func() { _ = srv.ActivateAndServe() }()
+	t.Cleanup(func() { _ = srv.Shutdown() })
 	select {
 	case <-started:
 	case <-time.After(2 * time.Second):
-		_ = srv.Shutdown()
-		_ = pc.Close()
-		t.Fatal("fake DNS server did not start within 2s")
+		t.Fatal("DNS server did not start within 2s")
 	}
-
-	spec = pc.LocalAddr().String()
-	cleanup = func() {
-		_ = srv.Shutdown()
-	}
-	return spec, zone, cleanup
 }
 
 // newFakeDoHDNS builds a *DNS that talks DoH to a plaintext httptest server.
@@ -199,6 +196,12 @@ func newFakeDoHDNS(t *testing.T) (*DNS, *fakeZone, func()) {
 		_, _ = w.Write(out)
 	}))
 
+	return dohDNS(srv), zone, srv.Close
+}
+
+// dohDNS returns a *DNS whose only upstream is the DoH server srv, reached
+// with srv's own client so that a test server's certificate is trusted.
+func dohDNS(srv *httptest.Server) *DNS {
 	d := &DNS{
 		timeout:    2 * time.Second,
 		upstreams:  []upstream{{label: "fake-doh", addr: srv.URL, protocol: protoDoH}},
@@ -206,16 +209,14 @@ func newFakeDoHDNS(t *testing.T) (*DNS, *fakeZone, func()) {
 	}
 	// Burn the once so a real ensureClients call won't overwrite httpClient.
 	d.once.Do(func() {})
-
-	return d, zone, srv.Close
+	return d
 }
 
 // ---- tests that exercise the fakes themselves ----
 
 func TestFakeUDPResolver_NXDOMAINByDefault(t *testing.T) {
 	t.Setenv(allowPrivateResolverEnv, "1")
-	spec, _, cleanup := newFakeUDPResolver(t)
-	defer cleanup()
+	spec, _ := newFakeUDPResolver(t)
 
 	d := NewDNS(spec, 2*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -229,8 +230,7 @@ func TestFakeUDPResolver_NXDOMAINByDefault(t *testing.T) {
 
 func TestFakeUDPResolver_SeededAnswers(t *testing.T) {
 	t.Setenv(allowPrivateResolverEnv, "1")
-	spec, zone, cleanup := newFakeUDPResolver(t)
-	defer cleanup()
+	spec, zone := newFakeUDPResolver(t)
 
 	zone.Add(t, `txt.test.invalid. 60 IN TXT "hello world"`)
 	zone.Add(t, `mx.test.invalid.  60 IN MX  10 mail.test.invalid.`)

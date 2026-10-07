@@ -69,7 +69,7 @@ bedrock [flags] <domain>
 | `--no-color`        | colour on TTY   | Suppress ANSI colouring. Honoured automatically when stdout is not a terminal or `NO_COLOR` is set.  |
 | `--no-active`       | probes on       | Skip active probes (SMTP STARTTLS, HTTPS GETs, MTA-STS fetch, VMC fetch, QUIC dial).                 |
 | `--resolver`        | system resolver | `host[:port]`, preset (`cloudflare` / `google` / `quad9` / `opendns`), `<preset>-dot`, `<preset>-doh`, `tls://host`, `https://url`. |
-| `--resolvers`       | —               | CSV of multiple resolvers; runs cross-resolver propagation comparison.                               |
+| `--resolvers`       | —               | CSV of resolvers. The first serves every lookup; `dnssec.sentinel` tests each one.                   |
 | `--timeout`         | `5s`            | Per-operation timeout (each DNS query, each HTTPS GET, each handshake).                              |
 | `--config`          | —               | Path to a JSON config file. Flag values override config values.                                      |
 | `--only`            | —               | CSV of categories to include (`DNS`, `DNSSEC`, `Email`, `WWW`, `Subdomain`).                         |
@@ -90,10 +90,26 @@ bedrock --resolver cloudflare-dot    example.org     # 1.1.1.1:853 (DoT, RFC 785
 bedrock --resolver cloudflare-doh    example.org     # https://cloudflare-dns.com/dns-query (DoH, RFC 8484)
 bedrock --resolver tls://1.1.1.1:853 example.org     # explicit DoT
 bedrock --resolver https://dns.quad9.net/dns-query example.org   # explicit DoH
-bedrock --resolvers cloudflare,google,quad9 example.org          # propagation check
+bedrock --resolvers cloudflare,google,quad9 example.org          # lookups use cloudflare; dnssec.sentinel tests all three
 ```
 
 Private-IP / loopback / metadata resolvers are rejected by default; set `BEDROCK_ALLOW_PRIVATE_RESOLVER=1` for hermetic test labs only.
+
+### Root KSK rollover readiness
+
+`dnssec.sentinel` tests the resolvers bedrock uses (the system resolvers, `--resolver`, or each of `--resolvers`), not the target, and sends nothing about the target. It reads the active root zone KSKs from the root DNSKEY RRset, verifies which of them sign it, and asks each resolver directly (RFC 8509 §4.2) for `root-key-sentinel-is-ta-<tag>.arpa` and `root-key-sentinel-not-ta-<tag>.arpa` for every KSK. The names sit under the signed `arpa` zone because a resolver that mirrors the root zone (RFC 8806) can skip the sentinel for root names. The RFC's third, deliberately bogus query would need a third-party zone, so the check leaves it out and reads the AD bit instead; a forwarder that strips AD therefore reads as not validating.
+
+- `PASS`: every resolver trusts a KSK that signs the root DNSKEY RRset and every other active KSK. Once KSK-2024 (38696) signs the root on 2026-10-11, a resolver that has dropped the retiring KSK-2017 (20326) still passes, with a note.
+- `WARN`: a resolver does not yet trust an active KSK (the key is absent, or still in the RFC 5011 30-day hold-down), or cannot validate the root at all: it fails every sentinel name yet returns the root DNSKEY RRset with checking disabled. The remediation names each such resolver and lists the keys it needs as commented-out DS records to confirm against IANA's `root-anchors.xml`.
+- `INFO`: a resolver does not validate, shows no sentinel processing, does not answer, or gives answers that fit no RFC 8509 pattern (rewritten, not recursive, or from local zone data). The test is also skipped, as `INFO`, when no resolver returns a usable root DNSKEY RRset or the RRset lists more than four active KSKs.
+
+`INFO` is not evidence of readiness. The sentinel is optional (RFC 8509 §1), and BIND skips it for answers it synthesizes from cached NSEC records (RFC 8198, `synth-from-dnssec`, on by default); `+EDE29` in the evidence marks such answers when the resolver reports them. The check never reports `FAIL`, so it does not change the exit code. As of October 2026, Cloudflare processes the sentinel over DoT and DoH; Google Public DNS and OpenDNS do not, and Quad9 often answers these names from cached NSEC records, so those three read as `INFO`.
+
+```bash
+bedrock --no-active --ids dnssec.sentinel --resolver cloudflare-dot example.org
+```
+
+`--ids`, `--only`, and `--exclude` filter only the report: the target is still audited, and this check still queries every resolver. After changing a resolver's trust anchors, flush its cache before testing again, because its earlier answers for these fixed names can stay cached for up to its negative-cache TTL, often an hour. Plain-UDP presets are labelled `<name>-udp` because they reach whatever answers port 53 on your network, which can be a transparent interceptor rather than the named provider; the `-dot` and `-doh` presets test the provider itself. System resolvers appear as `system-1`, `system-2`, and so on, in `/etc/resolv.conf` order, so reports do not carry local network addresses.
 
 ### Configuration file
 
@@ -149,6 +165,7 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 | `dnssec.cds.published`    | CDS/CDNSKEY self-consistency (RFC 7344 §3).                                     |
 | `dnssec.cds.matches_ds`   | CDS digests match the DS at the parent (RFC 7344 §4).                           |
 | `dnssec.cds.signed`       | CDS RRset carries an RRSIG (RFC 7344 §4.1).                                     |
+| `dnssec.sentinel`         | Resolvers in use validate the root and trust its active KSKs (RFC 8509 §3).     |
 
 ### Email
 
@@ -353,7 +370,7 @@ internal/baseline/          baseline diff for --baseline / --regression-only (fa
 internal/version/           build-time version, populated via -ldflags
 internal/discover/          passive subdomain enumeration (HTTPS-only, hostname allowlist)
 internal/checks/dns/        DNS checks
-internal/checks/dnssec/     DNSSEC chain, algorithms, NSEC, CDS/CDNSKEY
+internal/checks/dnssec/     DNSSEC chain, algorithms, NSEC, CDS/CDNSKEY, root KSK sentinel
 internal/checks/email/      SPF, DKIM, DMARC, MTA-STS, TLS-RPT, DANE, Null MX, STARTTLS, ARC, RBL, Google Workspace MX
 internal/checks/bimi/       BIMI TXT, SVG Tiny PS, VMC + RFC 3709 logotype ASN.1
 internal/checks/web/        TLS profile, certs, HSTS, headers, cookies, CAA, redirect, mixed content, CT, OCSP, CRL, EC curves, HTTP/2, HTTP/3, JA3S/JA4S fingerprints
@@ -374,7 +391,7 @@ Apache-2.0 is a clean drop-in if you need an explicit patent grant. GPL/AGPL wer
 - The DKIM check probes a fixed selector list (44 well-known + ESP-specific derived from SPF includes). Custom per-tenant selectors (e.g. HubSpot's `hs1-<id>-<domain>` pattern) cannot be discovered without the customer ID; NSEC walking under `_domainkey` is deferred.
 - VMC chain validation uses `ExtKeyUsageAny` because the BIMI EKU OIDs are not in the Go standard library root-usage table. The BIMI-specific OID gate (`classifyMarkCert`) runs *before* chain verification.
 - `--enable-rbl` and `--enable-ct` issue live queries to third-party services; do not enable them for casual or repeated scans of domains you do not operate.
-- The `--resolvers` propagation check returns the first successful answer; divergence appears as a `dns.propagation` evidence string rather than a separate check.
+- With `--resolvers`, every lookup goes to the first resolver; only `dnssec.sentinel` queries the others.
 
 ---
 

@@ -14,10 +14,10 @@ import (
 // Production callers must leave this unset.
 const allowPrivateResolverEnv = "BEDROCK_ALLOW_PRIVATE_RESOLVER"
 
-// upstream is one resolved DNS endpoint. Multiple upstreams within a single
-// DNS instance let us run propagation checks across providers.
+// upstream is one resolved DNS endpoint. A DNS instance can hold several,
+// which the dnssec.sentinel check probes one by one.
 type upstream struct {
-	label    string // human-readable, e.g. "cloudflare", "1.1.1.1:53"
+	label    string // human-readable and safe to report, e.g. "cloudflare-udp", "1.1.1.1:53"
 	addr     string // host:port for udp/tcp/dot; URL for doh
 	protocol protocol
 }
@@ -98,7 +98,8 @@ func parseUpstream(spec string) (upstream, error) {
 	case strings.HasPrefix(s, "https://"), strings.HasPrefix(s, "doh://"):
 		u := strings.TrimPrefix(strings.TrimPrefix(s, "doh://"), "https://")
 		// re-add https:// for actual fetches
-		up = upstream{label: s, addr: "https://" + u, protocol: protoDoH}
+		addr := "https://" + u
+		up = upstream{label: dohLabel(addr), addr: addr, protocol: protoDoH}
 	case strings.HasPrefix(s, "tls://"), strings.HasPrefix(s, "dot://"):
 		host := strings.TrimPrefix(strings.TrimPrefix(s, "dot://"), "tls://")
 		up = upstream{label: s, addr: hostWithPort(host, "853"), protocol: protoDoT}
@@ -119,7 +120,9 @@ func parseUpstream(spec string) (upstream, error) {
 			switch suffix {
 			case "", "udp", "tcp":
 				// Presets point at vetted public resolvers; skip validation.
-				return upstream{label: name, addr: p.udp, protocol: protoUDP}, nil
+				// The label names the transport: plain DNS can be answered by
+				// an interceptor on the path rather than the named provider.
+				return upstream{label: name + "-udp", addr: p.udp, protocol: protoUDP}, nil
 			case "dot":
 				return upstream{label: name + "-dot", addr: p.dot, protocol: protoDoT}, nil
 			case "doh":
@@ -199,6 +202,17 @@ func validateResolverHost(up upstream) error {
 		// first use. The dialer enforces the denylist at dial time.
 		return nil
 	}
+}
+
+// dohLabel names a DoH upstream by scheme and host only: reports carry the
+// label, and a DoH URL's userinfo and path can hold credentials or an
+// account identifier.
+func dohLabel(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return "doh upstream"
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 func hostWithPort(s, defaultPort string) string {

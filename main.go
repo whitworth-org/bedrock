@@ -42,12 +42,15 @@ and --no-color is not supplied), the JSON is ANSI syntax-highlighted.
 flags:
 `
 
+const resolversHelp = "CSV of resolvers: the first serves every lookup; the dnssec.sentinel " +
+	"check tests each (e.g. cloudflare,google,quad9)"
+
 func main() {
 	var (
 		noColor        = flag.Bool("no-color", false, "force plain JSON output even on a TTY (also honours NO_COLOR env var)")
 		noActive       = flag.Bool("no-active", false, "skip active probes (SMTP STARTTLS, HTTPS GETs, VMC fetch)")
 		resolver       = flag.String("resolver", "", "DNS resolver: host:port, preset (cloudflare|google|quad9|opendns), or <preset>-dot/-doh, tls://host, https://url")
-		resolversCSV   = flag.String("resolvers", "", "CSV of multiple resolvers for cross-resolver propagation check (e.g. cloudflare,google,quad9)")
+		resolversCSV   = flag.String("resolvers", "", resolversHelp)
 		timeout        = flag.Duration("timeout", 5*time.Second, "per-operation timeout")
 		configPath     = flag.String("config", "", "path to JSON config file (flag values override config values)")
 		showVersion    = flag.Bool("version", false, "print version and exit")

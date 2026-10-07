@@ -1,0 +1,53 @@
+; Root zone DNSKEY RRset and the RRSIG over it, captured 2026-10-07 with
+;   dig +dnssec +multiline +noall +answer . DNSKEY @8.8.8.8
+; KSKs 20326 and 38696 match https://data.iana.org/root-anchors/root-anchors.xml.
+. 172800 IN DNSKEY	256 3 8 (
+				AwEAAcorNxNc9t0ue1ZenPjVMRujlQ2YLBJ0pR/4XMjH
+				by9vr03cRxFSKnWpxeg5PL384D9VeqdS1bjrGyTsHtoa
+				gzI3NiXFd8sjHMOnZxu5pp/+UBIg7tasYgVMMdUiM1Yu
+				/c+t30d1Qw/v6NYLNnOnywTu6HuUh7Y1sZRq/GZcrxLE
+				NXHQoyKpOrOr8R3+qd6wK69IKB80ZBZtkX9rdEqKJk+y
+				YXjEZzZ0zkAFthmNgCreAoU9PVlU66dyOsaLjf3wKUlU
+				m9SNOKs+tK6LuSmRbK6+1T/tPaRaMBSEuv2G6vXfnJ1u
+				yMbGvtpRn/YDcvTjrp6DzE6XyF44QdwJ3oKx4ek=
+				) ; ZSK; alg = RSASHA256 ; key id = 8763
+. 172800 IN DNSKEY	256 3 8 (
+				AwEAAeCYD6Z7WWKVLeuWgowKP+3g+Gs1cnLKq7a3CaQx
+				Qpv8bfuFVI0WnG33qaSH/Mw9IBgifrdzf4XY/DQLnyBJ
+				9MfaOyAWuEaEmYJ+GQPiwVVfstGwSA1McfFJUttTgq2H
+				uu74KARhtA8wPo/N3XcyYQtNhz+qCM5NBb3ecx/naw6s
+				Yab9LxS6f2cU0q03++BP5Ks0Uef8WJCa/1izCYE+vMkw
+				oltV+tENa3hpXiZ7jle/xdgaZrPi5ZGmyLVI34g1XVYr
+				NlsCCTmNvFQIfzW5STFQFsQpizczyFn9r3LzSxxPCNwd
+				lCG84bER0BmdwqbF6Tanv+FxMOavrahkj4wIy5k=
+				) ; ZSK; alg = RSASHA256 ; key id = 57780
+. 172800 IN DNSKEY	257 3 8 (
+				AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTO
+				iW1vkIbzxeF3+/4RgWOq7HrxRixHlFlExOLAJr5emLvN
+				7SWXgnLh4+B5xQlNVz8Og8kvArMtNROxVQuCaSnIDdD5
+				LKyWbRd2n9WGe2R8PzgCmr3EgVLrjyBxWezF0jLHwVN8
+				efS3rCj/EWgvIWgb9tarpVUDK/b58Da+sqqls3eNbuv7
+				pr+eoZG+SrDK6nWeL3c6H5Apxz7LjVc1uTIdsIXxuOLY
+				A4/ilBmSVIzuDWfdRUfhHdY6+cn8HFRm+2hM8AnXGXws
+				9555KrUB5qihylGa8subX2Nn6UwNR1AkUTV74bU=
+				) ; KSK; alg = RSASHA256 ; key id = 20326
+. 172800 IN DNSKEY	257 3 8 (
+				AwEAAa96jeuknZlaeSrvyAJj6ZHv28hhOKkx3rLGXVaC
+				6rXTsDc449/cidltpkyGwCJNnOAlFNKF2jBosZBU5eeH
+				spaQWOmOElZsjICMQMC3aeHbGiShvZsx4wMYSjH8e7Vr
+				hbu6irwCzVBApESjbUdpWWmEnhathWu1jo+siFUiRAAx
+				m9qyJNg/wOZqqzL/dL/q8PkcRU5oUKEpUge71M3ej2/7
+				CPqpdVwuMoTvoB+ZOT4YeGyxMvHmbrxlFzGOHOijtzN+
+				u1TQNatX2XBuzZNQ1K+s2CXkPIZo7s6JgZyvaBevYtxP
+				vYLw4z9mR7K2vaF18UYH9Z9GNUUeayffKC73PYc=
+				) ; KSK; alg = RSASHA256 ; key id = 38696
+. 172800 IN RRSIG DNSKEY 8 0 172800 (
+				20261022000000 20261001000000 20326 .
+				ARGOmBDyLkr5oQdR5OaIeoeBti1KWEX/LY/jZlRRXwF0
+				f0eRZaljFpyVKFuZMzpafSYVs7eLOYjVyWJ3iENn4AEh
+				vX9iaKmWu3XpSSV0D6bhv5D6bk4GVPJ7NGTnA2lr4fC9
+				lq9UD1kK1Q3jYJsxZSoQgjExDBfzwQUw1eYLLPPi7TQf
+				+zA1wakHy2mkWnX1+bKDyrQ/p5ra4fgo/Pu7F47FXqRZ
+				EJ+K9o/TwA+nJn3RMS6dPaS46ERBSWHIeJAzQvNQELI4
+				pAbdVp3d3N33R2C5MxX6kUzNku8CtyXGYukSi9LK9GT3
+				nrH9O97tDADq01z78aPnjl+6hLTgMkiupw== )

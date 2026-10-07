@@ -1,8 +1,10 @@
-// Package dnssec implements DNSSEC chain, algorithm, and NSEC3 checks.
+// Package dnssec implements DNSSEC chain, algorithm, and NSEC3 checks, plus
+// the root KSK sentinel test of the resolvers bedrock queries.
 //
 // Backed by RFC 4033/4034/4035 (core), 4509 (SHA-256 DS), 5011 (auto trust
-// anchors), 5155 (NSEC3), 6605 (ECDSA), 6781 (operational), 8624 (algorithm
-// requirements), 3658 (delegation signer).
+// anchors), 5155 (NSEC3), 6605 (ECDSA), 6781 (operational), 8509 (root key
+// trust anchor sentinel), 8624 (algorithm requirements), 3658 (delegation
+// signer).
 package dnssec
 
 import (
@@ -24,6 +26,7 @@ func init() {
 	registry.Register(checkutil.Wrap("dnssec.chain", category, runChain))
 	registry.Register(checkutil.Wrap("dnssec.algorithms", category, runAlgorithms))
 	registry.Register(checkutil.Wrap("dnssec.nsec", category, runNSEC))
+	registry.Register(checkutil.Wrap(sentinelID, category, runSentinel))
 }
 
 const category = "DNSSEC"

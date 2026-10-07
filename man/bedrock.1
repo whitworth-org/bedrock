@@ -85,8 +85,10 @@ or
 .BI \-\-resolvers " csv"
 Comma-separated list of resolver specs (same syntax as
 .BR \-\-resolver ).
-Each query is sent to every listed resolver in parallel; the first answer is
-used for normal lookups and the full set is exposed to the propagation check.
+The first resolver serves every lookup; the
+.B dnssec.sentinel
+check (RFC 8509) tests the root trust anchors of each listed resolver
+separately.
 Preferred over
 .B \-\-resolver
 when both are supplied.
@@ -306,7 +308,7 @@ checks reference, among others:
 .IP \(bu 2
 RFC 1034, 1035, 1912, 2181, 2308, 3596, 3597, 5936 (DNS)
 .IP \(bu 2
-RFC 4033, 4034, 4035, 4509, 5011, 5155, 6605, 6781, 7344, 8624 (DNSSEC)
+RFC 4033, 4034, 4035, 4509, 5011, 5155, 6605, 6781, 7344, 8509, 8624 (DNSSEC)
 .IP \(bu 2
 RFC 5321, 3207, 7505 (SMTP / STARTTLS / Null MX)
 .IP \(bu 2
