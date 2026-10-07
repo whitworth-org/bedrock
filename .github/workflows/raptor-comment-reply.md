@@ -6,6 +6,7 @@ on:
     name: kite
     events: [issue_comment, pull_request_comment, pull_request_review_comment]
   roles: [admin, maintainer, write]
+  report-blocked-version: false
   skip-bots: [github-actions, copilot, dependabot, renovate]
 permissions:
   contents: read
@@ -50,7 +51,7 @@ safe-outputs:
 steps:
   - name: Clone Trail of Bits skill libraries
     env:
-      TOB_SKILLS_REF: 14e5a1070020c5d101e8362756f3201fb677b467
+      TOB_SKILLS_REF: 82fe8226252622fa807643bdca1710901198553a
       TOB_SKILLS_CURATED_REF: 6d05be4889017b06fb15069f371afd220daffb62
     run: bash .github/scripts/clone_tob_skills.sh
 ---
