@@ -10,7 +10,7 @@ A single-binary CLI auditor for DNS, DNSSEC, Email (incl. BIMI), and Web / TLS. 
 
 ## Install
 
-Requires **Go 1.27.0** or newer.
+Requires **Go 1.27.1** or newer.
 
 ### Preferred: `go install`
 
@@ -304,6 +304,8 @@ name: Domain audit
 on:
   schedule: [{ cron: '0 6 * * *' }]
   workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   audit:
     runs-on: ubuntu-latest
@@ -312,7 +314,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with: { go-version: '1.27.0' }
+        with: { go-version: '1.27.1' }
       - run: go install github.com/whitworth-org/bedrock@v1.2.3
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

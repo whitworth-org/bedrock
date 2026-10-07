@@ -37,10 +37,7 @@ fuzz:
 	done
 
 vulncheck:
-	@tmp=$$(mktemp); \
-	  trap 'rm -f "$$tmp"' EXIT; \
-	  CGO_ENABLED=0 go build -trimpath -o "$$tmp" .; \
-	  govulncheck -mode=binary "$$tmp"
+	go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
 install:
 	CGO_ENABLED=0 go install -trimpath -ldflags "$(LDFLAGS)" .

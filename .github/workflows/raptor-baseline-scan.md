@@ -33,6 +33,7 @@ on:
     # needs a runner online (target_size >= 1).
     - cron: "0 8 * * 1"
   roles: [admin, maintainer, write]
+  report-blocked-version: false
   skip-bots: [github-actions, copilot, dependabot, renovate]
 if: github.event_name != 'schedule' || vars.KITE_BASELINE_SCHEDULE == 'true'
 concurrency:
@@ -93,10 +94,10 @@ steps:
       printf 'KITE_PHASE_TIMING phase=startup duration_seconds=%s\n' "$((phase_end - phase_start))"
   - name: Clone skill libraries
     env:
-      TOB_SKILLS_REF: 14e5a1070020c5d101e8362756f3201fb677b467
+      TOB_SKILLS_REF: 82fe8226252622fa807643bdca1710901198553a
       TOB_SKILLS_CURATED_REF: 6d05be4889017b06fb15069f371afd220daffb62
-      DEPS_DEV_REF: dc936a45c6574bb6e6bd5433de8c74e4cdff1276
-      MITRE_ATLAS_REF: 41d4f5ca4112f0e492ffaa3ebff07dc80a75afa5 # v2026.08
+      DEPS_DEV_REF: 0e158e8db197c04ba4209672caf41ad1e68a17e3
+      MITRE_ATLAS_REF: 3259f388d19cbcca11bacf12a0ef97f4198f711b # v2026.09
     run: |
       phase_start=$(date +%s)
       bash .github/scripts/clone_tob_skills.sh

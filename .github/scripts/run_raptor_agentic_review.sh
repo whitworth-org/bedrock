@@ -849,6 +849,9 @@ if [[ -n "$raptor_image" ]]; then
 
   docker_args=(
     run
+    # The image runs privileged with API keys, so use only the copy provisioned on the
+    # runner; an unqualified name such as raptor:latest would otherwise pull from Docker Hub.
+    --pull=never
     --rm
     --privileged
     --user "$(id -u):$(id -g)"
