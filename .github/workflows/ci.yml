@@ -45,7 +45,10 @@ jobs:
           cache: true
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.13.2
+          version: v2.14.0
+          # The binary install mode does not verify the release asset; go install checks
+          # the module against sum.golang.org.
+          install-mode: goinstall
 
   vulncheck:
     name: govulncheck
@@ -58,11 +61,5 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
-      # govulncheck 1.3.0's source analyzer is not compatible with Go 1.27's
-      # generic standard-library APIs; binary mode retains symbol reachability.
-      - run: |
-          tmp=$(mktemp)
-          trap 'rm -f "$tmp"' EXIT
-          CGO_ENABLED=0 go build -trimpath -o "$tmp" .
-          govulncheck -mode=binary "$tmp"
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+      - run: govulncheck ./...
