@@ -128,6 +128,17 @@
       ]
     },
     {
+      "id": "dnssec.sentinel",
+      "category": "DNSSEC",
+      "title": "Root KSK sentinel test skipped",
+      "status": "INFO",
+      "evidence": "no resolver returned a usable root DNSKEY RRset: 127.0.0.1:<resolver-port>: answered NXDOMAIN",
+      "rfc_refs": [
+        "RFC 8509 §3",
+        "RFC 5011"
+      ]
+    },
+    {
       "id": "dnssec.signed",
       "category": "DNSSEC",
       "title": "Domain is not DNSSEC-signed",
@@ -640,9 +651,9 @@
           "pass": 0,
           "warn": 0,
           "fail": 0,
-          "info": 2,
+          "info": 3,
           "na": 1,
-          "total": 3
+          "total": 4
         }
       },
       {
@@ -683,9 +694,9 @@
       "pass": 2,
       "warn": 4,
       "fail": 8,
-      "info": 10,
+      "info": 11,
       "na": 34,
-      "total": 58
+      "total": 59
     }
   }
 }
