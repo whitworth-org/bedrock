@@ -145,7 +145,7 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 | Check ID                 | What it verifies                                                                 |
 |--------------------------|----------------------------------------------------------------------------------|
 | `dns.zone.mname`         | SOA MNAME appears in the apex NS RRset (RFC 1912 §2.2, RFC 1996).                |
-| `dns.zone.soa`           | SOA refresh / retry / expire / minimum within recommended windows (RFC 2308).    |
+| `dns.zone.soa`           | SOA expire outlasts refresh + retry and a day; minimum ≤ 1 day (RFC 1912, 2308). |
 | `dns.zone.mx`            | Apex MX count and well-formedness.                                               |
 | `dns.ns.count`           | At least 2 authoritative NS records (RFC 1034 §4.1, RFC 1912 §2.8).              |
 | `dns.ns.diversity`       | NSes span ≥2 distinct /24 prefixes (RFC 2182 §3.1).                              |
