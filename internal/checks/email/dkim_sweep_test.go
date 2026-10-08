@@ -245,25 +245,33 @@ type randomSelectorZone struct {
 	zone cannedZone
 	hold time.Duration
 	fail int
+	// arrived, when set, holds each selector query until the first random
+	// query arrives and closes it, or for selectorStall at most.
+	arrived chan struct{}
 
 	mu         sync.Mutex
 	random     int
 	holding    int
 	overlapped int
+	stalled    int
 }
+
+// selectorStall is how long a selector query waits for the random query.
+const selectorStall = 2 * time.Second
 
 func (z *randomSelectorZone) ServeDNS(w mdns.ResponseWriter, req *mdns.Msg) {
 	name := strings.ToLower(strings.TrimSuffix(req.Question[0].Name, "."))
 	label, _ := strings.CutSuffix(name, "._domainkey.example.com")
-	z.mu.Lock()
 	if slices.Contains(selectorList(nil), label) {
-		z.overlapped += min(z.holding, 1)
-		z.mu.Unlock()
-		z.zone.ServeDNS(w, req)
+		z.serveSelector(w, req)
 		return
 	}
+	z.mu.Lock()
 	z.random++
 	z.holding++
+	if z.random == 1 && z.arrived != nil {
+		close(z.arrived)
+	}
 	failing := z.random <= z.fail
 	z.mu.Unlock()
 
@@ -280,12 +288,30 @@ func (z *randomSelectorZone) ServeDNS(w mdns.ResponseWriter, req *mdns.Msg) {
 	z.zone.ServeDNS(w, req)
 }
 
-// counts returns the random-selector queries received and the selector
-// queries that arrived while one was held.
-func (z *randomSelectorZone) counts() (random, overlapped int) {
+// serveSelector answers a selector query, after the random query has
+// arrived if arrived is set.
+func (z *randomSelectorZone) serveSelector(w mdns.ResponseWriter, req *mdns.Msg) {
+	stalled := 0
+	if z.arrived != nil {
+		select {
+		case <-z.arrived:
+		case <-time.After(selectorStall):
+			stalled = 1
+		}
+	}
+	z.mu.Lock()
+	z.overlapped += min(z.holding, 1)
+	z.stalled += stalled
+	z.mu.Unlock()
+	z.zone.ServeDNS(w, req)
+}
+
+// counts returns the random-selector queries received, the selector queries
+// answered while one was held, and those that waited selectorStall for it.
+func (z *randomSelectorZone) counts() (random, overlapped, stalled int) {
 	z.mu.Lock()
 	defer z.mu.Unlock()
-	return z.random, z.overlapped
+	return z.random, z.overlapped, z.stalled
 }
 
 // TestRunDKIMWildcardLookupFails: a failed lookup for the random selector is
@@ -369,7 +395,7 @@ func TestRunDKIMWildcardLookupFails(t *testing.T) {
 			if !maps.Equal(got, tc.want) {
 				t.Errorf("results = %v, want %v", got, tc.want)
 			}
-			if random, _ := z.counts(); random != 2 {
+			if random, _, _ := z.counts(); random != 2 {
 				t.Errorf("%d random selectors probed, want 2", random)
 			}
 			if tc.want["email.dkim.wildcard"] == wantInconclusive {
@@ -383,16 +409,21 @@ func TestRunDKIMWildcardLookupFails(t *testing.T) {
 }
 
 // TestDKIMSweepProbesRandomSelectorBesideList: the random selector's lookup
-// overlaps the selector lookups rather than delaying them.
+// runs beside the selector lookups, neither before them nor in a slot among
+// them. Each selector query waits for the random query, so a random lookup
+// queued behind the list leaves the selectors stalled, and one run first
+// leaves none of them answered while it is held.
 func TestDKIMSweepProbesRandomSelectorBesideList(t *testing.T) {
-	z := &randomSelectorZone{
-		zone: cannedZone{delay: 20 * time.Millisecond},
-		hold: 300 * time.Millisecond,
-	}
-	env := probe.NewEnv("example.com", 2*time.Second, false, serveDNS(t, z))
+	z := &randomSelectorZone{hold: 300 * time.Millisecond, arrived: make(chan struct{})}
+	env := probe.NewEnv("example.com", 10*time.Second, false, serveDNS(t, z))
 	dkimSweep(context.Background(), env)
-	if _, overlapped := z.counts(); overlapped == 0 {
-		t.Error("no selector was probed while the random selector's lookup was in flight")
+	_, overlapped, stalled := z.counts()
+	if stalled != 0 {
+		t.Errorf("%d selector queries waited %v for the random selector's", stalled,
+			selectorStall)
+	}
+	if overlapped == 0 {
+		t.Error("no selector was answered while the random selector's lookup was in flight")
 	}
 }
 
