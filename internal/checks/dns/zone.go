@@ -11,21 +11,18 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// SOA negative-cache TTL bounds. RFC 2308 §5 recommends "1 hour to 1 day"
-// (3600..86400 s). Values outside this range are flagged Warn (still
-// functional, just operationally suboptimal).
+// SOA timer limits. A timer is flagged only when it can stop the zone
+// resolving or keep negative answers cached too long. RFC 1912 §2.2's
+// suggested ranges predate NOTIFY and RFC 2308, and the working defaults of
+// managed DNS providers fall outside them.
 const (
-	soaMinNegTTL  = 3600    // 1 hour
-	soaMaxNegTTL  = 86400   // 1 day
-	soaMaxRefresh = 86400   // 1 day — RFC 1912 §2.2 suggests 20m..2h, allow up to a day
-	soaMinRefresh = 1200    // 20 minutes
-	soaMaxExpire  = 2419200 // 28 days; RFC 1912 §2.2 says 2-4 weeks
-	soaMinExpire  = 1209600 // 14 days
+	soaMaxNegTTL = 86400 // RFC 2308 §5: negative caching over a day is problematic
+	soaMinExpire = 86400 // secondaries must outlast a primary outage of a day
 )
 
-// runZoneSOA verifies SOA presence and that its timer values match the
-// recommendations in RFC 1912 §2.2 / RFC 2308 §5. The SOA MNAME / NS-set
-// consistency check is folded in here because we already have the SOA.
+// runZoneSOA verifies SOA presence and that its timers are safe (RFC 1912
+// §2.2, RFC 2308 §5). The SOA MNAME / NS-set consistency check is folded in
+// here because we already have the SOA.
 func runZoneSOA(ctx context.Context, env *probe.Env) []report.Result {
 	soa, err := lookupZoneSOA(ctx, env)
 	var alias *probe.AliasError
@@ -127,16 +124,22 @@ func soaTimers(target string, soa *probe.SOA) report.Result {
 
 	// RFC 2308 §5: negative-cache TTL = MIN(SOA.MINIMUM, SOA TTL). We can
 	// only see MINIMUM here; that's the dominant lever operators tune.
-	if soa.Minimum < soaMinNegTTL {
-		problems = append(problems, fmt.Sprintf("MINIMUM=%ds < %ds (RFC 2308 §5 recommends ≥1h)", soa.Minimum, soaMinNegTTL))
-	} else if soa.Minimum > soaMaxNegTTL {
-		problems = append(problems, fmt.Sprintf("MINIMUM=%ds > %ds (RFC 2308 §5 recommends ≤1d)", soa.Minimum, soaMaxNegTTL))
+	if soa.Minimum > soaMaxNegTTL {
+		problems = append(problems, fmt.Sprintf(
+			"MINIMUM=%ds > %ds: negative answers are cached for over a day (RFC 2308 §5)",
+			soa.Minimum, soaMaxNegTTL))
 	}
-	if soa.Refresh < soaMinRefresh || soa.Refresh > soaMaxRefresh {
-		problems = append(problems, fmt.Sprintf("REFRESH=%ds outside %d..%ds (RFC 1912 §2.2)", soa.Refresh, soaMinRefresh, soaMaxRefresh))
-	}
-	if soa.Expire < soaMinExpire || soa.Expire > soaMaxExpire {
-		problems = append(problems, fmt.Sprintf("EXPIRE=%ds outside %d..%ds (RFC 1912 §2.2 suggests 2-4w)", soa.Expire, soaMinExpire, soaMaxExpire))
+	// RFC 1912 §2.2: a secondary stops answering for the zone once EXPIRE
+	// passes without reaching the primary. Summed as uint64 so it can't wrap.
+	firstRetry := uint64(soa.Refresh) + uint64(soa.Retry)
+	if uint64(soa.Expire) < firstRetry {
+		problems = append(problems, fmt.Sprintf(
+			"EXPIRE=%ds < REFRESH+RETRY=%ds: a secondary that misses one refresh "+
+				"drops the zone before it retries (RFC 1912 §2.2)", soa.Expire, firstRetry))
+	} else if soa.Expire < soaMinExpire {
+		problems = append(problems, fmt.Sprintf(
+			"EXPIRE=%ds < %ds: a primary outage of under a day stops every secondary "+
+				"answering for the zone (RFC 1912 §2.2)", soa.Expire, soaMinExpire))
 	}
 	// RFC 1912 §2.2: hostmaster mailbox should be sensible.
 	if soa.Mbox == "" || !strings.Contains(soa.Mbox, ".") {
@@ -150,7 +153,7 @@ func soaTimers(target string, soa *probe.SOA) report.Result {
 		return report.Result{
 			ID:       "dns.zone.soa",
 			Category: category,
-			Title:    "SOA timers within RFC 1912 / RFC 2308 recommendations",
+			Title:    "SOA timers within safe limits",
 			Status:   report.Pass,
 			Evidence: ev,
 			RFCRefs:  []string{"RFC 1912 §2.2", "RFC 2308 §5"},

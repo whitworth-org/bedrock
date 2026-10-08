@@ -116,43 +116,45 @@ func TestZoneMX_LookupFailures(t *testing.T) {
 	}
 }
 
-func TestSOATimers_PassWhenAllInRange(t *testing.T) {
-	soa := &probe.SOA{
-		NS:      "ns1.example.com",
-		Mbox:    "hostmaster.example.com",
-		Serial:  1,
-		Refresh: 7200,
-		Retry:   3600,
-		Expire:  1814400, // 21 days
-		Minimum: 3600,
+// TestSOATimers checks that soaTimers warns only on a timer that can stop
+// the zone resolving or keep negative answers cached for over a day, and
+// passes the defaults of managed DNS providers.
+func TestSOATimers(t *testing.T) {
+	tests := []struct {
+		name                            string
+		refresh, retry, expire, minimum uint32
+		want                            report.Status
+		evidence                        string
+	}{
+		{"Cloudflare default", 10000, 2400, 604800, 1800, report.Pass, ""},
+		{"Google Cloud DNS default", 21600, 3600, 259200, 300, report.Pass, ""},
+		{"Azure DNS default", 3600, 300, 2419200, 300, report.Pass, ""},
+		{"Route 53 default", 7200, 900, 1209600, 86400, report.Pass, ""},
+		{"no negative caching", 7200, 3600, 1814400, 0, report.Pass, ""},
+		{"expire a day", 7200, 3600, 86400, 3600, report.Pass, ""},
+		{"expire equal to refresh plus retry", 86400, 7200, 93600, 3600, report.Pass, ""},
+		{"minimum over a day", 7200, 3600, 1814400, 86401, report.Warn,
+			"MINIMUM=86401s > 86400s: negative answers are cached for over a day"},
+		{"expire under refresh plus retry", 86400, 7200, 93599, 3600, report.Warn,
+			"EXPIRE=93599s < REFRESH+RETRY=93600s"},
+		{"expire under a day", 3600, 600, 86399, 3600, report.Warn,
+			"EXPIRE=86399s < 86400s: a primary outage of under a day"},
+		{"refresh plus retry past uint32", 3000000000, 3000000000, 4000000000, 3600,
+			report.Warn, "REFRESH+RETRY=6000000000s"},
 	}
-	r := soaTimers("example.com", soa)
-	if r.Status != report.Pass {
-		t.Fatalf("expected Pass, got %s (evidence=%q)", r.Status, r.Evidence)
-	}
-}
-
-func TestSOATimers_WarnsOnLowMinimum(t *testing.T) {
-	soa := &probe.SOA{NS: "ns1.example.com", Mbox: "hostmaster.example.com",
-		Refresh: 7200, Retry: 3600, Expire: 1814400, Minimum: 60}
-	r := soaTimers("example.com", soa)
-	if r.Status != report.Warn {
-		t.Fatalf("expected Warn for 60s minimum, got %s", r.Status)
-	}
-	if !strings.Contains(r.Evidence, "MINIMUM=60") {
-		t.Fatalf("evidence should call out MINIMUM=60: %q", r.Evidence)
-	}
-	if r.Remediation == "" {
-		t.Fatalf("Warn on SOA timers must include a copy-pasteable remediation")
-	}
-}
-
-func TestSOATimers_WarnsOnHighMinimum(t *testing.T) {
-	soa := &probe.SOA{NS: "ns1.example.com", Mbox: "hostmaster.example.com",
-		Refresh: 7200, Retry: 3600, Expire: 1814400, Minimum: 7 * 86400}
-	r := soaTimers("example.com", soa)
-	if r.Status != report.Warn {
-		t.Fatalf("expected Warn for 7d minimum, got %s", r.Status)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			soa := &probe.SOA{NS: "ns1.example.com", Mbox: "hostmaster.example.com",
+				Refresh: tt.refresh, Retry: tt.retry, Expire: tt.expire, Minimum: tt.minimum}
+			r := soaTimers("example.com", soa)
+			if r.Status != tt.want || !strings.Contains(r.Evidence, tt.evidence) {
+				t.Fatalf("got %s %q, want %s mentioning %q", r.Status, r.Evidence, tt.want,
+					tt.evidence)
+			}
+			if hasFix := r.Remediation != ""; hasFix != (tt.want == report.Warn) {
+				t.Errorf("remediation = %q, want one only on Warn", r.Remediation)
+			}
+		})
 	}
 }
 
