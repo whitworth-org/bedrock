@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -228,23 +229,62 @@ func TestHostTLS_RejectedHandshakeIsNotRetried(t *testing.T) {
 
 // TestHostTLS_CancelReturnsPromptly: cancelling the scan interrupts the
 // shared handshake instead of waiting out the per-operation timeout, and
-// every consumer reports it as inconclusive.
+// every consumer reports it as inconclusive. The cancel waits for the
+// ClientHello so that it lands mid-handshake on every platform: on Windows
+// the DNS lookups that come first wait out their timeout, because Go
+// ignores ICMP port-unreachable replies to UDP there.
 func TestHostTLS_CancelReturnsPromptly(t *testing.T) {
 	env := tlsTestEnv(t)
 	env.Timeout = 5 * time.Second
-	addr, _ := tarpitListener(t)
-	setPort(t, &tlsStatePort, portOf(addr))
+	port, hello := helloTarpit(t)
+	setPort(t, &tlsStatePort, port)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(100*time.Millisecond, cancel)
-	start := time.Now()
+	defer cancel()
+	cancelled := make(chan time.Time, 1)
+	go func() {
+		select {
+		case <-hello:
+			cancelled <- time.Now()
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	got := runTLSConsumers(ctx, env)
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Errorf("returned %v after the cancel, want promptly", elapsed)
+	select {
+	case at := <-cancelled:
+		if elapsed := time.Since(at); elapsed > 2*time.Second {
+			t.Errorf("returned %v after the cancel, want promptly", elapsed)
+		}
+	default:
+		t.Fatal("the shared handshake never sent its ClientHello")
+	}
+	if len(got) != len(tlsConsumerIDs) {
+		t.Errorf("got results %v, want exactly %v", got, tlsConsumerIDs)
 	}
 	for _, id := range tlsConsumerIDs {
 		assertInconclusive(t, got[id], "context canceled")
 	}
+}
+
+// helloTarpit accepts one connection on 127.0.0.1 and never answers it;
+// hello is closed once the client's first bytes, its ClientHello, arrive.
+func helloTarpit(t *testing.T) (port string, hello <-chan struct{}) {
+	t.Helper()
+	ln := listenLoopback(t)
+	arrived := make(chan struct{})
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, err := conn.Read(make([]byte, 1)); err == nil {
+			close(arrived)
+		}
+		_, _ = io.Copy(io.Discard, conn) // until the prober hangs up
+	}()
+	return portOf(ln.Addr()), arrived
 }
 
 // TestHostTLS_ProducerPanicked: when the check that ran the handshake

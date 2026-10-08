@@ -5,7 +5,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
@@ -176,9 +175,8 @@ func TestRunDMARCNonExistentPolicy(t *testing.T) {
 		wantRemed  bool
 	}{
 		{
-			// A nil sentinel short-circuits ensureDMARC's CacheGet so this stays
-			// hermetic (no live lookup); the real NXDOMAIN path is covered by the
-			// integration golden (testdata/golden/empty.json).
+			// A nil record sends np to the tree walk, which the empty canned
+			// zone answers with NXDOMAIN at every step.
 			name:       "no usable DMARC record",
 			setup:      func(env *probe.Env) { env.CachePut(probe.CacheKeyDMARC, nil) },
 			wantStatus: report.NotApplicable,
@@ -214,7 +212,7 @@ func TestRunDMARCNonExistentPolicy(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			env := probe.NewEnv("example.com", time.Second, false, "")
+			env := newCannedEnv(t, "example.com", cannedZone{})
 			tc.setup(env)
 			res := runDMARCNonExistentPolicy(context.Background(), env)
 			if len(res) != 1 {

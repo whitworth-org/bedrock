@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -900,10 +901,12 @@ func TestOCSPStatusName(t *testing.T) {
 
 // TestRunCheck_NoCachedState exercises the top-level Run with active=true
 // on a zero-value Env. With no target the shared handshake would dial the
-// local host at ":443", which the SSRF dial guard refuses before connecting
-// because the address names no IP. probe.IsProbeFailure does not count that
-// refusal, so every result is INFO with the handshake error, as after a
-// refused handshake, rather than a crash.
+// local host at ":443", which the SSRF dial guard refuses before connecting,
+// so every result quotes the refusal rather than the check crashing. Where
+// the address names no IP, probe.IsProbeFailure does not count the refusal
+// and every result is INFO, as after a refused handshake. Where Go dials an
+// empty host as loopback (net.internetSocket), the denylist refuses
+// 127.0.0.1 and every result is inconclusive.
 func TestRunCheck_NoCachedState(t *testing.T) {
 	t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "")
 	env := &probe.Env{Active: true, Timeout: time.Second}
@@ -911,12 +914,17 @@ func TestRunCheck_NoCachedState(t *testing.T) {
 	if len(out) != 3 {
 		t.Fatalf("want 3 results, got %d", len(out))
 	}
+	status, refusal := report.Info, "ssrf dial: parse address"
+	switch runtime.GOOS {
+	case "aix", "freebsd", "openbsd", "windows":
+		status, refusal = wantInconclusive, "ssrf dial: refusing 127.0.0.1: loopback"
+	}
 	for _, r := range out {
-		if r.Status != report.Info ||
-			!strings.HasPrefix(r.Evidence, "TLS handshake with :443 failed: ") ||
-			!strings.Contains(r.Evidence, "ssrf dial: parse address") {
-			t.Errorf("%s = %s %q, want INFO quoting the dial guard's refusal",
-				r.ID, r.Status, r.Evidence)
+		if r.Status != status ||
+			!strings.Contains(r.Evidence, "TLS handshake with :443 failed: ") ||
+			!strings.Contains(r.Evidence, refusal) {
+			t.Errorf("%s = %s %q, want %s quoting the dial guard's refusal",
+				r.ID, r.Status, r.Evidence, status)
 		}
 	}
 }
