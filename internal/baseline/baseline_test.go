@@ -37,10 +37,15 @@ func TestLoadValid(t *testing.T) {
 	}
 }
 
-func TestLoadMissingFile(t *testing.T) {
-	_, err := Load(filepath.Join(t.TempDir(), "missing.json"))
-	if err == nil {
-		t.Fatal("expected error for missing file")
+// TestLoadUnreadable checks that Load fails for a missing file and for a
+// directory, with an error that names the path once.
+func TestLoadUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	for _, path := range []string{filepath.Join(dir, "missing.json"), dir} {
+		_, err := Load(path)
+		if err == nil || strings.Count(err.Error(), path) != 1 {
+			t.Errorf("Load(%q) error = %v, want one that names the path once", path, err)
+		}
 	}
 }
 

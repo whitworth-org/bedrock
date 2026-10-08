@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,17 +35,21 @@ func LoadConfig(path string) (*Config, error) {
 	if path == "" {
 		return &Config{}, nil
 	}
+	// Errors from os.Open and Read are *PathError, which names the path.
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("read config %s: %w", path, err)
+		return nil, fmt.Errorf("read config: %w", err)
 	}
 	defer func() {
 		_ = f.Close() // File close error is informational only in this read-only context
 	}()
 
 	// Limit file size to 1 MiB to prevent memory exhaustion
-	r := io.LimitReader(f, 1<<20)
-	decoder := json.NewDecoder(r)
+	data, err := io.ReadAll(io.LimitReader(f, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 
 	var c Config

@@ -218,7 +218,8 @@ func newFlagSet(o *options) *flag.FlagSet {
 		"DNS resolver: host:port, preset (cloudflare|google|quad9|opendns),\n"+
 			"or <preset>-dot/-doh, tls://host, https://url")
 	fs.StringVar(&o.resolversCSV, "resolvers", "", resolversHelp)
-	fs.DurationVar(&o.timeout, "timeout", 5*time.Second, "per-operation timeout")
+	fs.DurationVar(&o.timeout, "timeout", 5*time.Second,
+		"per-operation timeout, greater than zero")
 	fs.StringVar(&o.configPath, "config", "",
 		"path to JSON config file (flag values override config values)")
 	fs.BoolVar(&o.showVersion, "version", false, "print version and exit")
@@ -227,7 +228,9 @@ func newFlagSet(o *options) *flag.FlagSet {
 	fs.StringVar(&o.excludeCSV, "exclude", "", "CSV of categories to exclude")
 	fs.StringVar(&o.severity, "severity", "",
 		"minimum severity to include in output: info|pass|warn|fail")
-	fs.StringVar(&o.idsCSV, "ids", "", "CSV of specific check IDs to include")
+	fs.StringVar(&o.idsCSV, "ids", "",
+		"CSV of specific check IDs to include, plus the run-level\n"+
+			"dns.resolver.unreachable and registry.panic.* results")
 	fs.BoolVar(&o.subdomains, "subdomains", false,
 		"enumerate subdomains and run a subset of checks against each\n"+
 			"(uses passive sources; off by default)")
@@ -238,7 +241,7 @@ func newFlagSet(o *options) *flag.FlagSet {
 	fs.StringVar(&o.baselinePath, "baseline", "",
 		"path to a previous JSON report; surface regressions vs that baseline")
 	fs.BoolVar(&o.regressionOnly, "regression-only", false,
-		"with --baseline: exit non-zero only on NEW failures vs baseline\n"+
+		"requires --baseline: exit non-zero only on NEW failures vs baseline\n"+
 			"(pre-existing fails are ignored)")
 	return fs
 }
@@ -366,12 +369,15 @@ func mergeResolvers(cfg *cli.Config, set map[string]bool, o *options) {
 }
 
 // validateArgs reports, on one line, every flag value that rules out a
-// useful scan, so run can exit 2 before sending a query.
-func validateArgs(f cli.Filter, timeout time.Duration, regressionOnly bool, baseline string) error {
+// useful scan, so run can exit 2 before sending a query. severityErr is the
+// error from parsing --severity, which f cannot carry.
+func validateArgs(f cli.Filter, severityErr error, timeout time.Duration,
+	regressionOnly bool, baseline string) error {
 	categories := registry.Categories()
 	err := errors.Join(
 		cli.ValidateCategories(f.Only, categories),
 		cli.ValidateCategories(f.Exclude, categories),
+		severityErr,
 		cli.ValidateTimeout(timeout),
 		cli.ValidateRegressionOnly(regressionOnly, baseline),
 	)
@@ -411,10 +417,7 @@ func normalizeTarget(raw string) (string, error) {
 // loadOptions parses --severity into the result filter, checks the flag
 // values with validateArgs, and loads --baseline.
 func loadOptions(o *options) (cli.Filter, *report.Report, error) {
-	minSeverity, severitySet, err := cli.ParseSeverity(o.severity)
-	if err != nil {
-		return cli.Filter{}, nil, usageError{err}
-	}
+	minSeverity, severitySet, severityErr := cli.ParseSeverity(o.severity)
 	filter := cli.Filter{
 		Only:        cli.SplitCSV(o.onlyCSV),
 		Exclude:     cli.SplitCSV(o.excludeCSV),
@@ -422,7 +425,8 @@ func loadOptions(o *options) (cli.Filter, *report.Report, error) {
 		SeveritySet: severitySet,
 		IDs:         cli.SplitCSV(o.idsCSV),
 	}
-	if err := validateArgs(filter, o.timeout, o.regressionOnly, o.baselinePath); err != nil {
+	err := validateArgs(filter, severityErr, o.timeout, o.regressionOnly, o.baselinePath)
+	if err != nil {
 		return cli.Filter{}, nil, usageError{err}
 	}
 	if o.baselinePath == "" {
@@ -441,15 +445,29 @@ func newEnv(target string, o *options) (*probe.Env, error) {
 	env, err := probe.NewEnvMulti(target, o.timeout, !o.noActive,
 		resolverSpecs(o.resolversCSV, o.resolver))
 	if err != nil {
-		// err names the spec at fault, or says there is no system resolver.
-		// The list is left out, as another entry's URL can hold a password
-		// or token.
-		return nil, err
+		return nil, resolverError(o, err)
 	}
 	env.Subdomains = o.subdomains
 	env.EnableRBL = o.enableRBL
 	env.EnableCT = o.enableCT
 	return env, nil
+}
+
+// resolverError names the flag behind err, from NewEnvMulti, and for
+// --resolvers the position of the first entry it rejects: err may not name
+// the entry, and repeating it could show a DoH URL's password or token.
+// Without either flag, err says there is no system resolver.
+func resolverError(o *options, err error) error {
+	entries := cli.SplitCSV(o.resolversCSV)
+	for i, entry := range entries {
+		if _, entryErr := probe.NewMultiDNS([]string{entry}, o.timeout); entryErr != nil {
+			return fmt.Errorf("invalid --resolvers entry %d: %w", i+1, entryErr)
+		}
+	}
+	if len(entries) == 0 && o.resolver != "" {
+		return fmt.Errorf("invalid --resolver: %w", err)
+	}
+	return err
 }
 
 // chooseOutput applies the stdout rule: a terminal gets the report, while a

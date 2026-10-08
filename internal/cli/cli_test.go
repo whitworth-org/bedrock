@@ -21,6 +21,18 @@ func TestLoadConfigEmptyPath(t *testing.T) {
 	}
 }
 
+// TestLoadConfigUnreadable checks that LoadConfig fails for a missing file
+// and for a directory, with an error that names the path once.
+func TestLoadConfigUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	for _, path := range []string{filepath.Join(dir, "missing.json"), dir} {
+		_, err := LoadConfig(path)
+		if err == nil || strings.Count(err.Error(), path) != 1 {
+			t.Errorf("LoadConfig(%q) error = %v, want one that names the path once", path, err)
+		}
+	}
+}
+
 func TestLoadConfigValid(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "cfg.json")
