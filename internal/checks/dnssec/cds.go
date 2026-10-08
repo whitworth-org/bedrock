@@ -2,6 +2,7 @@ package dnssec
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -34,44 +35,24 @@ import (
 // thing.
 // runCDS audits CDS / CDNSKEY publication at the apex.
 func runCDS(ctx context.Context, env *probe.Env) []report.Result {
-	// Make sure DS+DNSKEY are loaded into the cache; we read DS via cachedDSs
-	// below regardless of which check ran first.
-	ensureChainData(ctx, env)
+	// The parent's DS RRset comes from the chain check's shared lookup.
+	cd := ensureChainData(ctx, env)
 
-	cctx, cancel := env.WithTimeout(ctx)
-	defer cancel()
-
-	cdsResp, cdsErr := env.DNS.ExchangeWithDO(cctx, env.Target, mdns.TypeCDS)
-	cdnskeyResp, cdnskeyErr := env.DNS.ExchangeWithDO(cctx, env.Target, mdns.TypeCDNSKEY)
+	cdsResp, cdsErr := checkRcode(env.DNS.ExchangeWithDO(ctx, env.Target, mdns.TypeCDS))
+	cdnskeyResp, cdnskeyErr := checkRcode(env.DNS.ExchangeWithDO(ctx, env.Target, mdns.TypeCDNSKEY))
+	if cdsErr != nil || cdnskeyErr != nil {
+		// With either RRset unknown, nothing about the pair can be judged.
+		return cdsLookupFailed(cdsErr, cdnskeyErr)
+	}
 
 	cdsSet := extractCDS(cdsResp)
 	cdnskeySet := extractCDNSKEY(cdnskeyResp)
-
-	// DS at the parent — populated by ensureChainData above; tolerate the
-	// case where the cache still misses (e.g. when the DS query failed).
-	dsSet := cachedDSs(env)
-	if dsSet == nil {
-		if dsResp, err := env.DNS.ExchangeWithDO(cctx, env.Target, mdns.TypeDS); err == nil {
-			dsSet = extractDS(dsResp)
-		}
-	}
+	isDelete := isDeleteSentinel(cdsSet, cdnskeySet)
 
 	results := []report.Result{}
 
 	// --- dnssec.cds.published -------------------------------------------------
 	switch {
-	case cdsErr != nil && cdnskeyErr != nil:
-		results = append(results, report.Result{
-			ID:       "dnssec.cds.published",
-			Category: category,
-			Title:    "CDS / CDNSKEY lookup failed",
-			Status:   report.Warn,
-			Evidence: fmt.Sprintf("CDS: %s; CDNSKEY: %s", cdsErr.Error(), cdnskeyErr.Error()),
-			RFCRefs:  []string{"RFC 7344 §3"},
-		})
-		// No point continuing — neither side is observable.
-		return results
-
 	case len(cdsSet) == 0 && len(cdnskeySet) == 0:
 		// Operator has opted out of automated DS maintenance. RFC 7344 §3:
 		// CDS/CDNSKEY publication is voluntary.
@@ -119,7 +100,7 @@ func runCDS(ctx context.Context, env *probe.Env) []report.Result {
 
 	default:
 		// Both sides present — verify mutual consistency.
-		if delete := isDeleteSentinel(cdsSet, cdnskeySet); delete {
+		if isDelete {
 			// RFC 8078 §4: a single CDS / CDNSKEY with the all-zero "delete DS"
 			// payload signals the parent should remove all DS records.
 			results = append(results, report.Result{
@@ -162,8 +143,8 @@ func runCDS(ctx context.Context, env *probe.Env) []report.Result {
 	// Skip when CDS is the delete sentinel — by definition there is no DS to
 	// compare against once the parent acts on it; before the parent acts the
 	// existing DS is expected to be different, not divergent.
-	if !isDeleteSentinel(cdsSet, cdnskeySet) && len(cdsSet) > 0 {
-		results = append(results, evaluateCDSvsDS(cdsSet, dsSet))
+	if !isDelete && len(cdsSet) > 0 {
+		results = append(results, cdsMatchesDSResult(cd, cdsSet))
 	}
 
 	// --- dnssec.cds.signed ---------------------------------------------------
@@ -197,6 +178,49 @@ func runCDS(ctx context.Context, env *probe.Env) []report.Result {
 	}
 
 	return results
+}
+
+// cdsLookupFailed is the dnssec.cds.published and dnssec.cds.matches_ds
+// results, the ones the run reports when no CDS is published, when the CDS
+// or the CDNSKEY lookup did not complete. Each names every failed lookup; at
+// least one of cdsErr and cdnskeyErr is non-nil.
+func cdsLookupFailed(cdsErr, cdnskeyErr error) []report.Result {
+	var failed []string
+	if cdsErr != nil {
+		failed = append(failed, "CDS: "+cdsErr.Error())
+	}
+	if cdnskeyErr != nil {
+		failed = append(failed, "CDNSKEY: "+cdnskeyErr.Error())
+	}
+	err := errors.New(strings.Join(failed, "; "))
+	return []report.Result{
+		checkutil.Inconclusive(report.Result{
+			ID:       "dnssec.cds.published",
+			Category: category,
+			Title:    "CDS / CDNSKEY lookup failed",
+			RFCRefs:  []string{"RFC 7344 §3"},
+		}, err),
+		checkutil.Inconclusive(report.Result{
+			ID:       "dnssec.cds.matches_ds",
+			Category: category,
+			Title:    "CDS / CDNSKEY lookup failed",
+			RFCRefs:  []string{"RFC 7344 §4"},
+		}, err),
+	}
+}
+
+// cdsMatchesDSResult compares cdsSet with the parent's DS RRset from the
+// shared chain lookup, or reports that the DS lookup failed.
+func cdsMatchesDSResult(cd *chainData, cdsSet []*mdns.CDS) report.Result {
+	if cd.dsErr != nil {
+		return checkutil.Inconclusive(report.Result{
+			ID:       "dnssec.cds.matches_ds",
+			Category: category,
+			Title:    "DS lookup failed",
+			RFCRefs:  []string{"RFC 7344 §4"},
+		}, cd.dsErr)
+	}
+	return evaluateCDSvsDS(cdsSet, cd.dsSet)
 }
 
 // evaluateCDSvsDS returns the dnssec.cds.matches_ds result, comparing the

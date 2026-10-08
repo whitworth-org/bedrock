@@ -1,11 +1,17 @@
 version: "2"
 
+run:
+  # Compile the smoke-tagged live-network test too, so it cannot rot unseen.
+  build-tags:
+    - smoke
+
 linters:
   default: none
   enable:
     - bodyclose
     - contextcheck
     - errcheck
+    - forbidigo
     - gocritic
     - gosec
     - govet
@@ -26,6 +32,35 @@ linters:
         - fmt.Fprintf
         - fmt.Fprintln
         - fmt.Fprint
+    forbidigo:
+      # Outbound connections go through internal/probe, which refuses
+      # SSRF-denylisted addresses and honours ctx; these APIs connect around it.
+      analyze-types: true
+      forbid:
+        - pattern: ^net\.Dial.*$
+          pkg: ^net$
+          msg: dial through probe.SafeDial, which applies the SSRF denylist
+        - pattern: ^tls\.Dial.*$
+          pkg: ^crypto/tls$
+          msg: open the conn with probe.SafeDial, then tls.Client over it
+        - pattern: ^http\.(Get|Head|Post|PostForm|Client|DefaultClient|DefaultTransport|Transport)$
+          pkg: ^net/http$
+          msg: send HTTP requests through env.HTTP, which applies the SSRF denylist
+        - pattern: ^http3\.Transport$
+          pkg: ^github\.com/quic-go/quic-go/http3$
+          msg: set Dial to probe.DialQUIC, which applies the SSRF denylist
+        - pattern: ^quic\.(Dial.*|Transport)$
+          pkg: ^github\.com/quic-go/quic-go$
+          msg: dial QUIC through probe.DialQUIC, which applies the SSRF denylist
+        - pattern: ^dns\.(Client|Transfer|Exchange.*|Dial.*)$
+          pkg: ^github\.com/miekg/dns$
+          msg: query through env.DNS, or run miekg over a probe.SafeDial conn
+        - pattern: ^textproto\.Dial$
+          pkg: ^net/textproto$
+          msg: open the conn with probe.SafeDial, then textproto.NewConn over it
+        - pattern: ^smtp\.(Dial|SendMail)$
+          pkg: ^net/smtp$
+          msg: open the conn with probe.SafeDial, then smtp.NewClient over it
     gosec:
       excludes:
         # TLS 1.0 is intentional on the auditor's Get path; GetStrict and DoH
@@ -53,6 +88,15 @@ linters:
         - "all"
         - "-QF1002"
         - "-QF1008"
+  exclusions:
+    rules:
+      # internal/probe builds the guarded dialers; tests dial loopback fakes.
+      - path: ^internal/probe/
+        linters:
+          - forbidigo
+      - path: _test\.go$
+        linters:
+          - forbidigo
 
 formatters:
   enable:

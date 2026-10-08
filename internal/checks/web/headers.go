@@ -22,16 +22,23 @@ func runHeaders(ctx context.Context, env *probe.Env) []report.Result {
 			RFCRefs:  []string{"WHATWG Fetch", "RFC 7034"},
 		}}
 	}
-	resp := getHTTPSRoot(ctx, env)
-	if resp == nil {
-		return []report.Result{{
+	resp, err := getHTTPSRoot(ctx, env)
+	if err != nil {
+		return []report.Result{rootFetchFailed(ctx, report.Result{
 			ID: "web.headers", Category: category,
 			Title:       "Security headers",
 			Status:      report.Fail,
 			Evidence:    "could not fetch https://" + env.Target + "/",
 			Remediation: "ensure HTTPS root returns 2xx so security headers can be inspected",
 			RFCRefs:     []string{"WHATWG Fetch"},
-		}}
+		}, err)}
+	}
+	if !resp.Verified {
+		return []report.Result{chainInvalid(report.Result{
+			ID: "web.headers", Category: category,
+			Title:   "Security headers",
+			RFCRefs: []string{"WHATWG Fetch"},
+		})}
 	}
 	h := resp.Headers
 	return []report.Result{
@@ -56,7 +63,7 @@ func cspResult(h http.Header) report.Result {
 		return r
 	}
 	r.Status = report.Pass
-	r.Evidence = v
+	r.Evidence = report.ClipValue(v)
 	return r
 }
 
@@ -69,7 +76,8 @@ func nosniffResult(h http.Header) report.Result {
 	v := h.Get("X-Content-Type-Options")
 	if !strings.EqualFold(strings.TrimSpace(v), "nosniff") {
 		r.Status = report.Fail
-		r.Evidence = "X-Content-Type-Options not set to 'nosniff' (got: " + v + ")"
+		r.Evidence = "X-Content-Type-Options not set to 'nosniff' (got: " +
+			report.ClipValue(v) + ")"
 		r.Remediation = "X-Content-Type-Options: nosniff"
 		return r
 	}
@@ -119,7 +127,7 @@ func referrerPolicyResult(h http.Header) report.Result {
 		return r
 	}
 	r.Status = report.Pass
-	r.Evidence = v
+	r.Evidence = report.ClipValue(v)
 	return r
 }
 
@@ -136,6 +144,6 @@ func permissionsPolicyResult(h http.Header) report.Result {
 		return r
 	}
 	r.Status = report.Pass
-	r.Evidence = v
+	r.Evidence = report.ClipValue(v)
 	return r
 }

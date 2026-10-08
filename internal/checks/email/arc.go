@@ -31,7 +31,7 @@ import (
 func runARC(ctx context.Context, env *probe.Env) []report.Result {
 	out := make([]report.Result, 0, 3)
 	out = append(out, arcDKIMResult(ctx, env))
-	out = append(out, arcDMARCResult(env))
+	out = append(out, arcDMARCResult(ctx, env))
 	out = append(out, arcGuidanceResult())
 	return out
 }
@@ -54,13 +54,8 @@ func arcDKIMResult(ctx context.Context, env *probe.Env) report.Result {
 	name := "default._domainkey." + env.Target
 	txt, err := env.DNS.LookupTXT(lookupCtx, name)
 	if err != nil && !errors.Is(err, probe.ErrNXDOMAIN) {
-		// Resolver error: cannot determine; emit Warn (never Fail per policy).
-		return report.Result{
-			ID: id, Category: category, Title: title,
-			Status:   report.Warn,
-			Evidence: "could not resolve " + name + ": " + err.Error(),
-			RFCRefs:  refs,
-		}
+		res := report.Result{ID: id, Category: category, Title: title, RFCRefs: refs}
+		return checkutil.Inconclusive(res, fmt.Errorf("TXT lookup for %s: %w", name, err))
 	}
 	if hasDKIMRecord(txt) {
 		return report.Result{
@@ -89,48 +84,43 @@ func hasDKIMRecord(txt []string) bool {
 	return false
 }
 
-// arcDMARCResult inspects the cached DMARC parse (populated by dmarcCheck via
-// probe.CacheKeyDMARC). ARC is most valuable when the domain enforces DMARC
-// (RFC 8617 §5 — ARC was designed so legitimate forwarders/mailing-lists
-// don't get scored away under p=quarantine/p=reject).
-func arcDMARCResult(env *probe.Env) report.Result {
-	const id = "email.arc.dmarc"
-	const title = "DMARC enforcement complements ARC"
-	refs := []string{"RFC 8617 §5", "RFC 9989"}
-
-	cached, ok := env.CacheGet(probe.CacheKeyDMARC)
-	if !ok || cached == nil {
-		return report.Result{
-			ID: id, Category: category, Title: title,
-			Status:   report.Info,
-			Evidence: "no DMARC record cached; ARC adds value primarily once DMARC enforcement is in place",
-			RFCRefs:  refs,
-		}
-	}
-	d, ok := cached.(*DMARC)
-	if !ok || d == nil {
-		// Defensive: cache shape changed. Treat as informational, never fatal.
-		return report.Result{
-			ID: id, Category: category, Title: title,
-			Status:   report.Info,
-			Evidence: "DMARC cache present but unrecognized shape; ARC value depends on enforcement",
-			RFCRefs:  refs,
-		}
-	}
-	if d.Policy == "none" || d.Policy == "" {
-		return report.Result{
-			ID: id, Category: category, Title: title,
-			Status:   report.Info,
-			Evidence: fmt.Sprintf("ARC adds value primarily for domains that enforce DMARC; current policy=%s", policyOrNone(d.Policy)),
-			RFCRefs:  refs,
-		}
-	}
-	return report.Result{
-		ID: id, Category: category, Title: title,
+// arcDMARCResult grades the effective DMARC policy from the shared tree walk,
+// running the walk itself when no other check has yet. ARC is most valuable
+// when the domain enforces DMARC (RFC 8617 §5 — ARC was designed so
+// legitimate forwarders/mailing-lists don't get scored away under
+// p=quarantine/p=reject).
+func arcDMARCResult(ctx context.Context, env *probe.Env) report.Result {
+	res := report.Result{
+		ID:       "email.arc.dmarc",
+		Category: category,
+		Title:    "DMARC enforcement complements ARC",
 		Status:   report.Info,
-		Evidence: fmt.Sprintf("DMARC enforced (p=%s); ARC will help legitimate forwarders preserve authentication results", d.Policy),
-		RFCRefs:  refs,
+		RFCRefs:  []string{"RFC 8617 §5", "RFC 9989"},
 	}
+	walk := EnsureDMARCWalk(ctx, env)
+	if walk == nil || walk.Policy == nil {
+		if err := walk.Incomplete(); err != nil {
+			return checkutil.Inconclusive(res, err)
+		}
+		res.Evidence = "no DMARC record cached; ARC adds value primarily once DMARC " +
+			"enforcement is in place"
+		return res
+	}
+	policy := policyOrNone(walk.EffectivePolicy())
+	source := "p=" + policy
+	if walk.inherited() {
+		source = fmt.Sprintf("sp=%s inherited from _dmarc.%s", policy, walk.PolicyDomain)
+	}
+	if policy != "none" {
+		res.Evidence = "DMARC enforced (" + source + "); ARC will help legitimate forwarders " +
+			"preserve authentication results"
+		return res
+	}
+	res.Evidence = "ARC adds value primarily for domains that enforce DMARC; current policy=none"
+	if walk.inherited() {
+		res.Evidence += " (" + source + ")"
+	}
+	return res
 }
 
 func policyOrNone(p string) string {

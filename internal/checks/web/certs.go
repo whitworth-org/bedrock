@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"net"
 	"strings"
 	"time"
 
@@ -26,77 +25,26 @@ func runCert(ctx context.Context, env *probe.Env) []report.Result {
 			RFCRefs:  []string{"RFC 5280"},
 		}}
 	}
-	state := getCachedTLSState(env)
-	if state == nil {
-		// Cache miss: tlsCheck runs in parallel with us (checks in a category
-		// are unordered), so we can lose the race for its cached handshake — or
-		// its handshake failed outright. Materialize the state with a direct
-		// TLS handshake to the target, NOT env.HTTP.Get: Get follows redirects,
-		// so a legitimate cross-host redirect (e.g. apex -> www.other-brand.example)
-		// would hand us the redirect target's certificate to validate against
-		// env.Target — a bogus SAN/chain failure. The direct dial inspects the
-		// cert env.Target actually serves, even if it fails verification
-		// (probe.VerifyChain does the real check below).
-		s, err := dialCertState(ctx, net.JoinHostPort(env.Target, "443"), env.Target, env.Timeout)
-		if err != nil || s == nil {
-			ev := "could not retrieve TLS state for cert inspection"
-			if err != nil {
-				ev += ": " + err.Error()
-			}
-			return []report.Result{{
-				ID: "web.cert.chain", Category: category,
-				Title:       "Certificate chain",
-				Status:      report.Fail,
-				Evidence:    ev,
-				Remediation: "ensure HTTPS listener is reachable on " + env.Target,
-				RFCRefs:     []string{"RFC 5280"},
-			}}
-		}
-		state = s
+	// The certificate the target itself serves, from a direct handshake:
+	// an HTTP fetch follows redirects, so a cross-host redirect would hand
+	// over another host's certificate to judge against env.Target.
+	h := hostTLS(ctx, env, env.Target)
+	if h.err != nil {
+		return []report.Result{handshakeFailed(ctx, report.Result{
+			ID: "web.cert.chain", Category: category,
+			Title:       "Certificate chain",
+			Status:      report.Fail,
+			Remediation: certFetchRemediation(env.Target),
+			RFCRefs:     []string{"RFC 5280"},
+		}, h.err)}
 	}
-
-	// Verify the chain explicitly with VerifyChain so we can report a clean
-	// error string even when net/http accepted the connection (SystemCertPool
-	// may include intermediates net/http silently fixed up).
-	chainErr := probe.VerifyChain(state, env.Target)
-	out := []report.Result{chainResult(chainErr)}
-	out = append(out, inspectLeaf(env.Target, state)...)
+	out := []report.Result{chainResult(h.verifyErr)}
+	out = append(out, inspectLeaf(env.Target, h.state)...)
 	return out
 }
 
-// dialCertState performs a direct TLS handshake to addr (using serverName for
-// SNI) and returns the connection state, so certificate hygiene is judged
-// against the certificate the target host itself serves. It deliberately
-// speaks no HTTP: a redirect must never divert cert inspection to a different
-// host's certificate (the cross-host-redirect false positive). Verification is
-// skipped so a broken, expired, or wrong-host certificate is still captured
-// for reporting — probe.VerifyChain performs the real chain/hostname check.
-// The TLS 1.0 floor mirrors probe.HTTP's degraded-path retry so certs on
-// legacy servers stay inspectable; the low version is flagged by the
-// TLS-profile check, not here.
-func dialCertState(ctx context.Context, addr, serverName string, timeout time.Duration) (*tls.ConnectionState, error) {
-	dctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	dialer := &tls.Dialer{
-		NetDialer: &net.Dialer{Timeout: timeout},
-		Config: &tls.Config{
-			ServerName: serverName,
-			MinVersion: tls.VersionTLS10,
-			//nolint:gosec // G402: an auditor must capture the served cert even when it fails verification, so cert hygiene can be reported; probe.VerifyChain does the real chain/hostname check against env.Target.
-			InsecureSkipVerify: true,
-		},
-	}
-	conn, err := dialer.DialContext(dctx, "tcp", addr)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = conn.Close() }()
-	tlsConn, ok := conn.(*tls.Conn)
-	if !ok {
-		return nil, fmt.Errorf("dial %s: unexpected non-TLS connection", addr)
-	}
-	state := tlsConn.ConnectionState()
-	return &state, nil
+func certFetchRemediation(host string) string {
+	return "ensure HTTPS listener is reachable on " + report.InlineValue(host)
 }
 
 func chainResult(err error) report.Result {
@@ -145,7 +93,7 @@ func hostnameMatchResult(host string, leaf *x509.Certificate) report.Result {
 	if err := leaf.VerifyHostname(host); err != nil {
 		r.Status = report.Fail
 		r.Evidence = err.Error()
-		r.Remediation = "issue a certificate whose SAN list includes " + host
+		r.Remediation = "issue a certificate whose SAN list includes " + report.InlineValue(host)
 		return r
 	}
 	r.Status = report.Pass
@@ -258,18 +206,4 @@ func lifespanResult(leaf *x509.Certificate) report.Result {
 	r.Status = report.Pass
 	r.Evidence = fmt.Sprintf("lifespan %d days (≤ %d allowed)", lifespanDays, maxAllowed)
 	return r
-}
-
-// getCachedTLSState pulls the cached *tls.ConnectionState (set by tlsCheck)
-// or returns nil if not present / wrong type.
-func getCachedTLSState(env *probe.Env) *tls.ConnectionState {
-	v, ok := env.CacheGet(probe.CacheKeyTLSCxn)
-	if !ok {
-		return nil
-	}
-	state, ok := v.(*tls.ConnectionState)
-	if !ok {
-		return nil
-	}
-	return state
 }

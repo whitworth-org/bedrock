@@ -19,6 +19,13 @@ import (
 // avoiding fan-out that could trip rate limits on shared infrastructure.
 const maxConcurrentDials = 8
 
+// defaultReachTimeout bounds a per-host probe given no positive timeout. It
+// matches the --timeout default.
+const defaultReachTimeout = 5 * time.Second
+
+// tlsReachPort is the port the per-host probe dials; only tests change it.
+var tlsReachPort = "443"
+
 // probeHosts runs a per-host TLS reachability + cert validation check
 // against every discovered subdomain. Each host produces exactly one
 // "subdomain.tls.<host>" result (Pass / Warn / Fail). Concurrency is
@@ -65,6 +72,11 @@ func probeHosts(ctx context.Context, env *probe.Env, hosts []string) []report.Re
 				return
 			}
 			defer func() { <-sem }()
+			// select picks at random when both cases are ready, so a
+			// cancelled scan can still win a slot.
+			if ctx.Err() != nil {
+				return
+			}
 
 			res := tlsReachResult(ctx, host, env.Timeout)
 			mu.Lock()
@@ -80,7 +92,9 @@ func probeHosts(ctx context.Context, env *probe.Env, hosts []string) []report.Re
 }
 
 // tlsReachResult is the per-host TLS check. It does:
-//  1. a strict-verify handshake on :443 with ServerName=host;
+//  1. a strict-verify handshake on :443 with ServerName=host, dialed
+//     through the SSRF-safe dialer and bounded by ctx and timeout (the
+//     default when timeout is not positive);
 //  2. if that succeeds, a chain verification against the system root pool;
 //  3. a leaf SAN match via x509.Certificate.VerifyHostname.
 //
@@ -96,16 +110,13 @@ func tlsReachResult(ctx context.Context, host string, timeout time.Duration) rep
 		RFCRefs:  []string{"RFC 5280 §6", "RFC 6125 §6.4"},
 	}
 
+	if timeout <= 0 {
+		timeout = defaultReachTimeout
+	}
 	dctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	addr := net.JoinHostPort(host, "443")
-	d := &net.Dialer{Timeout: timeout}
-	cfg := &tls.Config{
-		ServerName: host,
-		MinVersion: tls.VersionTLS12,
-	}
-	conn, err := tls.DialWithDialer(d, "tcp", addr, cfg)
+	state, err := tlsHandshake(dctx, host, timeout)
 	if err != nil {
 		// A dial / handshake failure is reported as Warn rather than Fail
 		// because not every discovered host is necessarily a live HTTPS
@@ -114,14 +125,6 @@ func tlsReachResult(ctx context.Context, host string, timeout time.Duration) rep
 		r.Status = report.Warn
 		r.Evidence = "TLS dial failed: " + err.Error()
 		r.Remediation = "if " + host + " is intended to serve HTTPS, ensure the listener is reachable on :443 and presents a valid certificate"
-		return r
-	}
-	state := conn.ConnectionState()
-	_ = conn.Close()
-
-	if dctx.Err() != nil {
-		r.Status = report.Warn
-		r.Evidence = "context deadline during handshake"
 		return r
 	}
 
@@ -157,6 +160,23 @@ func tlsReachResult(ctx context.Context, host string, timeout time.Duration) rep
 	r.Status = report.Pass
 	r.Evidence = fmt.Sprintf("TLS %s, leaf valid through %s", tlsVersionName(state.Version), leaf.NotAfter.Format(time.RFC3339))
 	return r
+}
+
+// tlsHandshake completes a verifying TLS handshake with host on
+// tlsReachPort under ctx, dialing through the SSRF-safe dialer.
+func tlsHandshake(
+	ctx context.Context, host string, timeout time.Duration,
+) (tls.ConnectionState, error) {
+	raw, err := probe.SafeDial(ctx, "tcp", net.JoinHostPort(host, tlsReachPort), timeout)
+	if err != nil {
+		return tls.ConnectionState{}, err
+	}
+	conn := tls.Client(raw, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
+	defer func() { _ = conn.Close() }()
+	if err := conn.HandshakeContext(ctx); err != nil {
+		return tls.ConnectionState{}, err
+	}
+	return conn.ConnectionState(), nil
 }
 
 // tlsVersionName mirrors web.tlsVersionName so the discover package does not

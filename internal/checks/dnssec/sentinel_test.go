@@ -905,14 +905,14 @@ func (f *fakeResolver) queries() []string {
 	return slices.Sorted(slices.Values(f.seen))
 }
 
-// startFakeResolver serves f on a loopback UDP port and returns its spec.
-func startFakeResolver(t *testing.T, f *fakeResolver) string {
+// startFakeResolver serves h on a loopback UDP port and returns its spec.
+func startFakeResolver(t *testing.T, h mdns.Handler) string {
 	t.Helper()
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen udp: %v", err)
 	}
-	srv := &mdns.Server{PacketConn: pc, Handler: f}
+	srv := &mdns.Server{PacketConn: pc, Handler: h}
 	started := make(chan struct{})
 	srv.NotifyStartedFunc = func() { close(started) }
 	go func() { _ = srv.ActivateAndServe() }()

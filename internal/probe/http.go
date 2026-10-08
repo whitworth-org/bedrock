@@ -9,19 +9,22 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
-	"os"
+	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/whitworth-org/bedrock/internal/version"
 )
 
-// HTTP wraps net/http with a custom Transport that captures the TLS state
+// HTTP wraps net/http with SSRF-safe transports that capture the TLS state
 // for the WWW checks. Redirects are followed but recorded so the caller can
 // reason about HTTP→HTTPS hygiene.
 type HTTP struct {
-	timeout time.Duration
-	client  *http.Client
+	client     *http.Client // verified TLS; redirects per checkRedirect
+	noRedirect *http.Client // client's transport; a 3xx is the response
+	insecure   *http.Client // Get's diagnostic retry; see NewHTTP
 }
 
 // Response is what HTTP.Get returns. TLSState is nil for plain HTTP responses.
@@ -36,225 +39,203 @@ type Response struct {
 	// bytes were discarded on the wire. Callers that require full bodies
 	// should treat Truncated==true as a failure case.
 	Truncated bool
+	// Verified is false only for a response from Get's diagnostic retry,
+	// which skipped certificate verification after a failed TLS handshake:
+	// its status, headers and TLSState are unauthenticated and its Body is
+	// nil. Plain-HTTP responses are Verified; TLSState tells them apart.
+	Verified bool
 }
 
-// NewHTTP returns an HTTP client primitive with SSRF-safe dial, no
-// cross-protocol redirects, and per-operation timeouts.
+const (
+	maxBodyBytes = 1 << 20 // 1 MiB
+
+	// maxRedirects caps every redirect chain the clients follow.
+	maxRedirects = 8
+
+	// MaxResponseHeaderBytes caps the response headers every probe transport
+	// accepts, far below net/http's 10 MiB default, because checks echo
+	// headers into evidence.
+	MaxResponseHeaderBytes = 256 << 10
+)
+
+// NewHTTP returns an HTTP client primitive with SSRF-safe dials, verified
+// TLS 1.2+, bounded response headers and per-operation timeouts.
 func NewHTTP(timeout time.Duration) *HTTP {
-	h := &HTTP{timeout: timeout}
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			// TLS 1.2 floor for the verified fetch path: this client's responses
 			// may be trusted (bodies are parsed), so it must meet the modern
-			// baseline. Legacy servers stay inspectable — the TLS-profile check
-			// dials them directly (see tls.go dialTLSPriority), and Get's degraded
-			// retry re-attempts with a relaxed, body-dropping config.
+			// baseline. Legacy servers stay inspectable — the WWW checks
+			// handshake with them directly (see checks/web hostTLS), and Get's
+			// degraded retry re-attempts with a relaxed, body-dropping config.
 			MinVersion: tls.VersionTLS12,
 		},
-		// Keep-alives disabled by default for safety; enabled per-target in Get/Do
-		DisableKeepAlives:     true,
-		DialContext:           safeDialContext(timeout, false),
-		TLSHandshakeTimeout:   timeout,
-		ResponseHeaderTimeout: timeout,
-		ExpectContinueTimeout: timeout,
+		// Every request gets its own connection, closed once the response is
+		// read, so no idle connection outlives the call that opened it.
+		DisableKeepAlives: true,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return SafeDial(ctx, network, addr, timeout)
+		},
+		TLSHandshakeTimeout:    timeout,
+		ResponseHeaderTimeout:  timeout,
+		ExpectContinueTimeout:  timeout,
+		MaxResponseHeaderBytes: MaxResponseHeaderBytes,
 	}
-	h.client = &http.Client{
-		Transport: tr,
-		Timeout:   timeout * 3, // total budget for redirect chain
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) > 8 {
-				return errors.New("too many redirects (>8)")
-			}
-			// Reject cross-protocol downgrades (https -> http). Private-IP
-			// rejection on the redirect target happens naturally in safeDialContext.
-			if len(via) > 0 && via[0].URL.Scheme == "https" && req.URL.Scheme == "http" {
-				return fmt.Errorf("redirect downgraded from https to http (%s)", req.URL.String())
-			}
-			return nil
+	insecureTr := tr.Clone()
+	// SECURITY: diagnostic-only, intentionally relaxed. We permit TLS 1.0 and
+	// skip certificate verification on purpose to inspect legacy or
+	// misconfigured servers after a verified handshake failed. Get discards
+	// every body from this path and marks the response unverified; it must
+	// never be used for trusted content retrieval.
+	insecureTr.TLSClientConfig = &tls.Config{
+		MinVersion:         tls.VersionTLS10,
+		InsecureSkipVerify: true,
+	}
+	budget := 3 * timeout // total budget for a redirect chain
+	return &HTTP{
+		client: &http.Client{Transport: tr, Timeout: budget, CheckRedirect: checkRedirect},
+		noRedirect: &http.Client{
+			Transport: tr,
+			Timeout:   budget,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		insecure: &http.Client{
+			Transport:     insecureTr,
+			Timeout:       budget,
+			CheckRedirect: checkRedirect,
 		},
 	}
-	return h
 }
 
-const maxBodyBytes = 1 << 20 // 1 MiB
+// NoRedirectClient returns a client that sends each request through rt and
+// returns a redirect as the response instead of following it. rt must dial
+// through the SSRF denylist, as an http3.Transport whose Dial is DialQUIC does.
+func NoRedirectClient(rt http.RoundTripper) *http.Client {
+	return &http.Client{
+		Transport: rt,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
 
-// Get fetches target and returns the response. Records the redirect chain. On
-// TLS errors caused by an incomplete chain, retries once with verification
-// disabled so the caller can still inspect the served leaf metadata.
+// checkRedirect is the redirect policy of Get, its diagnostic retry, Do and
+// DoStrict: at most maxRedirects hops, each compared with the hop before it,
+// so an https-to-http downgrade is refused wherever it falls in the chain.
+// Private-IP rejection on a redirect target happens in SafeDial.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) > maxRedirects {
+		return fmt.Errorf("too many redirects (>%d)", maxRedirects)
+	}
+	if via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme == "http" {
+		return fmt.Errorf("redirect downgraded from https to http (%s)", req.URL.String())
+	}
+	return nil
+}
+
+// Get fetches target over verified TLS, following and recording redirects
+// (see checkRedirect). When a TLS handshake fails (an untrusted or
+// mismatched certificate, or a server limited to TLS 1.0/1.1) and ctx is
+// still live, Get retries once with verification disabled so the caller can
+// inspect what the server served. Any other failure is returned as is.
 //
-// IMPORTANT: the insecure-retry path explicitly drops the response body
-// (sets Body = nil) before returning. Callers that care about the body must
-// use GetStrict, which fails closed on chain errors.
+// IMPORTANT: a response from that retry has Verified false and a nil Body.
+// Callers that care about the body or its authenticity must use GetStrict,
+// which fails closed on chain errors.
 func (h *HTTP) Get(ctx context.Context, target string) (*Response, error) {
 	u, err := url.Parse(target)
 	if err != nil {
 		return nil, err
 	}
-
-	chain := []*url.URL{u}
-	cli := *h.client
-	// Enable keep-alives for this target domain to optimize back-to-back requests
-	baseTr := h.client.Transport.(*http.Transport)
-	targetTr := baseTr.Clone()
-	targetTr.DisableKeepAlives = false
-	cli.Transport = targetTr
-	cli.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) > 8 {
-			return errors.New("too many redirects (>8)")
-		}
-		if len(via) > 0 && via[0].URL.Scheme == "https" && req.URL.Scheme == "http" {
-			return fmt.Errorf("redirect downgraded from https to http (%s)", req.URL.String())
-		}
-		chain = append(chain, req.URL)
-		return nil
-	}
-
-	resp, chainErr := h.fetch(ctx, &cli, u)
-	if chainErr != nil {
-		// Chain validation failed — retry once with verification disabled so we
-		// can still inspect what the server served (status, headers, TLSState).
-		insecureCli := *h.client
-		baseTr := h.client.Transport.(*http.Transport)
-		insecureTr := baseTr.Clone()
-		// SECURITY: diagnostic-only, intentionally relaxed. We permit TLS 1.0 and
-		// skip certificate verification on purpose to inspect legacy or
-		// misconfigured servers after normal validation failed. The response body
-		// from this path is untrusted and is discarded below; it must never be
-		// used for trusted content retrieval.
-		insecureTr.TLSClientConfig = &tls.Config{
-			MinVersion:         tls.VersionTLS10,
-			InsecureSkipVerify: true,
-		}
-		insecureCli.Transport = insecureTr
-		insecureChain := []*url.URL{u}
-		insecureCli.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			if len(via) > 8 {
-				return errors.New("too many redirects (>8)")
+	// The transport reports handshakes from its own dial goroutine.
+	var handshakeFailed atomic.Bool
+	traced := httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
+			if err != nil {
+				handshakeFailed.Store(true)
 			}
-			if len(via) > 0 && via[0].URL.Scheme == "https" && req.URL.Scheme == "http" {
-				return fmt.Errorf("redirect downgraded from https to http (%s)", req.URL.String())
-			}
-			insecureChain = append(insecureChain, req.URL)
-			return nil
-		}
-		resp2, insecureErr := h.fetch(ctx, &insecureCli, u)
-		if resp2 != nil {
-			resp2.RedirectCh = insecureChain
-			// Defensive: an un-verified body can be anything; drop it so
-			// downstream parsers cannot be tricked by attacker content
-			// served over an invalid chain.
-			resp2.Body = nil
-			resp2.Truncated = false
-			return resp2, nil
-		}
-		// Both fetches failed. chainErr stays the primary (wrapped) error —
-		// it names the validation failure callers care about — with the
-		// diagnostic retry's failure appended instead of silently dropped.
-		if insecureErr != nil {
-			return nil, fmt.Errorf("%w (insecure diagnostic retry also failed: %v)", chainErr, insecureErr)
-		}
-		return nil, chainErr
+		},
+	})
+	resp, err := h.fetch(traced, h.client, u, true)
+	if err == nil || !handshakeFailed.Load() || ctx.Err() != nil {
+		return resp, err
 	}
-	if resp != nil {
-		resp.RedirectCh = chain
+	return h.diagnosticRetry(ctx, u, err)
+}
+
+// diagnosticRetry refetches u without certificate verification after the
+// verified fetch failed a TLS handshake with verifyErr.
+func (h *HTTP) diagnosticRetry(
+	ctx context.Context, u *url.URL, verifyErr error,
+) (*Response, error) {
+	// An unverified body can be anything; it is closed unread so downstream
+	// parsers cannot be tricked by attacker content served over an invalid
+	// chain.
+	resp, err := h.fetch(ctx, h.insecure, u, false)
+	if err != nil {
+		// verifyErr stays the primary (wrapped) error — it names the
+		// validation failure callers care about — with the diagnostic
+		// retry's failure appended instead of silently dropped.
+		return nil, fmt.Errorf("%w (insecure diagnostic retry also failed: %v)", verifyErr, err)
 	}
+	resp.Verified = false
 	return resp, nil
 }
 
-// GetStrict fetches target with a strict TLS posture: MinVersion TLS 1.2, no
-// InsecureSkipVerify retry, and no cross-protocol redirects. On any TLS
-// verification error it returns the error (Response is nil). Suitable for
-// fetches whose authenticity matters (MTA-STS policy per RFC 8461 §3.3;
-// BIMI Verified Mark Certificate per BIMI Group draft §4.5).
+// GetStrict fetches target with a strict TLS posture: https only (any other
+// scheme is refused before connecting), MinVersion TLS 1.2, no
+// InsecureSkipVerify retry, and no redirects (a 3xx is the response). On any
+// TLS verification error it returns the error (Response is nil). Suitable
+// for fetches whose authenticity matters (MTA-STS policy per RFC 8461 §3.3,
+// which forbids following redirects; BIMI Verified Mark Certificate per
+// BIMI Group draft §4.5).
 func (h *HTTP) GetStrict(ctx context.Context, target string) (*Response, error) {
 	u, err := url.Parse(target)
 	if err != nil {
 		return nil, err
 	}
-
-	baseTr, ok := h.client.Transport.(*http.Transport)
-	if !ok {
-		return nil, errors.New("http transport is not *http.Transport")
-	}
-	strictTr := baseTr.Clone()
-	strictTr.TLSClientConfig = &tls.Config{
-		MinVersion: tls.VersionTLS12,
-	}
-	strictTr.DialContext = safeDialContext(h.timeout, false)
-
-	strictCli := &http.Client{
-		Transport: strictTr,
-		Timeout:   h.timeout * 3,
-		// Per RFC 8461 §3.3, MTA-STS policy fetch MUST NOT follow redirects.
-		// Refuse all redirects here; callers that need redirect handling can
-		// use Get with GetStrict only for the final authenticated URL.
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-
-	resp, err := h.fetch(ctx, strictCli, u)
-	if err != nil {
-		// Do not retry with InsecureSkipVerify. Callers that need to inspect
-		// a broken chain must use Get.
+	if err := requireHTTPS(u); err != nil {
 		return nil, err
 	}
-	if resp != nil {
-		// Redirects are refused above, so the chain is always exactly the
-		// requested URL.
-		resp.RedirectCh = []*url.URL{u}
-	}
-	return resp, nil
+	return h.fetch(ctx, h.noRedirect, u, true)
 }
 
-// Do performs a custom HTTP request using the safe transport. The request
-// must have been created with a valid context. The URL must be absolute.
-// For mixed-scheme endpoints (HTTP/HTTPS), use Do. For HTTPS-only endpoints,
-// use DoStrict to enforce TLS 1.2+.
+// Do performs a custom HTTP request using the safe transport and Get's
+// redirect policy, without Get's diagnostic retry. The request must have
+// been created with a valid context. The URL must be absolute. For
+// mixed-scheme endpoints (HTTP/HTTPS), use Do. For HTTPS-only endpoints, use
+// DoStrict.
 func (h *HTTP) Do(req *http.Request) (*Response, error) {
-	// Enable keep-alives for this target domain to optimize back-to-back requests
-	baseTr, ok := h.client.Transport.(*http.Transport)
-	if !ok {
-		return nil, errors.New("http transport is not *http.Transport")
-	}
-	targetTr := baseTr.Clone()
-	targetTr.DisableKeepAlives = false
-	targetCli := &http.Client{
-		Transport:     targetTr,
-		Timeout:       h.client.Timeout,
-		CheckRedirect: h.client.CheckRedirect,
-	}
-	return h.doWithClient(req, targetCli)
+	return h.doWithClient(req, h.client, true)
 }
 
-// DoStrict performs a custom HTTP request using the strict safe transport
-// that enforces HTTPS with TLS 1.2+. The request must have been created
-// with a valid context and the URL must be HTTPS.
+// DoStrict is Do for HTTPS-only endpoints: a URL that is not https is
+// refused before connecting, and because redirects to http are refused too,
+// every hop is verified HTTPS with TLS 1.2+. The request must have been
+// created with a valid context.
 func (h *HTTP) DoStrict(req *http.Request) (*Response, error) {
-	baseTr, ok := h.client.Transport.(*http.Transport)
-	if !ok {
-		return nil, errors.New("http transport is not *http.Transport")
+	if err := requireHTTPS(req.URL); err != nil {
+		return nil, err
 	}
-	strictTr := baseTr.Clone()
-	strictTr.TLSClientConfig = &tls.Config{
-		MinVersion: tls.VersionTLS12,
-	}
-	strictTr.DialContext = safeDialContext(h.timeout, false)
-
-	strictCli := &http.Client{
-		Transport: strictTr,
-		Timeout:   h.timeout * 3,
-		// Same redirect policy as Do and Get: cap the chain at 8 and refuse
-		// https→http downgrades. The total redirect refusal in GetStrict is
-		// an RFC 8461 §3.3 requirement specific to authenticated policy
-		// fetches; DoStrict callers (discovery API sources) may be
-		// legitimately redirected within HTTPS.
-		CheckRedirect: h.client.CheckRedirect,
-	}
-	return h.doWithClient(req, strictCli)
+	return h.doWithClient(req, h.client, true)
 }
 
-func (h *HTTP) doWithClient(req *http.Request, cli *http.Client) (*Response, error) {
+// requireHTTPS refuses u unless it is an https URL.
+func requireHTTPS(u *url.URL) error {
+	if u.Scheme != "https" {
+		return fmt.Errorf("strict fetch requires an https URL, got scheme %q", u.Scheme)
+	}
+	return nil
+}
+
+// doWithClient sends req through cli. With readBody it reads the response
+// body, up to maxBodyBytes; without, it closes the body unread and Body is
+// nil.
+func (h *HTTP) doWithClient(
+	req *http.Request, cli *http.Client, readBody bool,
+) (*Response, error) {
 	//nolint:gosec // G704: This is the SSRF-safe HTTP client implementation itself
 	r, err := cli.Do(req)
 	if err != nil {
@@ -262,52 +243,14 @@ func (h *HTTP) doWithClient(req *http.Request, cli *http.Client) (*Response, err
 	}
 	defer func() { _ = r.Body.Close() }()
 
-	// Read up to maxBodyBytes+1 so we can detect truncation
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("read response body: %w", err)
-	}
-	truncated := false
-	if len(body) > maxBodyBytes {
-		body = body[:maxBodyBytes]
-		truncated = true
-	}
-
-	resp := &Response{
-		Status:    r.StatusCode,
-		URL:       r.Request.URL,
-		Headers:   r.Header.Clone(),
-		Body:      body,
-		Truncated: truncated,
-	}
-
-	// Extract TLS state if available
-	if r.TLS != nil {
-		resp.TLSState = r.TLS
-	}
-
-	return resp, nil
-}
-
-func (h *HTTP) fetch(ctx context.Context, cli *http.Client, u *url.URL) (*Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", version.UserAgent())
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-
-	r, err := cli.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = r.Body.Close() }()
-
-	// Read up to maxBodyBytes+1 so we can detect truncation by whether the
-	// cap was exactly hit and another byte was available.
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("read response body: %w", err)
+	var body []byte
+	if readBody {
+		// Read up to maxBodyBytes+1 so we can detect truncation by whether the
+		// cap was exactly hit and another byte was available.
+		body, err = io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+		if err != nil {
+			return nil, fmt.Errorf("read response body: %w", err)
+		}
 	}
 	truncated := false
 	if len(body) > maxBodyBytes {
@@ -316,11 +259,13 @@ func (h *HTTP) fetch(ctx context.Context, cli *http.Client, u *url.URL) (*Respon
 	}
 
 	out := &Response{
-		Status:    r.StatusCode,
-		URL:       r.Request.URL,
-		Headers:   r.Header.Clone(),
-		Body:      body,
-		Truncated: truncated,
+		Status:     r.StatusCode,
+		URL:        r.Request.URL,
+		Headers:    r.Header.Clone(),
+		Body:       body,
+		RedirectCh: redirectChain(r),
+		Truncated:  truncated,
+		Verified:   true,
 	}
 	if r.TLS != nil {
 		ts := *r.TLS
@@ -329,102 +274,39 @@ func (h *HTTP) fetch(ctx context.Context, cli *http.Client, u *url.URL) (*Respon
 	return out, nil
 }
 
-// SafeDialContext is the exported form of safeDialContext for use by sibling
-// probe packages (e.g. internal/probe/tlsfp) that need to dial with the same
-// SSRF protections as the HTTP client. Behaviour and semantics are identical.
-func SafeDialContext(timeout time.Duration, allowPrivate bool) func(context.Context, string, string) (net.Conn, error) {
-	return safeDialContext(timeout, allowPrivate)
+// fetch GETs u through cli; readBody is as for doWithClient.
+func (h *HTTP) fetch(
+	ctx context.Context, cli *http.Client, u *url.URL, readBody bool,
+) (*Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", version.UserAgent())
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	return h.doWithClient(req, cli, readBody)
 }
 
-// safeDialContext returns a DialContext that rejects SSRF-vulnerable
-// destinations: loopback, link-local, multicast, unspecified, private
-// (RFC 1918), unique-local (IPv6 ULA fc00::/7), CGNAT (100.64.0.0/10), and
-// the cloud metadata literal 169.254.169.254. It resolves the host up front
-// and pins the dial to the first acceptable IP so DNS-rebinding cannot
-// swap in a bad address between check and dial.
-//
-// allowPrivate==true bypasses the denylist; today nothing in bedrock sets
-// this, but the parameter is plumbed through for future local-probe work.
-func safeDialContext(timeout time.Duration, allowPrivate bool) func(context.Context, string, string) (net.Conn, error) {
-	dialer := &net.Dialer{
-		Timeout:   timeout,
-		KeepAlive: 0,
-	}
-	// Environment override for hermetic tests and lab use — same knob used by
-	// validateResolverHost in resolverspec.go.
-	if os.Getenv(allowPrivateResolverEnv) != "" {
-		allowPrivate = true
-	}
-	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		host, port, err := net.SplitHostPort(addr)
-		if err != nil {
-			return nil, fmt.Errorf("ssrf dial: split host/port %q: %w", addr, err)
+// redirectChain returns the URL of every request that led to r, oldest
+// first. net/http links each redirected request to the response that
+// caused it.
+func redirectChain(r *http.Response) []*url.URL {
+	var chain []*url.URL
+	for req := r.Request; req != nil; {
+		chain = append(chain, req.URL)
+		if req.Response == nil {
+			break
 		}
-		// If already a literal IP, validate directly; no DNS lookup needed.
-		if ip := net.ParseIP(host); ip != nil {
-			if !allowPrivate {
-				if reason, blocked := blockedIPReason(ip); blocked {
-					return nil, fmt.Errorf("ssrf dial: refusing %s (%s)", ip.String(), reason)
-				}
-			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
-		}
-		// Hostname: resolve, filter, pin to the first acceptable IP.
-		ips, err := (&net.Resolver{}).LookupIPAddr(ctx, host)
-		if err != nil {
-			return nil, fmt.Errorf("ssrf dial: resolve %s: %w", host, err)
-		}
-		for _, a := range ips {
-			if !allowPrivate {
-				if _, blocked := blockedIPReason(a.IP); blocked {
-					continue
-				}
-			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(a.IP.String(), port))
-		}
-		return nil, fmt.Errorf("ssrf dial: no acceptable IP for %s (all candidates blocked by private-range denylist)", host)
+		req = req.Response.Request
 	}
-}
-
-// cgnatNet is RFC 6598 carrier-grade NAT space 100.64.0.0/10.
-var cgnatNet = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
-
-// blockedIPReason returns a human-readable reason if ip is on the SSRF
-// denylist, together with true. Returns "", false when the address is OK.
-func blockedIPReason(ip net.IP) (string, bool) {
-	if ip == nil {
-		return "nil ip", true
-	}
-	if ip.IsLoopback() {
-		return "loopback", true
-	}
-	if ip.IsUnspecified() {
-		return "unspecified", true
-	}
-	if ip.IsMulticast() {
-		return "multicast", true
-	}
-	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-		return "link-local", true
-	}
-	if ip.IsPrivate() {
-		return "private (RFC 1918 / ULA)", true
-	}
-	if v4 := ip.To4(); v4 != nil && cgnatNet.Contains(v4) {
-		return "CGNAT (RFC 6598)", true
-	}
-	// Cloud metadata literal. ip.IsLinkLocalUnicast already covers 169.254/16
-	// but we name it explicitly for clearer error messages.
-	if ip.Equal(net.IPv4(169, 254, 169, 254)) {
-		return "cloud metadata (169.254.169.254)", true
-	}
-	return "", false
+	slices.Reverse(chain)
+	return chain
 }
 
 // VerifyChain validates the server's leaf+intermediates against the system
-// roots, returning a wrapped error that names what's missing. Used by the
-// WWW certs check independently of the GET, so we report cert problems
-// even when the response itself is fine.
+// roots, returning a wrapped error that names what's missing. The discover
+// package's HTTPS reachability probe uses it to grade the chain each
+// discovered host serves.
 func VerifyChain(state *tls.ConnectionState, dnsName string) error {
 	if state == nil || len(state.PeerCertificates) == 0 {
 		return errors.New("no peer certificates")

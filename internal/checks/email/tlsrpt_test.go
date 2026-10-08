@@ -1,8 +1,11 @@
 package email
 
 import (
+	"context"
 	"reflect"
 	"testing"
+
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 func TestParseTLSRPT(t *testing.T) {
@@ -46,5 +49,22 @@ func TestParseTLSRPT(t *testing.T) {
 				t.Errorf("Rua = %v, want %v", got.Rua, tc.want)
 			}
 		})
+	}
+}
+
+// TestRunTLSRPT_LookupFailures: a failed _smtp._tls TXT lookup leaves the
+// record unknown, so the check is inconclusive rather than FAIL.
+func TestRunTLSRPT_LookupFailures(t *testing.T) {
+	assertTXTLookupFailuresInconclusive(t, runTLSRPT, "example.com", "_smtp._tls.example.com",
+		cannedZone{})
+}
+
+// TestRunTLSRPT_NXDOMAINIsNoRecord: NXDOMAIN at _smtp._tls means the domain
+// publishes no TLS-RPT record, which FAILs.
+func TestRunTLSRPT_NXDOMAINIsNoRecord(t *testing.T) {
+	res := runTLSRPT(context.Background(), newCannedEnv(t, "example.com", cannedZone{}))
+	if len(res) != 1 || res[0].Status != report.Fail || res[0].Remediation == "" ||
+		res[0].Evidence != "no v=TLSRPTv1 TXT record at _smtp._tls.example.com" {
+		t.Fatalf("got %+v, want one FAIL naming the missing record, with a remediation", res)
 	}
 }

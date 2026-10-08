@@ -22,10 +22,10 @@ import (
 const category = "WWW"
 
 func init() {
-	// Order is no longer load-bearing — the registry runs checks within a
-	// category in parallel. tlsCheck still produces a cached
-	// *tls.ConnectionState that certCheck prefers when available; certCheck
-	// has its own fallback path when the cache is missed.
+	// Order is not load-bearing: the registry runs checks within a category
+	// in parallel, and checks that share a probe (the TLS handshake per
+	// host, the HTTPS root fetch, the ServerHello capture per host) get it
+	// through probe.Shared, whichever check asks first.
 	registry.Register(checkutil.Wrap("web.tls.profile", category, runTLS))
 	registry.Register(checkutil.Wrap("web.cert", category, runCert))
 	registry.Register(checkutil.Wrap("web.redirect", category, runRedirect))
@@ -36,9 +36,8 @@ func init() {
 	registry.Register(checkutil.Wrap(securityTxtID, category, runSecurityTxt,
 		checkutil.RequireActive(securityTxtTitle, "RFC 9116")))
 	registry.Register(checkutil.Wrap("web.mixedcontent", category, runMixedContent))
-	// JA3S/JA4S TLS server fingerprints. Native — no third-party deps. Each
-	// registration captures its own ServerHello on the first call and caches
-	// the parsed Result on env so the sibling registration reuses it.
+	// JA3S/JA4S TLS server fingerprints. Native — no third-party deps. Both
+	// registrations read one shared ServerHello capture per host.
 	registry.Register(checkutil.Wrap("web.tls.fingerprint.ja3s", category, runTLSFingerprintJA3S))
 	registry.Register(checkutil.Wrap("web.tls.fingerprint.ja4s", category, runTLSFingerprintJA4S))
 }

@@ -2,7 +2,6 @@ package email
 
 import (
 	"context"
-	"errors"
 	"sort"
 	"strings"
 
@@ -39,13 +38,14 @@ const newSingleMXHost = "smtp.google.com"
 // can click through to the first-party instructions.
 const googleWorkspaceMigrationURL = "https://knowledge.workspace.google.com/admin/domains/set-up-mx-records-for-google-workspace"
 
-// runGoogleWorkspaceMX inspects the cached (or freshly fetched) MX set. If
-// — and only if — the domain uses Google Workspace via legacy ASPMX records,
-// emit a single INFO result pointing at the migration guide. The check
-// produces no results in all other cases (no MX, non-Google MX, or
-// already-new single-host form) so the report stays uncluttered.
+// runGoogleWorkspaceMX inspects the target's MX set. If — and only if — the
+// domain uses Google Workspace via legacy ASPMX records, emit a single INFO
+// result pointing at the migration guide. The check produces no results in
+// all other cases (no MX, non-Google MX, already-new single-host form, or a
+// failed MX lookup, which email.nullmx reports) so the report stays
+// uncluttered.
 func runGoogleWorkspaceMX(ctx context.Context, env *probe.Env) []report.Result {
-	mxs := lookupMXCached(ctx, env)
+	mxs, _ := targetMX(ctx, env)
 	if len(mxs) == 0 {
 		return nil
 	}
@@ -94,23 +94,4 @@ func runGoogleWorkspaceMX(ctx context.Context, env *probe.Env) []report.Result {
 		Evidence: evidence,
 		RFCRefs:  []string{"RFC 1035 §3.3.9", "RFC 5321 §5.1"},
 	}}
-}
-
-// lookupMXCached reads the MX slice out of env.Cache when a previous check
-// (nullMXCheck) has already populated it; falls back to a direct resolver
-// call otherwise. Errors are swallowed — if we cannot get MX records the
-// check simply emits nothing, exactly as when there are no records at all.
-func lookupMXCached(ctx context.Context, env *probe.Env) []probe.MX {
-	if v, ok := env.CacheGet(probe.CacheKeyMX); ok {
-		if mxs, ok := v.([]probe.MX); ok {
-			return mxs
-		}
-	}
-	ctx, cancel := env.WithTimeout(ctx)
-	defer cancel()
-	mxs, err := env.DNS.LookupMX(ctx, env.Target)
-	if err != nil && !errors.Is(err, probe.ErrNXDOMAIN) {
-		return nil
-	}
-	return mxs
 }

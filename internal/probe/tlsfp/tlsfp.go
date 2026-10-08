@@ -11,10 +11,10 @@
 // layouts directly and is bounds-checked at every step.
 //
 // Capture is the entry point. Pass any net.Conn-yielding Dialer (typically
-// probe.SafeDialContext for SSRF protection) and a host/port; the function
-// performs a stdlib TLS handshake, captures the first wire record (always a
-// cleartext ServerHello in both TLS 1.2 and 1.3), and returns the parsed
-// metadata plus the two computed fingerprints.
+// a closure over probe.SafeDial for SSRF protection) and a host/port; the
+// function performs a stdlib TLS handshake, captures the first wire record
+// (always a cleartext ServerHello in both TLS 1.2 and 1.3), and returns the
+// parsed metadata plus the two computed fingerprints.
 package tlsfp
 
 import (
@@ -46,7 +46,7 @@ type Result struct {
 
 // Dialer is the function signature net.Dialer.DialContext satisfies. Capture
 // uses this instead of constructing its own dialer so callers can inject
-// SSRF-safe dialers (probe.SafeDialContext) without import cycles.
+// SSRF-safe dialers (a closure over probe.SafeDial) without import cycles.
 type Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
 
 // Capture performs a stdlib TLS handshake against host:port, captures the

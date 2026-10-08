@@ -8,6 +8,7 @@ import (
 
 	mdns "github.com/miekg/dns"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
@@ -18,9 +19,7 @@ import (
 // RFC 5155 + the operational guidance in RFC 9276 (informational): zero
 // iterations and an empty salt are now the recommendation.
 func runNSEC(ctx context.Context, env *probe.Env) []report.Result {
-	ensureChainData(ctx, env)
-	signed, _ := env.CacheGet(cacheKeySigned)
-	if b, ok := signed.(bool); !ok || !b {
+	if !ensureChainData(ctx, env).signed {
 		// Unsigned zones don't publish NSEC/NSEC3 — nothing to evaluate.
 		return nil
 	}
@@ -29,16 +28,14 @@ func runNSEC(ctx context.Context, env *probe.Env) []report.Result {
 	defer cancel()
 
 	probeName := nonexistentName(env.Target)
-	resp, err := env.DNS.ExchangeWithDO(cctx, probeName, mdns.TypeA)
+	resp, err := checkRcode(env.DNS.ExchangeWithDO(cctx, probeName, mdns.TypeA))
 	if err != nil {
-		return []report.Result{{
+		return []report.Result{checkutil.Inconclusive(report.Result{
 			ID:       "dnssec.nsec.type",
 			Category: category,
 			Title:    "NSEC/NSEC3 probe failed",
-			Status:   report.Warn,
-			Evidence: fmt.Sprintf("query %s: %s", probeName, err.Error()),
 			RFCRefs:  []string{"RFC 4034 §4", "RFC 5155"},
-		}}
+		}, fmt.Errorf("query %s: %w", probeName, err))}
 	}
 
 	var nsec3 *mdns.NSEC3

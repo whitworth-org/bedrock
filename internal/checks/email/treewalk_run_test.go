@@ -8,8 +8,6 @@ package email
 
 import (
 	"context"
-	"net"
-	"strings"
 	"testing"
 	"time"
 
@@ -18,84 +16,6 @@ import (
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
-
-// A-query behaviors for cannedZone.
-const (
-	aNXDomain = "nxdomain" // name does not exist (RFC 8020 semantics)
-	aNoData   = "nodata"   // NOERROR with an empty answer section
-	aWildcard = "wildcard" // every A query resolves (wildcard zone)
-)
-
-// cannedZone serves TXT records from a fixed map (unknown names get
-// NXDOMAIN) and answers A queries per aMode.
-type cannedZone struct {
-	txt   map[string][]string // lowercase FQDN without trailing dot -> TXT values
-	aMode string
-}
-
-func (z cannedZone) ServeDNS(w mdns.ResponseWriter, req *mdns.Msg) {
-	resp := new(mdns.Msg)
-	resp.SetReply(req)
-	resp.Authoritative = true
-	q := req.Question[0]
-	name := strings.ToLower(strings.TrimSuffix(q.Name, "."))
-
-	switch q.Qtype {
-	case mdns.TypeTXT:
-		vals, ok := z.txt[name]
-		if !ok {
-			resp.Rcode = mdns.RcodeNameError
-			break
-		}
-		for _, v := range vals {
-			resp.Answer = append(resp.Answer, &mdns.TXT{
-				Hdr: mdns.RR_Header{Name: q.Name, Rrtype: mdns.TypeTXT, Class: mdns.ClassINET, Ttl: 60},
-				Txt: []string{v},
-			})
-		}
-	case mdns.TypeA:
-		switch z.aMode {
-		case aWildcard:
-			resp.Answer = append(resp.Answer, &mdns.A{
-				Hdr: mdns.RR_Header{Name: q.Name, Rrtype: mdns.TypeA, Class: mdns.ClassINET, Ttl: 60},
-				A:   net.IPv4(192, 0, 2, 1),
-			})
-		case aNoData:
-			// NOERROR, empty answer section.
-		default:
-			resp.Rcode = mdns.RcodeNameError
-		}
-	default:
-		resp.Rcode = mdns.RcodeNameError
-	}
-	_ = w.WriteMsg(resp)
-}
-
-// newCannedEnv starts a canned DNS server for the zone and returns an Env
-// pointed at it. The server is shut down via t.Cleanup.
-func newCannedEnv(t *testing.T, target string, zone cannedZone) *probe.Env {
-	t.Helper()
-	t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "1")
-
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen udp: %v", err)
-	}
-	srv := &mdns.Server{PacketConn: pc, Handler: zone}
-	started := make(chan struct{})
-	srv.NotifyStartedFunc = func() { close(started) }
-	go func() { _ = srv.ActivateAndServe() }()
-	select {
-	case <-started:
-	case <-time.After(2 * time.Second):
-		_ = srv.Shutdown()
-		_ = pc.Close()
-		t.Fatal("canned DNS server did not start within 2s")
-	}
-	t.Cleanup(func() { _ = srv.Shutdown() })
-
-	return probe.NewEnv(target, 2*time.Second, false, pc.LocalAddr().String())
-}
 
 func TestRunDMARCInheritedFromOrgDomain(t *testing.T) {
 	env := newCannedEnv(t, "mail.example.com", cannedZone{
@@ -259,6 +179,63 @@ func TestRunDMARCExtDest(t *testing.T) {
 			}
 			if tc.wantRemed && r.Remediation == "" {
 				t.Error("expected remediation, got empty")
+			}
+		})
+	}
+}
+
+// TestDMARCChecksIncompleteWalk: when the tree walk could not settle which
+// DMARC record applies, because the scan was interrupted, the check that ran
+// the walk panicked or an ancestor's lookup failed, the checks that need
+// that record are inconclusive rather than failing or N/A for a missing
+// record.
+func TestDMARCChecksIncompleteWalk(t *testing.T) {
+	interrupted := func(t *testing.T) (context.Context, *probe.Env) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return ctx, newCannedEnv(t, "example.com", cannedZone{})
+	}
+	panicked := func(t *testing.T) (context.Context, *probe.Env) {
+		env := &probe.Env{Target: "example.com", Timeout: time.Second} // nil DNS panics
+		func() {
+			defer func() { _ = recover() }()
+			EnsureDMARCWalk(context.Background(), env)
+			t.Error("EnsureDMARCWalk returned, want the walk's panic")
+		}()
+		return context.Background(), env
+	}
+	ancestorFails := func(t *testing.T) (context.Context, *probe.Env) {
+		return context.Background(), newCannedEnv(t, "mail.example.com", cannedZone{
+			rcode: map[string]int{"_dmarc.example.com": mdns.RcodeServerFailure},
+		})
+	}
+	cases := []struct {
+		name  string
+		setup func(*testing.T) (context.Context, *probe.Env)
+		want  string
+	}{
+		{"scan interrupted", interrupted,
+			"DMARC tree walk stopped after 0 of 2 queries: context canceled"},
+		{"walk panicked", panicked, errWalkPanicked.Error()},
+		{"ancestor lookup failed", ancestorFails,
+			"TXT lookup for _dmarc.example.com: resolver answered SERVFAIL"},
+	}
+	arcDMARC := func(ctx context.Context, env *probe.Env) []report.Result {
+		return []report.Result{arcDMARCResult(ctx, env)}
+	}
+	checks := []func(context.Context, *probe.Env) []report.Result{
+		runDMARC, runDMARCDiscovery, runDMARCExtDest, runDMARCRejectDKIM,
+		runDMARCNonExistentPolicy, arcDMARC,
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, env := tc.setup(t)
+			for _, run := range checks {
+				res := run(ctx, env)
+				if len(res) != 1 {
+					t.Fatalf("want 1 result, got %d: %+v", len(res), res)
+				}
+				assertInconclusive(t, res[0], "could not determine: "+tc.want)
 			}
 		})
 	}

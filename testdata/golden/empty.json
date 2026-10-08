@@ -100,7 +100,7 @@
       "title": "SOA record",
       "status": "FAIL",
       "evidence": "lookup error: NXDOMAIN",
-      "remediation": "test.invalid. IN SOA ns1.test.invalid. hostmaster.test.invalid. (\n    2026041601   ; serial\n    7200         ; refresh (2h)\n    3600         ; retry   (1h)\n    1209600      ; expire  (2w)\n    3600         ; minimum (1h, RFC 2308 negative cache)\n)",
+      "remediation": "; serial \u003cYYYYMMDDnn\u003e, refresh 2h, retry 1h, expire 2w, minimum 1h (RFC 2308 negative cache)\ntest.invalid. IN SOA ns1.test.invalid. hostmaster.test.invalid. \u003cYYYYMMDDnn\u003e 7200 3600 1209600 3600",
       "rfc_refs": [
         "RFC 1035 §3.3.13",
         "RFC 1912 §2.2",
@@ -154,12 +154,12 @@
     {
       "id": "bimi.gmail.dmarc",
       "category": "Email",
-      "title": "BIMI Gmail gate: DMARC quarantine|reject enforced, strict alignment",
-      "status": "INFO",
-      "evidence": "DMARC not parsed (no entry at email.dmarc.parsed)",
-      "remediation": "_dmarc.test.invalid. IN TXT \"v=DMARC1; p=quarantine; rua=mailto:dmarc@test.invalid; adkim=s; aspf=s\"",
+      "title": "BIMI Gmail gate: DMARC quarantine|reject enforced",
+      "status": "N/A",
+      "evidence": "no parsed BIMI record (TXT check did not produce one)",
       "rfc_refs": [
         "Gmail BIMI requirements",
+        "BIMI Group draft §7.1",
         "RFC 9989 §4.7"
       ]
     },
@@ -380,7 +380,7 @@
       "title": "MTA-STS TXT record present and well-formed",
       "status": "FAIL",
       "evidence": "no v=STSv1 TXT record at _mta-sts.test.invalid",
-      "remediation": "_mta-sts.test.invalid. IN TXT \"v=STSv1; id=20260416000000Z\"",
+      "remediation": "_mta-sts.test.invalid. IN TXT \"v=STSv1; id=\u003cYYYYMMDDhhmmssZ\u003e\"",
       "rfc_refs": [
         "RFC 8461 §3.1"
       ]
@@ -662,8 +662,8 @@
           "pass": 0,
           "warn": 1,
           "fail": 6,
-          "info": 5,
-          "na": 14,
+          "info": 4,
+          "na": 15,
           "total": 26
         }
       },
@@ -694,8 +694,8 @@
       "pass": 2,
       "warn": 4,
       "fail": 8,
-      "info": 11,
-      "na": 34,
+      "info": 10,
+      "na": 35,
       "total": 59
     }
   }

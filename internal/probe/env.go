@@ -30,12 +30,17 @@ type Env struct {
 	DNS  *DNS
 	HTTP *HTTP
 
+	// cacheMu guards cache and onces. Both maps are allocated on first
+	// write, so a zero-value Env is usable.
 	cacheMu sync.RWMutex
 	cache   map[string]any
+	onces   map[string]*sync.Once
 }
 
 // NewEnv builds an Env using a single resolver spec (or the system resolver
-// when spec is empty). For multi-resolver mode call NewEnvMulti.
+// when spec is empty). It is a shorthand for tests: an invalid spec only
+// surfaces as an error on the first lookup. The CLI calls NewEnvMulti, which
+// returns that error up front.
 func NewEnv(target string, timeout time.Duration, active bool, resolver string) *Env {
 	return &Env{
 		Target:  target,
@@ -43,7 +48,6 @@ func NewEnv(target string, timeout time.Duration, active bool, resolver string) 
 		Active:  active,
 		DNS:     NewDNS(resolver, timeout),
 		HTTP:    NewHTTP(timeout),
-		cache:   map[string]any{},
 	}
 }
 
@@ -61,7 +65,6 @@ func NewEnvMulti(target string, timeout time.Duration, active bool, resolvers []
 		Active:  active,
 		DNS:     d,
 		HTTP:    NewHTTP(timeout),
-		cache:   map[string]any{},
 	}, nil
 }
 
@@ -74,29 +77,69 @@ func (e *Env) CacheGet(key string) (any, bool) {
 	return v, ok
 }
 
+// CachePut stores v under key, replacing any earlier value. Stored values
+// are shared by reference between checks, so they must not be mutated.
 func (e *Env) CachePut(key string, v any) {
 	e.cacheMu.Lock()
-	e.cache[key] = v
-	e.cacheMu.Unlock()
+	defer e.cacheMu.Unlock()
+	e.putLocked(key, v)
 }
 
-// CacheGetOrSet atomically returns the existing value for key, or calls
-// producer under the cache lock and stores the result. Stored values MUST
-// be immutable — multiple readers will share the same reference without
-// further synchronisation. Use this to avoid the classic check-then-put
-// race where two callers both run an expensive producer.
+// putLocked stores v under key; the caller holds cacheMu for writing.
+func (e *Env) putLocked(key string, v any) {
+	if e.cache == nil {
+		e.cache = map[string]any{}
+	}
+	e.cache[key] = v
+}
+
+// Shared returns the value cached under key, calling produce at most once
+// per Env and key to create it. An existing entry, such as one a test seeded
+// with CachePut, is returned without calling produce; a nil or wrong-typed
+// entry yields the zero T instead of a panic. Concurrent callers for one key
+// wait for the first caller's produce, which runs outside the cache lock, so
+// other keys stay usable meanwhile. Its result is stored under key unless a
+// CachePut stored a value first, in which case that value wins.
 //
-// Callers may migrate at their convenience; existing Get/Put usage is
-// still correct for producers that are already guarded elsewhere.
-func (e *Env) CacheGetOrSet(key string, producer func() any) any {
+// produce runs under the first caller's context and timeout, and every
+// waiting caller gets its result. It must not call Shared with its own key,
+// which deadlocks, nor store key itself: a caller that finds that entry
+// returns at once, possibly before produce has finished. If produce panics,
+// the panic reaches the first caller and every later caller gets the zero
+// T, so every consumer must handle the zero value.
+func Shared[T any](e *Env, key string, produce func() T) T {
+	v, ok := e.CacheGet(key)
+	if !ok {
+		e.onceFor(key).Do(func() { e.putIfAbsent(key, produce()) })
+		v, _ = e.CacheGet(key)
+	}
+	t, _ := v.(T)
+	return t
+}
+
+// onceFor returns the sync.Once guarding key's producer, creating it on
+// first use.
+func (e *Env) onceFor(key string) *sync.Once {
 	e.cacheMu.Lock()
 	defer e.cacheMu.Unlock()
-	if v, ok := e.cache[key]; ok {
-		return v
+	if e.onces == nil {
+		e.onces = map[string]*sync.Once{}
 	}
-	v := producer()
-	e.cache[key] = v
-	return v
+	o, ok := e.onces[key]
+	if !ok {
+		o = new(sync.Once)
+		e.onces[key] = o
+	}
+	return o
+}
+
+// putIfAbsent stores v under key unless key already holds a value.
+func (e *Env) putIfAbsent(key string, v any) {
+	e.cacheMu.Lock()
+	defer e.cacheMu.Unlock()
+	if _, ok := e.cache[key]; !ok {
+		e.putLocked(key, v)
+	}
 }
 
 // WithTimeout returns a context bounded by the env's per-operation timeout.

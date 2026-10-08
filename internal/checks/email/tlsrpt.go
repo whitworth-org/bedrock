@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
@@ -63,23 +64,21 @@ func ParseTLSRPT(raw string) (*TLSRPT, error) {
 }
 
 func runTLSRPT(ctx context.Context, env *probe.Env) []report.Result {
-	ctx, cancel := env.WithTimeout(ctx)
-	defer cancel()
-
 	const id = "email.tlsrpt.record"
 	const title = "TLS-RPT record present and well-formed"
 	refs := []string{"RFC 8460 §3"}
 
+	base := report.Result{ID: id, Category: category, Title: title, RFCRefs: refs}
+	if publishesNullMX(ctx, env) {
+		return []report.Result{nullMXNotApplicable(base)}
+	}
+	ctx, cancel := env.WithTimeout(ctx)
+	defer cancel()
+
 	name := "_smtp._tls." + env.Target
-	txt, err := env.DNS.LookupTXT(ctx, name)
-	if err != nil && !errors.Is(err, probe.ErrNXDOMAIN) {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "TXT lookup failed: " + err.Error(),
-			Remediation: tlsrptRemediation(env.Target),
-			RFCRefs:     refs,
-		}}
+	txt, err := lookupTXT(ctx, env, name)
+	if err != nil {
+		return []report.Result{checkutil.Inconclusive(base, err)}
 	}
 
 	var records []string

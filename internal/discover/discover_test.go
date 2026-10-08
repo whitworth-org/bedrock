@@ -3,12 +3,22 @@ package discover
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"sort"
+	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 func TestParseHackertarget(t *testing.T) {
@@ -361,4 +371,113 @@ func TestEnumerateProductionPathSmoke(t *testing.T) {
 	defer cancel()
 	env := &probe.Env{Target: "example.com", Timeout: 1 * time.Millisecond}
 	_, _ = enumerate(ctx, env, "example.com", 1*time.Millisecond)
+}
+
+// TestTLSReachResult_DialsThroughDenylist: a discovered name that resolves
+// to loopback is refused before any connection is made.
+func TestTLSReachResult_DialsThroughDenylist(t *testing.T) {
+	t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "")
+	addr, accepted := reachTarpit(t)
+	setReachPort(t, addr)
+	r := tlsReachResult(context.Background(), "127.0.0.1", time.Second)
+	if !strings.Contains(r.Evidence, "ssrf dial: refusing 127.0.0.1") || accepted.Load() != 0 {
+		t.Errorf("got %s %q after %d connections, want the dial refused",
+			r.Status, r.Evidence, accepted.Load())
+	}
+}
+
+// TestTLSReachResult_HonoursCancel: cancelling the scan interrupts a
+// handshake in flight instead of waiting out the timeout.
+func TestTLSReachResult_HonoursCancel(t *testing.T) {
+	t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "1")
+	addr, _ := reachTarpit(t)
+	setReachPort(t, addr)
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	start := time.Now()
+	r := tlsReachResult(ctx, "127.0.0.1", 5*time.Second)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("returned %v after the cancel, want promptly", elapsed)
+	}
+	if r.Status != report.Warn || !strings.Contains(r.Evidence, "context canceled") {
+		t.Errorf("got %s %q, want WARN naming the cancellation", r.Status, r.Evidence)
+	}
+}
+
+// TestTLSReachResult_ZeroTimeoutUsesDefault: a zero timeout neither expires
+// at once nor lets a silent server hold the probe forever.
+func TestTLSReachResult_ZeroTimeoutUsesDefault(t *testing.T) {
+	t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "1")
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(noBody))
+	srv.Config.ErrorLog = log.New(io.Discard, "", 0)
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	setReachPort(t, srv.Listener.Addr())
+	// The handshake runs, so the self-signed certificate fails verification.
+	r := tlsReachResult(context.Background(), "127.0.0.1", 0)
+	if !strings.Contains(r.Evidence, "certificate") {
+		t.Errorf("zero timeout against a TLS server = %s %q, want a certificate failure",
+			r.Status, r.Evidence)
+	}
+
+	addr, _ := reachTarpit(t)
+	setReachPort(t, addr)
+	start := time.Now()
+	r = tlsReachResult(context.Background(), "127.0.0.1", 0)
+	elapsed := time.Since(start)
+	if elapsed < defaultReachTimeout-time.Second || elapsed > defaultReachTimeout+2*time.Second ||
+		!strings.Contains(r.Evidence, "deadline exceeded") {
+		t.Errorf("zero timeout against a silent server = %s %q after %v, want the %v default",
+			r.Status, r.Evidence, elapsed, defaultReachTimeout)
+	}
+}
+
+// TestProbeHostsSkipsHostsAfterCancel: a cancelled scan probes no host,
+// even one whose goroutine wins a free semaphore slot.
+func TestProbeHostsSkipsHostsAfterCancel(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	hosts := make([]string, 16)
+	for i := range hosts {
+		hosts[i] = fmt.Sprintf("192.0.2.%d", i+1) // TEST-NET-1: never dialed here
+	}
+	if out := probeHosts(ctx, &probe.Env{Timeout: time.Second}, hosts); len(out) != 0 {
+		t.Errorf("cancelled scan produced %d results, want none: %+v", len(out), out)
+	}
+}
+
+// reachTarpit accepts connections on 127.0.0.1 and never answers, so a
+// probe of it ends only by timeout or cancellation. accepted counts the
+// connections it took.
+func reachTarpit(t *testing.T) (net.Addr, *atomic.Int32) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen on loopback: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	accepted := new(atomic.Int32)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted.Add(1)
+			go func() {
+				_, _ = io.Copy(io.Discard, conn) // until the prober hangs up
+				_ = conn.Close()
+			}()
+		}
+	}()
+	return ln.Addr(), accepted
+}
+
+// setReachPort points tlsReachResult at addr's port for the rest of the test.
+func setReachPort(t *testing.T, addr net.Addr) {
+	t.Helper()
+	old := tlsReachPort
+	tlsReachPort = strconv.Itoa(addr.(*net.TCPAddr).Port)
+	t.Cleanup(func() { tlsReachPort = old })
 }

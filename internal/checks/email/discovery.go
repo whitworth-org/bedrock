@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
@@ -20,25 +21,16 @@ func runDMARCDiscovery(ctx context.Context, env *probe.Env) []report.Result {
 	const title = "DMARC discovery: RFC 9989 tree walk and Organizational Domain"
 	refs := []string{"RFC 9989 §4.8", "RFC 9990"}
 
-	walk := ensureDMARCWalk(ctx, env)
-	if walk == nil || len(walk.Steps) == 0 {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:   report.NotApplicable,
-			Evidence: "tree walk could not run (no DNS queries executed)",
-			RFCRefs:  refs,
-		}}
+	walk := EnsureDMARCWalk(ctx, env)
+	res := report.Result{ID: id, Category: category, Title: title, RFCRefs: refs}
+	if walk == nil {
+		return []report.Result{checkutil.Inconclusive(res, errWalkPanicked)}
 	}
-
 	found := foundSteps(walk.Steps)
 	if len(found) == 0 {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status: report.NotApplicable,
-			Evidence: fmt.Sprintf("no v=DMARC1 records on the tree walk (%d of %d queries); see email.dmarc.record",
-				walk.Queries, maxWalkQueries),
-			RFCRefs: refs,
-		}}
+		return []report.Result{noPolicyResult(walk, res, fmt.Sprintf(
+			"no v=DMARC1 records on the tree walk (%d of %d queries); see email.dmarc.record",
+			walk.Queries, maxWalkQueries))}
 	}
 
 	domains := make([]string, 0, len(found))

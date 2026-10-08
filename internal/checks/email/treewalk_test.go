@@ -1,9 +1,14 @@
 package email
 
 import (
+	"context"
+	"errors"
 	"reflect"
+	"runtime"
 	"testing"
+	"weak"
 
+	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
@@ -227,6 +232,177 @@ func TestSelectPolicyRecord(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDMARCWalkEffectivePolicy(t *testing.T) {
+	record, err := ParseDMARC("v=DMARC1; p=reject; sp=none")
+	if err != nil {
+		t.Fatalf("ParseDMARC: %v", err)
+	}
+	noSP, err := ParseDMARC("v=DMARC1; p=quarantine")
+	if err != nil {
+		t.Fatalf("ParseDMARC: %v", err)
+	}
+	cases := []struct {
+		name string
+		walk *DMARCWalk
+		want string
+	}{
+		{name: "nil walk", walk: nil, want: ""},
+		{name: "no record found", walk: &DMARCWalk{Author: "example.com"}, want: ""},
+		{
+			name: "author's own record applies p=",
+			walk: &DMARCWalk{Author: "example.com", PolicyDomain: "example.com", Policy: record},
+			want: "reject",
+		},
+		{
+			name: "inherited record applies sp=",
+			walk: &DMARCWalk{Author: "news.example.com", PolicyDomain: "example.com",
+				Policy: record},
+			want: "none",
+		},
+		{
+			name: "inherited record without sp= falls back to p=",
+			walk: &DMARCWalk{Author: "news.example.com", PolicyDomain: "example.com",
+				Policy: noSP},
+			want: "quarantine",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.walk.EffectivePolicy(); got != tc.want {
+				t.Errorf("EffectivePolicy() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// walkErrStep is a step whose TXT lookup returned an error.
+func walkErrStep(domain, detail string) DMARCWalkStep {
+	return DMARCWalkStep{
+		Domain: domain, QueryName: "_dmarc." + domain, Outcome: walkError, Detail: detail,
+	}
+}
+
+func TestDMARCWalkIncomplete(t *testing.T) {
+	stopped := errors.New("DMARC tree walk stopped after 1 of 2 queries: context canceled")
+	cases := []struct {
+		name string
+		walk *DMARCWalk
+		want string // the error text; "" when the walk is complete
+	}{
+		{name: "nil walk", walk: nil, want: errWalkPanicked.Error()},
+		{
+			name: "walk stopped by an interrupt",
+			walk: &DMARCWalk{
+				Author: "example.com", Steps: []DMARCWalkStep{nxStep("example.com")},
+				stopped: stopped,
+			},
+			want: stopped.Error(),
+		},
+		{
+			name: "no queries issued",
+			walk: &DMARCWalk{Author: "example.com"},
+			want: "DMARC tree walk issued no queries",
+		},
+		{
+			name: "SERVFAIL walk",
+			walk: &DMARCWalk{Author: "example.com", Steps: []DMARCWalkStep{
+				walkErrStep("example.com", "SERVFAIL"), walkErrStep("com", "SERVFAIL"),
+			}},
+			want: "TXT lookup for _dmarc.example.com: SERVFAIL",
+		},
+		{
+			name: "failed ancestor query may hide the record that applies",
+			walk: &DMARCWalk{Author: "mail.example.com", Steps: []DMARCWalkStep{
+				nxStep("mail.example.com"), walkErrStep("example.com", "i/o timeout"),
+				nxStep("com"),
+			}},
+			want: "TXT lookup for _dmarc.example.com: i/o timeout",
+		},
+		{
+			name: "failed ancestor query may hide the organizational domain",
+			walk: &DMARCWalk{Author: "mail.example.com", Steps: []DMARCWalkStep{
+				foundStep("mail.example.com", "u"), walkErrStep("example.com", "SERVFAIL"),
+				nxStep("com"),
+			}},
+			want: "TXT lookup for _dmarc.example.com: SERVFAIL",
+		},
+		{
+			name: "every name answered without a record",
+			walk: &DMARCWalk{Author: "example.com", Steps: []DMARCWalkStep{
+				nxStep("example.com"), nxStep("com"),
+			}},
+		},
+		{
+			name: "record found with every name answered",
+			walk: &DMARCWalk{Author: "mail.example.com", Steps: []DMARCWalkStep{
+				nxStep("mail.example.com"), foundStep("example.com", "u"), nxStep("com"),
+			}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ""
+			if err := tc.walk.Incomplete(); err != nil {
+				got = err.Error()
+			}
+			if got != tc.want {
+				t.Errorf("Incomplete() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNPEvaluatesWalkCachedByAnotherCheck covers np arriving after another
+// check's walk is cached but before that check has published the effective
+// record under probe.CacheKeyDMARC: np must still evaluate the record.
+func TestNPEvaluatesWalkCachedByAnotherCheck(t *testing.T) {
+	env := newCannedEnv(t, "example.com", cannedZone{})
+	record, err := ParseDMARC("v=DMARC1; p=reject; np=reject")
+	if err != nil {
+		t.Fatalf("ParseDMARC: %v", err)
+	}
+	step := DMARCWalkStep{Domain: "example.com", QueryName: "_dmarc.example.com",
+		Outcome: walkFound, Record: record}
+	env.CachePut(probe.CacheKeyDMARCWalk, &DMARCWalk{
+		Author: "example.com", Steps: []DMARCWalkStep{step, nxStep("com")}, Queries: 2,
+		OrgDomain: "example.com", OrgRule: "fewest-labels",
+		PolicyDomain: "example.com", Policy: record,
+	})
+
+	res := runDMARCNonExistentPolicy(context.Background(), env)
+	if len(res) == 0 || res[0].ID != "email.dmarc.np" || res[0].Status != report.Pass {
+		t.Fatalf("results = %+v, want email.dmarc.np PASS for the cached np=reject", res)
+	}
+}
+
+// TestEmailProducersReleaseEnv guards against per-Env state kept outside the
+// Env: once a scan's Env is dropped, the DMARC walk and DKIM sweep must not
+// keep it, its DNS client or its cached records reachable.
+func TestEmailProducersReleaseEnv(t *testing.T) {
+	ref := runEmailProducers(t)
+	runtime.GC()
+	runtime.GC()
+	if ref.Value() != nil {
+		t.Error("Env still reachable after the scan; a producer keeps per-Env state outside it")
+	}
+}
+
+// runEmailProducers runs the DMARC walk and DKIM sweep on a fresh Env and
+// returns only a weak reference to it.
+func runEmailProducers(t *testing.T) weak.Pointer[probe.Env] {
+	t.Helper()
+	env := newCannedEnv(t, "example.com", cannedZone{txt: map[string][]string{
+		"_dmarc.example.com": {"v=DMARC1; p=reject"},
+	}})
+	if walk := EnsureDMARCWalk(context.Background(), env); walk.EffectivePolicy() != "reject" {
+		t.Fatalf("walk = %+v, want the published p=reject", walk)
+	}
+	if sweep := dkimSweep(context.Background(), env); sweep == nil {
+		t.Fatal("dkimSweep returned nil")
+	}
+	return weak.Make(env)
 }
 
 func TestDMARCPolicyStatus(t *testing.T) {

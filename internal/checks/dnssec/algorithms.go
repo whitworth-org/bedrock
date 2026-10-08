@@ -3,10 +3,12 @@ package dnssec
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 
 	mdns "github.com/miekg/dns"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
@@ -15,74 +17,81 @@ import (
 // RFC 8624 §3.1 and §3.3. ensureChainData fetches the DS+DNSKEY data
 // (or returns the cached copy if a sibling check already did).
 func runAlgorithms(ctx context.Context, env *probe.Env) []report.Result {
-	ensureChainData(ctx, env)
-	signed, _ := env.CacheGet(cacheKeySigned)
-	if b, ok := signed.(bool); !ok || !b {
+	cd := ensureChainData(ctx, env)
+	if !cd.signed {
 		// Unsigned: nothing to score; chain check already reported Info.
 		return nil
 	}
-
-	keys := cachedDNSKEYs(env)
-	dss := cachedDSs(env)
-
-	out := []report.Result{}
-
-	// DNSKEY algorithm scoring. Reduce to one verdict per distinct algorithm
-	// so an operator with multiple keys of the same type sees a single line.
-	algs := dedupeUint8(func() []uint8 {
-		var a []uint8
-		for _, k := range keys {
-			a = append(a, k.Algorithm)
-		}
-		return a
-	}())
-	for _, alg := range algs {
-		score := scoreDNSKEYAlgorithm(alg)
-		out = append(out, report.Result{
-			ID:       "dnssec.algorithm.dnskey",
-			Category: category,
-			Title:    fmt.Sprintf("DNSKEY algorithm: %s", algName(alg)),
-			Status:   score.Status,
-			Evidence: score.Evidence,
-			Remediation: func() string {
-				if score.Status == report.Fail {
-					return "# Re-sign the zone with a modern algorithm:\n" +
-						"# ECDSAP256SHA256 (alg 13) or ED25519 (alg 15) per RFC 8624 §3.1."
-				}
-				return ""
-			}(),
-			RFCRefs: []string{"RFC 8624 §3.1"},
-		})
+	var algs, digests []uint8
+	for _, k := range cd.keySet {
+		algs = append(algs, k.Algorithm)
 	}
-
-	// DS digest scoring. RFC 8624 §3.3: SHA-256 MUST, SHA-384 MAY, SHA-1 MUST NOT.
-	digests := dedupeUint8(func() []uint8 {
-		var d []uint8
-		for _, ds := range dss {
-			d = append(d, ds.DigestType)
-		}
-		return d
-	}())
-	for _, dt := range digests {
-		score := scoreDSDigest(dt)
-		out = append(out, report.Result{
-			ID:       "dnssec.algorithm.ds",
-			Category: category,
-			Title:    fmt.Sprintf("DS digest type: %s", digestName(dt)),
-			Status:   score.Status,
-			Evidence: score.Evidence,
-			Remediation: func() string {
-				if score.Status == report.Fail {
-					return "# Replace the DS at your registrar with a SHA-256 (digest type 2)\n" +
-						"# variant. Most registrars accept multiple DS records during rollover."
-				}
-				return ""
-			}(),
-			RFCRefs: []string{"RFC 8624 §3.3", "RFC 4509"},
-		})
+	for _, ds := range cd.dsSet {
+		digests = append(digests, ds.DigestType)
 	}
+	return []report.Result{dnskeyScoring.result(algs), dsScoring.result(digests)}
+}
 
-	return out
+// scoring is one of the RFC 8624 tables runAlgorithms grades against.
+type scoring struct {
+	id          string
+	title       string
+	score       func(uint8) algScore
+	remediation string // for a FAIL
+	rfcRefs     []string
+}
+
+var (
+	dnskeyScoring = scoring{
+		id:    "dnssec.algorithm.dnskey",
+		title: "DNSKEY algorithms",
+		score: scoreDNSKEYAlgorithm,
+		remediation: "# Re-sign the zone with a modern algorithm:\n" +
+			"# ECDSAP256SHA256 (alg 13) or ED25519 (alg 15) per RFC 8624 §3.1.",
+		rfcRefs: []string{"RFC 8624 §3.1"},
+	}
+	// RFC 8624 §3.3: SHA-256 MUST, SHA-384 MAY, SHA-1 MUST NOT.
+	dsScoring = scoring{
+		id:    "dnssec.algorithm.ds",
+		title: "DS digest types",
+		score: scoreDSDigest,
+		remediation: "# Replace the DS at your registrar with a SHA-256 (digest type 2)\n" +
+			"# variant. Most registrars accept multiple DS records during rollover.",
+		rfcRefs: []string{"RFC 8624 §3.3", "RFC 4509"},
+	}
+)
+
+// result grades each distinct value and folds the grades into one result
+// with the worst status. The evidence lists the verdicts worst first, so its
+// bounded list always names the values that set the status.
+func (s scoring) result(values []uint8) report.Result {
+	var fails, warns, passes []string
+	for _, v := range dedupeUint8(values) {
+		score := s.score(v)
+		switch score.Status {
+		case report.Fail:
+			fails = append(fails, score.Evidence)
+		case report.Warn:
+			warns = append(warns, score.Evidence)
+		default:
+			passes = append(passes, score.Evidence)
+		}
+	}
+	r := report.Result{
+		ID:       s.id,
+		Category: category,
+		Title:    s.title,
+		Status:   report.Pass,
+		Evidence: checkutil.ListBounded(slices.Concat(fails, warns, passes), "; "),
+		RFCRefs:  slices.Clone(s.rfcRefs),
+	}
+	switch {
+	case len(fails) > 0:
+		r.Status, r.Remediation = report.Fail, s.remediation
+	case len(warns) > 0:
+		r.Status = report.Warn
+	}
+	return r
 }
 
 // algScore captures the verdict + a short evidence string for a single
@@ -141,38 +150,6 @@ func scoreDSDigest(dt uint8) algScore {
 		return algScore{report.Pass, "SHA-384 — MAY (RFC 8624 §3.3)"}
 	}
 	return algScore{report.Warn, fmt.Sprintf("digest type %d not classified by RFC 8624", dt)}
-}
-
-func algName(alg uint8) string {
-	if s, ok := mdns.AlgorithmToString[alg]; ok {
-		return fmt.Sprintf("%s (%d)", s, alg)
-	}
-	return fmt.Sprintf("alg %d", alg)
-}
-
-func digestName(dt uint8) string {
-	if s, ok := mdns.HashToString[dt]; ok {
-		return fmt.Sprintf("%s (%d)", s, dt)
-	}
-	return fmt.Sprintf("digest %d", dt)
-}
-
-func cachedDNSKEYs(env *probe.Env) []*mdns.DNSKEY {
-	if v, ok := env.CacheGet(cacheKeyDNSKEY); ok {
-		if k, ok := v.([]*mdns.DNSKEY); ok {
-			return k
-		}
-	}
-	return nil
-}
-
-func cachedDSs(env *probe.Env) []*mdns.DS {
-	if v, ok := env.CacheGet(cacheKeyDS); ok {
-		if d, ok := v.([]*mdns.DS); ok {
-			return d
-		}
-	}
-	return nil
 }
 
 func dedupeUint8(in []uint8) []uint8 {

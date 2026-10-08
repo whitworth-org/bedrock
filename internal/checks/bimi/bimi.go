@@ -2,68 +2,104 @@
 // requirements. There is no IETF RFC for BIMI; the spec is the BIMI Group
 // draft (https://bimigroup.org/) and Gmail's BIMI configuration guide.
 //
-// Cross-check data flow: recordCheck publishes the parsed TXT record to the
-// shared cache that the SVG and VMC checks consume. Under the parallel
-// registry the BIMI checks no longer execute in registration order, so we
-// wrap each downstream check with bimiPrelude which calls ensureRecord
-// (a sync.Once-protected TXT lookup) before delegating to the original
-// Run. svgFetch's bytes / digest are best-effort: vmc gracefully degrades
-// when those cache entries are missing.
+// The registry runs these checks in parallel and in no particular order, so
+// no check reads what another check left behind. Each one calls the lazy
+// producers it depends on instead: ensureRecord (the default._bimi TXT
+// record), ensureSVG (the l= logo), ensureVMC (the a= certificate) and
+// ensureVMCLeaf (the VMC leaf, once its chain verified). Each producer runs
+// at most once per scan through probe.Shared, in whichever check asks first,
+// so a check run on its own reports what it reports in a full scan.
 package bimi
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
 
-	"github.com/whitworth-org/bedrock/internal/checks/email"
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/registry"
 	"github.com/whitworth-org/bedrock/internal/report"
+	"github.com/whitworth-org/bedrock/internal/version"
 )
 
 // BIMI lives under the broader Email security category in user-facing
 // output rather than as a top-level category of its own.
 const category = "Email"
 
-// prelude wraps an existing Check so that calls to Run first ensure the
-// shared BIMI record cache is populated. This protects the SVG / VMC / Gmail
-// gates against a parallel registry where recordCheck might not have run
-// yet. The prelude does no work for recordCheck itself (ensureRecord is
-// idempotent and the record check exposes the same lookup logic).
-type prelude struct {
-	inner registry.Check
-}
-
-func (p prelude) ID() string       { return p.inner.ID() }
-func (p prelude) Category() string { return p.inner.Category() }
-func (p prelude) Run(ctx context.Context, env *probe.Env) []report.Result {
-	ensureRecord(ctx, env)
-	return p.inner.Run(ctx, env)
-}
-
-// dmarcPrelude wraps the Gmail gate so the shared DMARC cache is primed before
-// the gate reads it. The gate consumes probe.CacheKeyDMARC (published by the
-// Email package's DMARC check), not the BIMI record, so it needs its own
-// priming rather than the record-priming prelude above. Without this, under
-// the parallel registry the gate can run before the DMARC producer and
-// spuriously report Info ("DMARC not parsed") instead of the real verdict.
-type dmarcPrelude struct {
-	inner registry.Check
-}
-
-func (p dmarcPrelude) ID() string       { return p.inner.ID() }
-func (p dmarcPrelude) Category() string { return p.inner.Category() }
-func (p dmarcPrelude) Run(ctx context.Context, env *probe.Env) []report.Result {
-	email.EnsureDMARC(ctx, env)
-	return p.inner.Run(ctx, env)
-}
-
 func init() {
 	registry.Register(recordCheck{})
-	registry.Register(prelude{svgFetchCheck{}})
-	registry.Register(prelude{svgProfileCheck{}})
-	registry.Register(prelude{svgAspectCheck{}})
-	registry.Register(prelude{vmcFetchCheck{}})
-	registry.Register(prelude{vmcChainCheck{}})
-	registry.Register(prelude{vmcLogotypeCheck{}})
-	registry.Register(dmarcPrelude{gmailGateCheck{}})
+	registry.Register(svgFetchCheck{})
+	registry.Register(svgProfileCheck{})
+	registry.Register(svgAspectCheck{})
+	registry.Register(vmcFetchCheck{})
+	registry.Register(vmcChainCheck{})
+	registry.Register(vmcLogotypeCheck{})
+	registry.Register(gmailGateCheck{})
+}
+
+// outcome is what a lazy producer made: the result of the check it backs
+// and the product the other checks use, which is the parsed record, or the
+// fetched body or verified leaf only when that result is PASS.
+type outcome[T any] struct {
+	result  report.Result
+	product T
+}
+
+// value returns o's product, or the zero T when o is nil: probe.Shared
+// gives nil to every later caller after a producer panicked.
+func (o *outcome[T]) value() T {
+	if o == nil {
+		var zero T
+		return zero
+	}
+	return o.product
+}
+
+// results returns o's result. When o is nil (see value) it returns base as
+// Info, since the panic was reported against the check that ran the
+// producer.
+func (o *outcome[T]) results(base report.Result) []report.Result {
+	if o == nil {
+		base.Status = report.Info
+		base.Evidence = "check did not complete; see registry.panic"
+		return []report.Result{base}
+	}
+	return []report.Result{o.result}
+}
+
+// getVerified GETs rawURL, an https URL from the BIMI record. DoStrict
+// verifies the TLS chain of every hop and follows at most 8 redirects, each
+// to https. Anything but a 200 with a complete, non-empty body is an error.
+func getVerified(ctx context.Context, env *probe.Env, rawURL string) (*probe.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", version.UserAgent())
+	resp, err := env.HTTP.DoStrict(req)
+	switch {
+	case err != nil:
+		return nil, err
+	case resp.Status != http.StatusOK:
+		return nil, fmt.Errorf("HTTP %d", resp.Status)
+	case len(resp.Body) == 0:
+		return nil, errors.New("empty body")
+	case resp.Truncated:
+		return nil, errors.New("body exceeds the 1 MiB fetch cap")
+	}
+	return resp, nil
+}
+
+// fetchFailed grades err, returned by getVerified for rawURL under ctx.
+// A probe that could not complete is Inconclusive; anything else, such as a
+// certificate failure, a refused connection, NXDOMAIN or a bad response, is
+// the publisher's answer, so it returns fail with the error as evidence.
+func fetchFailed(ctx context.Context, fail report.Result, rawURL string, err error) report.Result {
+	if checkutil.Incomplete(ctx, err) {
+		return checkutil.Inconclusive(fail, err)
+	}
+	fail.Evidence = "GET " + rawURL + " failed: " + err.Error()
+	return fail
 }

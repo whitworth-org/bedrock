@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -99,16 +100,21 @@ func main() {
 		os.Exit(2)
 	}
 
-	resolvers := cli.SplitCSV(*resolversCSV)
-	var env *probe.Env
-	if len(resolvers) > 0 {
-		env, err = probe.NewEnvMulti(target, *timeout, !*noActive, resolvers)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "resolver:", err)
-			os.Exit(2)
-		}
-	} else {
-		env = probe.NewEnv(target, *timeout, !*noActive, *resolver)
+	filter := cli.Filter{
+		Only:    cli.SplitCSV(*onlyCSV),
+		Exclude: cli.SplitCSV(*excludeCSV),
+		IDs:     cli.SplitCSV(*idsCSV),
+	}
+	if err := validateArgs(filter, *timeout, *regressionOnly, *baselinePath); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+
+	env, err := probe.NewEnvMulti(target, *timeout, !*noActive,
+		resolverSpecs(*resolversCSV, *resolver))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "resolver:", err)
+		os.Exit(2)
 	}
 	env.Subdomains = *subdomains
 	env.EnableRBL = *enableRBL
@@ -118,7 +124,7 @@ func main() {
 	// cleanly rather than leaking goroutines.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	results := registry.Run(ctx, env)
+	results := registry.Run(ctx, env, registry.Options{Keep: filter.KeepCategory})
 
 	minSeverity, severitySet, err := cli.ParseSeverity(*severity)
 	if err != nil {
@@ -126,13 +132,7 @@ func main() {
 		stop()
 		os.Exit(2) //nolint:gocritic // stop() called above; signal ctx cancelled before exit
 	}
-	filter := cli.Filter{
-		Only:        cli.SplitCSV(*onlyCSV),
-		Exclude:     cli.SplitCSV(*excludeCSV),
-		MinSeverity: minSeverity,
-		SeveritySet: severitySet,
-		IDs:         cli.SplitCSV(*idsCSV),
-	}
+	filter.MinSeverity, filter.SeveritySet = minSeverity, severitySet
 	results = filter.Apply(results)
 
 	// Summary describes the rendered report: it is computed after the
@@ -199,10 +199,10 @@ func mergeConfig(cfg *cli.Config, m *mergeArgs) {
 	if !set["no-active"] && cfg.NoActive {
 		*m.noActive = true
 	}
-	if !set["resolver"] && cfg.Resolver != "" {
+	// The two resolver flags choose the resolvers together: either one on
+	// the command line overrides both config keys.
+	if !set["resolver"] && !set["resolvers"] {
 		*m.resolver = cfg.Resolver
-	}
-	if !set["resolvers"] && len(cfg.Resolvers) > 0 {
 		*m.resolversCSV = strings.Join(cfg.Resolvers, ",")
 	}
 	if !set["timeout"] {
@@ -237,6 +237,30 @@ func mergeConfig(cfg *cli.Config, m *mergeArgs) {
 	if !set["regression-only"] && cfg.RegressionOnly {
 		*m.regressionOnly = true
 	}
+}
+
+// validateArgs reports every flag value that rules out a useful scan, so
+// main can exit 2 before sending a query.
+func validateArgs(f cli.Filter, timeout time.Duration, regressionOnly bool, baseline string) error {
+	categories := registry.Categories()
+	return errors.Join(
+		cli.ValidateCategories(f.Only, categories),
+		cli.ValidateCategories(f.Exclude, categories),
+		cli.ValidateTimeout(timeout),
+		cli.ValidateRegressionOnly(regressionOnly, baseline),
+	)
+}
+
+// resolverSpecs lists the resolvers to use: --resolvers when it names any,
+// else --resolver, else none, which selects the system resolvers.
+func resolverSpecs(resolversCSV, resolver string) []string {
+	if specs := cli.SplitCSV(resolversCSV); len(specs) > 0 {
+		return specs
+	}
+	if resolver != "" {
+		return []string{resolver}
+	}
+	return nil
 }
 
 // normalizeTarget strips a trailing dot, lowercases, and Punycode-encodes IDNs.

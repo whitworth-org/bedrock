@@ -77,15 +77,15 @@ func (fakeDNSHandler) ServeDNS(w mdns.ResponseWriter, req *mdns.Msg) {
 	_ = w.WriteMsg(resp)
 }
 
-// startFakeDNS binds 127.0.0.1:0 UDP and runs an NXDOMAIN-only server on
-// it. Returns the host:port spec and a shutdown func.
-func startFakeDNS(t *testing.T) (string, func()) {
+// serveDNS runs h on a UDP port on 127.0.0.1 until the test ends and
+// returns the server's host:port.
+func serveDNS(t *testing.T, h mdns.Handler) string {
 	t.Helper()
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen udp: %v", err)
 	}
-	srv := &mdns.Server{PacketConn: pc, Handler: fakeDNSHandler{}}
+	srv := &mdns.Server{PacketConn: pc, Handler: h}
 	started := make(chan struct{})
 	srv.NotifyStartedFunc = func() { close(started) }
 	go func() { _ = srv.ActivateAndServe() }()
@@ -96,7 +96,8 @@ func startFakeDNS(t *testing.T) (string, func()) {
 		_ = pc.Close()
 		t.Fatal("fake DNS server did not start within 2s")
 	}
-	return pc.LocalAddr().String(), func() { _ = srv.Shutdown() }
+	t.Cleanup(func() { _ = srv.Shutdown() })
+	return pc.LocalAddr().String()
 }
 
 // normalizeOutput strips bits of rendered output that vary across runs
@@ -129,8 +130,7 @@ func TestIntegrationEmpty(t *testing.T) {
 	// production SSRF denylist that rejects loopback resolvers.
 	t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "1")
 
-	resolverSpec, shutdown := startFakeDNS(t)
-	defer shutdown()
+	resolverSpec := serveDNS(t, fakeDNSHandler{})
 
 	target := "test.invalid"
 	env := probe.NewEnv(target, 2*time.Second, false /* active */, resolverSpec)
@@ -138,7 +138,7 @@ func TestIntegrationEmpty(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	results := registry.Run(ctx, env)
+	results := registry.Run(ctx, env, registry.Options{})
 	if len(results) == 0 {
 		t.Fatal("registry returned zero results — checks may not have registered")
 	}
