@@ -5,7 +5,7 @@
 // skipping a category with registry.Options.Keep leaves the other
 // categories' results unchanged.
 
-package main_test
+package main
 
 import (
 	"context"

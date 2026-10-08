@@ -11,10 +11,12 @@
 //   - Build a probe.Env with --no-active so HTTP / SMTP / VMC fetches are
 //     skipped (they would otherwise need their own fakes — out of scope
 //     for this golden-empty fixture).
-//   - Run the full registry, render the report as plain JSON, and diff
-//     against testdata/golden/<name>.json.
+//   - Run the full registry and render the JSON report, then run bedrock
+//     itself, in process, with stdout on a terminal, and diff each output
+//     against its golden file: testdata/golden/<name>.json and
+//     testdata/golden/<name>.human.txt.
 //
-// Run with `go test -update` to refresh the golden file after intentional
+// Run with `go test -update` to refresh the golden files after intentional
 // output-format changes.
 //
 // Why this path (vs. a smoke test that shells out to `go run .`):
@@ -32,7 +34,7 @@
 // cert the production DoH client can't trust, or a production-code
 // accommodation we'd rather avoid.
 
-package main_test
+package main
 
 import (
 	"context"
@@ -41,7 +43,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,15 +54,6 @@ import (
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/registry"
 	"github.com/whitworth-org/bedrock/internal/report"
-
-	// Side-effect imports register checks with the global registry. Mirror
-	// main.go so the integration test sees the same check set.
-	_ "github.com/whitworth-org/bedrock/internal/checks/bimi"
-	_ "github.com/whitworth-org/bedrock/internal/checks/dns"
-	_ "github.com/whitworth-org/bedrock/internal/checks/dnssec"
-	_ "github.com/whitworth-org/bedrock/internal/checks/email"
-	_ "github.com/whitworth-org/bedrock/internal/checks/web"
-	_ "github.com/whitworth-org/bedrock/internal/discover"
 )
 
 // updateGolden, when set, rewrites the golden file from the rendered
@@ -66,10 +61,18 @@ import (
 var updateGolden = flag.Bool("update", false, "rewrite golden files instead of comparing")
 
 // fakeDNSHandler answers every query with NXDOMAIN. Equivalent to a domain
-// that has published nothing.
-type fakeDNSHandler struct{}
+// that has published nothing. It counts the queries it answers, so a test
+// can tell whether a scan ran, and runs onQuery, when set, before answering.
+type fakeDNSHandler struct {
+	queries atomic.Int64
+	onQuery func()
+}
 
-func (fakeDNSHandler) ServeDNS(w mdns.ResponseWriter, req *mdns.Msg) {
+func (h *fakeDNSHandler) ServeDNS(w mdns.ResponseWriter, req *mdns.Msg) {
+	h.queries.Add(1)
+	if h.onQuery != nil {
+		h.onQuery()
+	}
 	resp := new(mdns.Msg)
 	resp.SetReply(req)
 	resp.Authoritative = true
@@ -119,8 +122,11 @@ func normalizeOutput(s, resolverSpec string) string {
 }
 
 // TestIntegrationEmpty runs the full registry against test.invalid with a
-// fake NXDOMAIN-only resolver and --no-active. The rendered text output is
-// compared byte-for-byte against testdata/golden/empty.txt.
+// fake NXDOMAIN-only resolver and --no-active, then compares both renderings
+// byte for byte with their goldens: the JSON document with
+// testdata/golden/empty.json, and the terminal report that run writes for
+// the same scan, without colour or elapsed time, with
+// testdata/golden/empty.human.txt.
 //
 // This is the canonical regression guard for renderer + check wiring: any
 // new check that's registered will show up in the golden diff and force a
@@ -130,7 +136,7 @@ func TestIntegrationEmpty(t *testing.T) {
 	// production SSRF denylist that rejects loopback resolvers.
 	t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "1")
 
-	resolverSpec := serveDNS(t, fakeDNSHandler{})
+	resolverSpec := serveDNS(t, &fakeDNSHandler{})
 
 	target := "test.invalid"
 	env := probe.NewEnv(target, 2*time.Second, false /* active */, resolverSpec)
@@ -145,36 +151,53 @@ func TestIntegrationEmpty(t *testing.T) {
 
 	rep := report.Report{Target: target, Results: results, Summary: report.Summarize(results)}
 
-	var sb strings.Builder
-	if err := report.RenderJSON(&sb, rep, false); err != nil {
-		t.Fatalf("render: %v", err)
+	var js strings.Builder
+	if err := report.RenderJSON(&js, rep); err != nil {
+		t.Fatalf("render JSON: %v", err)
 	}
-	got := normalizeOutput(sb.String(), resolverSpec)
+	checkGolden(t, "empty.json", normalizeOutput(js.String(), resolverSpec))
 
-	goldenPath := filepath.Join("testdata", "golden", "empty.json")
+	code, human, _ := runOn(t, terminal, pipe, noColor, scanArgs(resolverSpec)...)
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1 for a report with FAILs", code)
+	}
+	checkGolden(t, "empty.human.txt", normalizeOutput(human, resolverSpec))
+}
+
+// checkGolden compares got with testdata/golden/<name>, or rewrites that
+// file when -update is set.
+func checkGolden(t *testing.T, name, got string) {
+	t.Helper()
+	path := filepath.Join("testdata", "golden", name)
 	if *updateGolden {
-		if err := os.MkdirAll(filepath.Dir(goldenPath), 0o750); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 			t.Fatalf("mkdir golden dir: %v", err)
 		}
-		if err := os.WriteFile(goldenPath, []byte(got), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte(got), 0o600); err != nil {
 			t.Fatalf("write golden: %v", err)
 		}
-		t.Logf("wrote golden %s (%d bytes)", goldenPath, len(got))
+		t.Logf("wrote golden %s (%d bytes)", path, len(got))
 		return
 	}
-
-	want, err := os.ReadFile(goldenPath)
-	if err != nil {
-		t.Fatalf("read golden %s: %v (run `go test -update` to seed)", goldenPath, err)
-	}
-	if got != string(want) {
-		// Show a small diff hint: first divergent line + counts.
+	want := readGolden(t, name)
+	if got != want {
 		gotLines := strings.Split(got, "\n")
-		wantLines := strings.Split(string(want), "\n")
-		divergence := firstDivergence(gotLines, wantLines)
-		t.Fatalf("golden mismatch at %s\n  first divergence: %s\n  got=%d lines, want=%d lines\n  rerun with `go test -update` to refresh after intentional changes",
-			goldenPath, divergence, len(gotLines), len(wantLines))
+		wantLines := strings.Split(want, "\n")
+		t.Errorf("golden mismatch at %s\n  first divergence: %s\n  got=%d lines, want=%d lines\n"+
+			"  rerun with `go test -update` to refresh after intentional changes",
+			path, firstDivergence(gotLines, wantLines), len(gotLines), len(wantLines))
 	}
+}
+
+// readGolden returns the contents of testdata/golden/<name>.
+func readGolden(t *testing.T, name string) string {
+	t.Helper()
+	path := filepath.Join("testdata", "golden", name)
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read golden %s: %v (run `go test -update` to seed)", path, err)
+	}
+	return string(want)
 }
 
 func firstDivergence(got, want []string) string {
@@ -184,34 +207,12 @@ func firstDivergence(got, want []string) string {
 	}
 	for i := 0; i < n; i++ {
 		if got[i] != want[i] {
-			return "line " + itoa(i+1) + "\n    got:  " + got[i] + "\n    want: " + want[i]
+			return "line " + strconv.Itoa(i+1) + "\n    got:  " + got[i] + "\n    want: " + want[i]
 		}
 	}
 	if len(got) != len(want) {
-		return "different line counts (got=" + itoa(len(got)) + ", want=" + itoa(len(want)) + ")"
+		return "different line counts (got=" + strconv.Itoa(len(got)) +
+			", want=" + strconv.Itoa(len(want)) + ")"
 	}
 	return "(none)"
-}
-
-// itoa avoids importing strconv just for one int→string conversion.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }

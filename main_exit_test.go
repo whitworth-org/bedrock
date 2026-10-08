@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"net"
 	"os"
 	"os/exec"
@@ -40,9 +39,7 @@ func TestStartupChild(t *testing.T) {
 		t.Fatalf("startup child: no -- in %q", os.Args)
 	}
 	os.Args = append([]string{"bedrock"}, os.Args[i+1:]...)
-	flag.CommandLine = flag.NewFlagSet("bedrock", flag.ExitOnError)
 	main()
-	os.Exit(0) // main returned: exit before the test framework prints to stdout
 }
 
 // startupResult is how one bedrock run exited and what it printed.

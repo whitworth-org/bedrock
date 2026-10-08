@@ -1,46 +1,110 @@
 package report
 
-// FuzzRenderParity locks the renderer contract: for any Report — however
-// hostile its strings or malformed its statuses — the plain renderer must
-// emit valid JSON, the colored renderer stripped of ANSI must match it
-// byte-for-byte, and the output must round-trip back through Unmarshal.
-
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"testing"
+	"unicode/utf8"
 )
 
-func FuzzRenderParity(f *testing.F) {
+// FuzzSanitizeReport locks the JSON output contract: for any Report, however
+// hostile its strings or malformed its statuses, every string in the
+// sanitised report is valid UTF-8 with no C0 control except TAB (and LF
+// inside a remediation), no DEL and no C1 control, and RenderJSON writes one
+// valid JSON document that decodes back to exactly those strings.
+func FuzzSanitizeReport(f *testing.F) {
 	f.Add([]byte("seed"))
 	f.Add([]byte("\x1b[31mred\x1b[0m\x00\x9bevil\xff\xfe"))
 	f.Add(bytes.Repeat([]byte{0x02, 'A', 0x1b, '['}, 40))
+	f.Add([]byte("\x08\x04\x00\x02\x00a\tb\r\nc\rd\u0085e\u009bf\x7f\n\n\x00"))
+	// A C1 control in every string field, and ESC and DEL in two, laid out
+	// as reportFromBytes reads it: the target's length and the target, one
+	// result (fixed-width ID, category and title, then FAIL, evidence,
+	// remediation and two refs), a computed summary, and one regression.
+	f.Add([]byte("\x0a" + "a\u009b[2Jb\u0085c" + "\x01" +
+		"id\u009bx\u0090y" + "ca\x1b\u0080!" + "title\u009f\x7fbc" + "\x02" +
+		"\x00" + "ev\u0085idence\u009c" + "\x00" + "fix\nline\u009b2\r\n\u0085z" +
+		"\x03" + "RFC\u00991" + "r\u0091\u0092x" + "\x01" +
+		"\x00" + "r\u0093gg" + "t\u0094tle!"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		r := reportFromBytes(data)
-
-		var plain bytes.Buffer
-		if err := RenderJSON(&plain, r, false); err != nil {
-			t.Fatalf("plain render: %v", err)
-		}
-		if !json.Valid(plain.Bytes()) {
-			t.Fatalf("plain output is not valid JSON: %.200q", plain.String())
+		clean := sanitizeReport(r)
+		for _, fl := range reportFields(clean) {
+			requireScrubbed(t, fl)
 		}
 
-		var colored bytes.Buffer
-		if err := RenderJSON(&colored, r, true); err != nil {
-			t.Fatalf("colored render: %v", err)
+		var out bytes.Buffer
+		if err := RenderJSON(&out, r); err != nil {
+			t.Fatalf("render: %v", err)
 		}
-		stripped := stripANSI.ReplaceAll(colored.Bytes(), nil)
-		if !bytes.Equal(plain.Bytes(), stripped) {
-			t.Fatalf("parity mismatch\nplain:    %.300q\nstripped: %.300q",
-				plain.String(), string(stripped))
+		if !json.Valid(out.Bytes()) {
+			t.Fatalf("output is not valid JSON: %.300q", out.String())
 		}
-
 		var back Report
-		if err := json.Unmarshal(plain.Bytes(), &back); err != nil {
-			t.Fatalf("round-trip unmarshal: %v", err)
+		if err := json.Unmarshal(out.Bytes(), &back); err != nil {
+			t.Fatalf("decode output: %v", err)
+		}
+		if got, want := reportFields(back), reportFields(clean); !slices.Equal(got, want) {
+			t.Fatalf("decoded strings differ from the sanitised report\ngot:  %+v\nwant: %+v",
+				got, want)
 		}
 	})
+}
+
+// field is one string of a Report, named for failure messages.
+type field struct {
+	name, value string
+	multiline   bool // a remediation, whose template line breaks survive
+}
+
+// reportFields lists every string in r, in document order.
+func reportFields(r Report) []field {
+	fs := []field{{name: "target", value: r.Target}}
+	for _, res := range r.Results {
+		fs = append(fs, field{name: "id", value: res.ID},
+			field{name: "category", value: res.Category},
+			field{name: "title", value: res.Title},
+			field{name: "evidence", value: res.Evidence},
+			field{name: "remediation", value: res.Remediation, multiline: true})
+		for _, ref := range res.RFCRefs {
+			fs = append(fs, field{name: "rfc_refs", value: ref})
+		}
+	}
+	if r.Summary != nil {
+		for _, c := range r.Summary.Categories {
+			fs = append(fs, field{name: "summary category", value: c.Category})
+		}
+	}
+	for _, ref := range r.Regressions {
+		fs = append(fs, field{name: "regression id", value: ref.ID},
+			field{name: "regression title", value: ref.Title})
+	}
+	return fs
+}
+
+func requireScrubbed(t *testing.T, fl field) {
+	t.Helper()
+	if !utf8.ValidString(fl.value) {
+		t.Fatalf("%s is not valid UTF-8: %q", fl.name, fl.value)
+	}
+	for _, c := range fl.value {
+		if mustScrub(c, fl.multiline) {
+			t.Fatalf("control %U survived in %s: %q", c, fl.name, fl.value)
+		}
+	}
+}
+
+// mustScrub reports whether SanitizeForTerminal must have replaced c: every
+// C0 control but TAB (and LF in a remediation), DEL, and every C1 control.
+func mustScrub(c rune, multiline bool) bool {
+	switch {
+	case c == '\t', c == '\n' && multiline:
+		return false
+	case c < 0x20, c == 0x7f:
+		return true
+	}
+	return c >= 0x80 && c <= 0x9f
 }
 
 // reportFromBytes deterministically derives an arbitrary Report from raw

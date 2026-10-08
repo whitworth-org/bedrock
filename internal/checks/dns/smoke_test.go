@@ -28,7 +28,7 @@ func TestSmokeDomain(t *testing.T) {
 	env := probe.NewEnv(domain, 5*time.Second, true, "")
 	results := registry.Run(context.Background(), env, registry.Options{})
 	rep := report.Report{Target: domain, Results: results, Summary: report.Summarize(results)}
-	if err := report.RenderJSON(os.Stdout, rep, false); err != nil {
+	if err := report.RenderJSON(os.Stdout, rep); err != nil {
 		t.Fatal(err)
 	}
 	if len(results) == 0 {

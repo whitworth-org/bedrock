@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net"
 	"reflect"
 	"slices"
@@ -114,21 +115,20 @@ func TestRunRecoversFromPanic(t *testing.T) {
 
 	out := Run(context.Background(), nil, Options{})
 	// good must survive; boom must be converted to a registry.panic.boom Fail.
-	var foundGood, foundPanic bool
-	for _, r := range out {
-		if r.ID == "good" && r.Status == report.Pass {
-			foundGood = true
-		}
-		if r.ID == "registry.panic.boom" && r.Category == "cat2" && r.Status == report.Fail {
-			foundPanic = true
-		}
-	}
-	if !foundGood {
+	if !hasResult(out, "good", "cat1", report.Pass) {
 		t.Fatalf("expected 'good' result to survive panic in other category: %+v", out)
 	}
-	if !foundPanic {
+	if !hasResult(out, "registry.panic.boom", "cat2", report.Fail) {
 		t.Fatalf("panic should be converted to registry.panic.boom Fail: %+v", out)
 	}
+}
+
+// hasResult reports whether out holds a result with this ID, category and
+// status.
+func hasResult(out []report.Result, id, cat string, status report.Status) bool {
+	return slices.ContainsFunc(out, func(r report.Result) bool {
+		return r.ID == id && r.Category == cat && r.Status == status
+	})
 }
 
 func TestRunEmptyRegistry(t *testing.T) {
@@ -201,20 +201,118 @@ func TestRunPanicIsolatedToOneCheck(t *testing.T) {
 	Register(boom)
 
 	out := Run(context.Background(), nil, Options{})
-	var foundGood, foundPanic bool
-	for _, r := range out {
-		if r.ID == "ok" && r.Status == report.Pass {
-			foundGood = true
-		}
-		if r.ID == "registry.panic.boom" && r.Category == "shared" && r.Status == report.Fail {
-			foundPanic = true
-		}
-	}
-	if !foundGood {
+	if !hasResult(out, "ok", "shared", report.Pass) {
 		t.Fatalf("sibling check 'ok' must survive panic in same category: %+v", out)
 	}
-	if !foundPanic {
+	if !hasResult(out, "registry.panic.boom", "shared", report.Fail) {
 		t.Fatalf("panic must surface as registry.panic.boom Fail: %+v", out)
+	}
+}
+
+// registerTrackedChecks registers three categories of four checks, the first
+// in each category panicking. Each check calls finish just before it returns
+// or panics. It returns the check IDs.
+func registerTrackedChecks(finish func(id string)) []string {
+	var ids []string
+	for ci := 0; ci < 3; ci++ {
+		for ki := 0; ki < 4; ki++ {
+			cat := fmt.Sprintf("cat%d", ci)
+			id := fmt.Sprintf("%s.%d", cat, ki)
+			ids = append(ids, id)
+			run := func(context.Context, *probe.Env) []report.Result {
+				finish(id)
+				if ki == 0 {
+					panic("kaboom")
+				}
+				return []report.Result{{ID: id, Category: cat, Status: report.Pass}}
+			}
+			Register(stubCheck{id: id, cat: cat, run: run})
+		}
+	}
+	return ids
+}
+
+// TestRunCallsOnDoneOncePerCheck checks that OnDone sees every check exactly
+// once, panicking ones included, only after the check has finished and any
+// panic has been recorded, and that even a slow callback has returned by the
+// time Run does.
+func TestRunCallsOnDoneOncePerCheck(t *testing.T) {
+	defer withEmptyRegistry(t)()
+
+	var (
+		mu       sync.Mutex
+		finished = map[string]bool{}
+		calls    = map[string]int{}
+		problems []string
+	)
+	ids := registerTrackedChecks(func(id string) {
+		mu.Lock()
+		defer mu.Unlock()
+		finished[id] = true
+	})
+
+	out := Run(context.Background(), nil, Options{OnDone: func(c Check) {
+		// recover is non-nil only if OnDone runs while the check's panic is
+		// still unwinding, that is, before Run has recorded it.
+		unwinding := recover() != nil
+		time.Sleep(5 * time.Millisecond)
+		mu.Lock()
+		defer mu.Unlock()
+		if unwinding {
+			problems = append(problems, c.ID()+" before its panic was recorded")
+		}
+		if !finished[c.ID()] {
+			problems = append(problems, c.ID()+" before it finished")
+		}
+		calls[c.ID()]++
+	}})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(problems) > 0 {
+		t.Errorf("OnDone ran too early: %v", problems)
+	}
+	want := map[string]int{}
+	for _, id := range ids {
+		want[id] = 1
+	}
+	if !maps.Equal(calls, want) {
+		t.Errorf("OnDone calls per check when Run returned = %v, want one each", calls)
+	}
+	if !hasResult(out, "registry.panic.cat0.0", "cat0", report.Fail) || len(out) != len(ids) {
+		t.Errorf("want one result per check, panics included: %+v", out)
+	}
+}
+
+// TestRunCallsOnDoneAsEachCheckFinishes checks that OnDone reports a check
+// while others are still running, not after the whole run: the slow check
+// waits for OnDone to report the fast one.
+func TestRunCallsOnDoneAsEachCheckFinishes(t *testing.T) {
+	defer withEmptyRegistry(t)()
+
+	fastDone := make(chan struct{})
+	var sawFast atomic.Bool
+	runFast := func(context.Context, *probe.Env) []report.Result {
+		return []report.Result{{ID: "fast", Category: "a", Status: report.Pass}}
+	}
+	runSlow := func(context.Context, *probe.Env) []report.Result {
+		select {
+		case <-fastDone:
+			sawFast.Store(true)
+		case <-time.After(5 * time.Second):
+		}
+		return []report.Result{{ID: "slow", Category: "b", Status: report.Pass}}
+	}
+	Register(stubCheck{id: "fast", cat: "a", run: runFast})
+	Register(stubCheck{id: "slow", cat: "b", run: runSlow})
+
+	Run(context.Background(), nil, Options{OnDone: func(c Check) {
+		if c.ID() == "fast" {
+			close(fastDone)
+		}
+	}})
+	if !sawFast.Load() {
+		t.Fatal("OnDone(fast) did not run while the slow check was still running")
 	}
 }
 
@@ -266,12 +364,13 @@ func TestRunGivesEachPanicItsOwnID(t *testing.T) {
 }
 
 // TestRunSkipsCategoriesKeepRejects pins that Run never calls the checks of
-// a category Keep rejects, and runs every check of the others.
+// a category Keep rejects, nor OnDone for them, and runs every check of the
+// others.
 func TestRunSkipsCategoriesKeepRejects(t *testing.T) {
 	defer withEmptyRegistry(t)()
 
 	var mu sync.Mutex
-	ran := map[string]int{}
+	ran, done := map[string]int{}, map[string]int{}
 	for _, cat := range []string{"DNS", "WWW", "Email"} {
 		for i := range 3 {
 			id := fmt.Sprintf("%s.%d", strings.ToLower(cat), i)
@@ -286,9 +385,18 @@ func TestRunSkipsCategoriesKeepRejects(t *testing.T) {
 	}
 
 	notWWW := func(cat string) bool { return cat != "WWW" }
-	out := Run(context.Background(), nil, Options{Keep: notWWW})
-	if want := map[string]int{"DNS": 3, "Email": 3}; !reflect.DeepEqual(ran, want) {
+	onDone := func(c Check) {
+		mu.Lock()
+		done[c.Category()]++
+		mu.Unlock()
+	}
+	out := Run(context.Background(), nil, Options{Keep: notWWW, OnDone: onDone})
+	want := map[string]int{"DNS": 3, "Email": 3}
+	if !reflect.DeepEqual(ran, want) {
 		t.Errorf("checks run per category = %v, want %v", ran, want)
+	}
+	if !reflect.DeepEqual(done, want) {
+		t.Errorf("OnDone calls per category = %v, want %v", done, want)
 	}
 	for _, r := range out {
 		if r.Category == "WWW" {

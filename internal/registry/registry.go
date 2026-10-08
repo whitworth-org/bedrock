@@ -43,6 +43,13 @@ type Options struct {
 	// Keep reports whether to run the checks in category; nil runs every
 	// category.
 	Keep func(category string) bool
+	// OnDone, when not nil, is called exactly once per check Run runs, from
+	// that check's goroutine, after the check's results (or its
+	// registry.panic.<check ID> result) have been recorded. Calls therefore
+	// arrive concurrently, and every call returns before Run does. The check
+	// keeps its worker slot until OnDone returns, so a slow OnDone delays the
+	// next check in its category.
+	OnDone func(Check)
 }
 
 // checksMu guards the global checks slice. Register is called from init()
@@ -128,6 +135,11 @@ func Run(ctx context.Context, env *probe.Env, opts Options) []report.Result {
 					defer inner.Done()
 					sem <- struct{}{}
 					defer func() { <-sem }()
+					// Deferred before the recovery below, so it runs after the
+					// check's results or its panic result are recorded.
+					if opts.OnDone != nil {
+						defer opts.OnDone(c)
+					}
 					// Per-check panic recovery so one bad check cannot abort
 					// its siblings. The recovered value becomes a Fail result
 					// tagged with the check's own category and id.
