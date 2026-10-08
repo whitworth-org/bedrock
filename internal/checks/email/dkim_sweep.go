@@ -18,7 +18,8 @@ import (
 // per scan, dkimSweepConcurrency lookups at a time, and is shared via
 // probe.CacheKeyDKIM.
 
-// dkimSweepConcurrency caps the selector lookups the sweep keeps in flight.
+// dkimSweepConcurrency caps the lookups the sweep keeps in flight: the
+// random selector's and dkimSweepConcurrency-1 of the list's.
 const dkimSweepConcurrency = 8
 
 // DKIMProbe outcomes.
@@ -102,13 +103,17 @@ func runDKIMSweep(ctx context.Context, env *probe.Env) *DKIMSweep {
 	txts := make([][]string, len(selectors))
 	var wild DKIMProbe
 	var wildTXT []string
-	checkutil.ForEach(len(selectors)+1, dkimSweepConcurrency, func(i int) {
-		// Call 0 starts early, so even a retried random lookup overlaps the list.
-		if i == 0 {
+	// The random lookup gets a slot of its own rather than one it competes
+	// for: ForEach starts its calls in no set order, and one queued behind
+	// the list would add its own timeout, or two when retried, to the sweep.
+	checkutil.ForEach(2, 2, func(call int) {
+		if call == 0 {
 			wild, wildTXT = probeRandomSelector(ctx, env)
 			return
 		}
-		sweep.Probes[i-1], txts[i-1] = probeDKIMSelector(ctx, env, selectors[i-1])
+		checkutil.ForEach(len(selectors), dkimSweepConcurrency-1, func(i int) {
+			sweep.Probes[i], txts[i] = probeDKIMSelector(ctx, env, selectors[i])
+		})
 	})
 	if wild.Outcome == dkimError {
 		if i := sharedRecord(sweep.Probes, txts); i >= 0 {
