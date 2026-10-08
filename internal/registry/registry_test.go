@@ -3,7 +3,10 @@ package registry
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -81,7 +84,7 @@ func TestRunOrdersByCategoryThenID(t *testing.T) {
 	Register(mk("email", "email.a"))
 	Register(mk("dns", "dns.a"))
 
-	out := Run(context.Background(), nil)
+	out := Run(context.Background(), nil, nil)
 	if len(out) != 3 {
 		t.Fatalf("want 3 results, got %d (%+v)", len(out), out)
 	}
@@ -105,28 +108,27 @@ func TestRunRecoversFromPanic(t *testing.T) {
 	Register(good)
 	Register(boom)
 
-	out := Run(context.Background(), nil)
+	out := Run(context.Background(), nil, nil)
 	// good must survive; boom must be converted to a registry.panic Fail.
-	var foundGood, foundPanic bool
-	for _, r := range out {
-		if r.ID == "good" && r.Status == report.Pass {
-			foundGood = true
-		}
-		if r.ID == "registry.panic" && r.Category == "cat2" && r.Status == report.Fail {
-			foundPanic = true
-		}
-	}
-	if !foundGood {
+	if !hasResult(out, "good", "cat1", report.Pass) {
 		t.Fatalf("expected 'good' result to survive panic in other category: %+v", out)
 	}
-	if !foundPanic {
+	if !hasResult(out, "registry.panic", "cat2", report.Fail) {
 		t.Fatalf("panic should be converted to registry.panic Fail: %+v", out)
 	}
 }
 
+// hasResult reports whether out holds a result with this ID, category and
+// status.
+func hasResult(out []report.Result, id, cat string, status report.Status) bool {
+	return slices.ContainsFunc(out, func(r report.Result) bool {
+		return r.ID == id && r.Category == cat && r.Status == status
+	})
+}
+
 func TestRunEmptyRegistry(t *testing.T) {
 	defer withEmptyRegistry(t)()
-	out := Run(context.Background(), nil)
+	out := Run(context.Background(), nil, nil)
 	if len(out) != 0 {
 		t.Fatalf("empty registry should produce no results, got %+v", out)
 	}
@@ -161,7 +163,7 @@ func TestRunParallelManyChecks(t *testing.T) {
 		Register(c)
 	}
 
-	out := Run(context.Background(), nil)
+	out := Run(context.Background(), nil, nil)
 	if got, want := len(out), cats*perCat; got != want {
 		t.Fatalf("result count = %d, want %d", got, want)
 	}
@@ -193,21 +195,119 @@ func TestRunPanicIsolatedToOneCheck(t *testing.T) {
 	Register(good)
 	Register(boom)
 
-	out := Run(context.Background(), nil)
-	var foundGood, foundPanic bool
-	for _, r := range out {
-		if r.ID == "ok" && r.Status == report.Pass {
-			foundGood = true
-		}
-		if r.ID == "registry.panic" && r.Category == "shared" && r.Status == report.Fail {
-			foundPanic = true
-		}
-	}
-	if !foundGood {
+	out := Run(context.Background(), nil, nil)
+	if !hasResult(out, "ok", "shared", report.Pass) {
 		t.Fatalf("sibling check 'ok' must survive panic in same category: %+v", out)
 	}
-	if !foundPanic {
+	if !hasResult(out, "registry.panic", "shared", report.Fail) {
 		t.Fatalf("panic must surface as registry.panic Fail: %+v", out)
+	}
+}
+
+// registerTrackedChecks registers three categories of four checks, the first
+// in each category panicking. Each check calls finish just before it returns
+// or panics. It returns the check IDs.
+func registerTrackedChecks(finish func(id string)) []string {
+	var ids []string
+	for ci := 0; ci < 3; ci++ {
+		for ki := 0; ki < 4; ki++ {
+			cat := fmt.Sprintf("cat%d", ci)
+			id := fmt.Sprintf("%s.%d", cat, ki)
+			ids = append(ids, id)
+			run := func(context.Context, *probe.Env) []report.Result {
+				finish(id)
+				if ki == 0 {
+					panic("kaboom")
+				}
+				return []report.Result{{ID: id, Category: cat, Status: report.Pass}}
+			}
+			Register(stubCheck{id: id, cat: cat, run: run})
+		}
+	}
+	return ids
+}
+
+// TestRunCallsOnDoneOncePerCheck checks that onDone sees every check exactly
+// once, panicking ones included, only after the check has finished and any
+// panic has been recorded, and that even a slow callback has returned by the
+// time Run does.
+func TestRunCallsOnDoneOncePerCheck(t *testing.T) {
+	defer withEmptyRegistry(t)()
+
+	var (
+		mu       sync.Mutex
+		finished = map[string]bool{}
+		calls    = map[string]int{}
+		problems []string
+	)
+	ids := registerTrackedChecks(func(id string) {
+		mu.Lock()
+		defer mu.Unlock()
+		finished[id] = true
+	})
+
+	out := Run(context.Background(), nil, func(c Check) {
+		// recover is non-nil only if onDone runs while the check's panic is
+		// still unwinding, that is, before Run has recorded it.
+		unwinding := recover() != nil
+		time.Sleep(5 * time.Millisecond)
+		mu.Lock()
+		defer mu.Unlock()
+		if unwinding {
+			problems = append(problems, c.ID()+" before its panic was recorded")
+		}
+		if !finished[c.ID()] {
+			problems = append(problems, c.ID()+" before it finished")
+		}
+		calls[c.ID()]++
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(problems) > 0 {
+		t.Errorf("onDone ran too early: %v", problems)
+	}
+	want := map[string]int{}
+	for _, id := range ids {
+		want[id] = 1
+	}
+	if !maps.Equal(calls, want) {
+		t.Errorf("onDone calls per check when Run returned = %v, want one each", calls)
+	}
+	if !hasResult(out, "registry.panic", "cat0", report.Fail) || len(out) != len(ids) {
+		t.Errorf("want one result per check, panics included: %+v", out)
+	}
+}
+
+// TestRunCallsOnDoneAsEachCheckFinishes checks that onDone reports a check
+// while others are still running, not after the whole run: the slow check
+// waits for onDone to report the fast one.
+func TestRunCallsOnDoneAsEachCheckFinishes(t *testing.T) {
+	defer withEmptyRegistry(t)()
+
+	fastDone := make(chan struct{})
+	var sawFast atomic.Bool
+	runFast := func(context.Context, *probe.Env) []report.Result {
+		return []report.Result{{ID: "fast", Category: "a", Status: report.Pass}}
+	}
+	runSlow := func(context.Context, *probe.Env) []report.Result {
+		select {
+		case <-fastDone:
+			sawFast.Store(true)
+		case <-time.After(5 * time.Second):
+		}
+		return []report.Result{{ID: "slow", Category: "b", Status: report.Pass}}
+	}
+	Register(stubCheck{id: "fast", cat: "a", run: runFast})
+	Register(stubCheck{id: "slow", cat: "b", run: runSlow})
+
+	Run(context.Background(), nil, func(c Check) {
+		if c.ID() == "fast" {
+			close(fastDone)
+		}
+	})
+	if !sawFast.Load() {
+		t.Fatal("onDone(fast) did not run while the slow check was still running")
 	}
 }
 
@@ -234,6 +334,6 @@ func BenchmarkRunCategoryParallel(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = Run(context.Background(), nil)
+		_ = Run(context.Background(), nil, nil)
 	}
 }

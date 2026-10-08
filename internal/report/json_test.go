@@ -3,14 +3,9 @@ package report
 import (
 	"bytes"
 	"encoding/json"
-	"regexp"
 	"strings"
 	"testing"
 )
-
-// stripANSI removes ANSI CSI sequences. The colored renderer should
-// produce the same bytes as the plain renderer once these are stripped.
-var stripANSI = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func sampleReport() Report {
 	return Report{
@@ -56,7 +51,7 @@ func sampleReport() Report {
 func TestRenderJSON_PlainRoundTrip(t *testing.T) {
 	orig := sampleReport()
 	var buf bytes.Buffer
-	if err := RenderJSON(&buf, orig, false); err != nil {
+	if err := RenderJSON(&buf, orig); err != nil {
 		t.Fatalf("RenderJSON: %v", err)
 	}
 
@@ -81,75 +76,12 @@ func TestRenderJSON_PlainRoundTrip(t *testing.T) {
 	}
 }
 
-func TestRenderJSON_ColoredMatchesPlain(t *testing.T) {
-	report := sampleReport()
-
-	var plain bytes.Buffer
-	if err := RenderJSON(&plain, report, false); err != nil {
-		t.Fatalf("plain RenderJSON: %v", err)
-	}
-
-	var colored bytes.Buffer
-	if err := RenderJSON(&colored, report, true); err != nil {
-		t.Fatalf("colored RenderJSON: %v", err)
-	}
-
-	stripped := stripANSI.ReplaceAll(colored.Bytes(), []byte{})
-	if !bytes.Equal(stripped, plain.Bytes()) {
-		t.Errorf("colored output (stripped) != plain output")
-		t.Logf("plain:\n%s", plain.String())
-		t.Logf("colored (stripped):\n%s", stripped)
-	}
-}
-
-func TestRenderJSON_StatusColors(t *testing.T) {
-	report := Report{
-		Target: "test.com",
-		Results: []Result{
-			{ID: "p", Status: Pass, Category: "test", Title: "pass"},
-			{ID: "w", Status: Warn, Category: "test", Title: "warn"},
-			{ID: "f", Status: Fail, Category: "test", Title: "fail"},
-			{ID: "i", Status: Info, Category: "test", Title: "info"},
-			{ID: "n", Status: NotApplicable, Category: "test", Title: "na"},
-		},
-	}
-
-	var buf bytes.Buffer
-	if err := RenderJSON(&buf, report, true); err != nil {
-		t.Fatalf("RenderJSON: %v", err)
-	}
-
-	output := buf.String()
-
-	// Verify status colors are applied
-	if !strings.Contains(output, ansiGreen+`"PASS"`+ansiReset) {
-		t.Error("PASS status not colored green")
-	}
-	if !strings.Contains(output, ansiYellow+`"WARN"`+ansiReset) {
-		t.Error("WARN status not colored yellow")
-	}
-	if !strings.Contains(output, ansiRed+`"FAIL"`+ansiReset) {
-		t.Error("FAIL status not colored red")
-	}
-	if !strings.Contains(output, ansiCyan+`"INFO"`+ansiReset) {
-		t.Error("INFO status not colored cyan")
-	}
-	if !strings.Contains(output, ansiGrey+`"N/A"`+ansiReset) {
-		t.Error("N/A status not colored grey")
-	}
-}
-
 func TestRenderJSON_EmptyReport(t *testing.T) {
 	empty := Report{Target: "empty.com", Results: []Result{}}
 
 	var plain bytes.Buffer
-	if err := RenderJSON(&plain, empty, false); err != nil {
-		t.Fatalf("plain RenderJSON: %v", err)
-	}
-
-	var colored bytes.Buffer
-	if err := RenderJSON(&colored, empty, true); err != nil {
-		t.Fatalf("colored RenderJSON: %v", err)
+	if err := RenderJSON(&plain, empty); err != nil {
+		t.Fatalf("RenderJSON: %v", err)
 	}
 
 	// Should still produce valid JSON
@@ -177,7 +109,7 @@ func TestRenderJSON_WithRegressions(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := RenderJSON(&buf, report, false); err != nil {
+	if err := RenderJSON(&buf, report); err != nil {
 		t.Fatalf("RenderJSON: %v", err)
 	}
 
@@ -281,68 +213,16 @@ func TestSanitizeRemediation_PreservesNewlines(t *testing.T) {
 	}
 }
 
-func TestJsonQuote(t *testing.T) {
-	tests := []struct {
-		in   string
-		want string
-	}{
-		{"simple", `"simple"`},
-		{"with\"quote", `"with\"quote"`},
-		{"with\\backslash", `"with\\backslash"`},
-		{"with\nnewline", `"with\nnewline"`},
-	}
-
-	for _, tt := range tests {
-		got := jsonQuote(tt.in)
-		if got != tt.want {
-			t.Errorf("jsonQuote(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
-func TestStatusColorFor(t *testing.T) {
-	tests := []struct {
-		status Status
-		want   string
-	}{
-		{Pass, ansiGreen},
-		{Warn, ansiYellow},
-		{Fail, ansiRed},
-		{Info, ansiCyan},
-		{NotApplicable, ansiGrey},
-		{Status(999), ansiGrey}, // Unknown status defaults to grey
-	}
-
-	for _, tt := range tests {
-		got := statusColorFor(tt.status)
-		if got != tt.want {
-			t.Errorf("statusColorFor(%v) = %q, want %q", tt.status, got, tt.want)
-		}
-	}
-}
-
-// TestRenderJSON_SummaryParityAndRoundTrip covers the summary block in both
-// renderers: the colored output must byte-match the plain output modulo
-// ANSI, the plain output must round-trip, and the summary must precede
-// regressions in the document.
-func TestRenderJSON_SummaryParityAndRoundTrip(t *testing.T) {
+// TestRenderJSON_SummaryRoundTrip covers the summary block: the output must
+// round-trip, and the summary must precede regressions in the document.
+func TestRenderJSON_SummaryRoundTrip(t *testing.T) {
 	rep := sampleReport()
 	rep.Summary = Summarize(rep.Results)
 	rep.Regressions = []ResultRef{{ID: "demo.fail", Title: "fail with multi-line fix"}}
 
 	var plain bytes.Buffer
-	if err := RenderJSON(&plain, rep, false); err != nil {
-		t.Fatalf("plain RenderJSON: %v", err)
-	}
-	var colored bytes.Buffer
-	if err := RenderJSON(&colored, rep, true); err != nil {
-		t.Fatalf("colored RenderJSON: %v", err)
-	}
-	stripped := stripANSI.ReplaceAll(colored.Bytes(), []byte{})
-	if !bytes.Equal(stripped, plain.Bytes()) {
-		t.Errorf("colored output (stripped) != plain output with summary")
-		t.Logf("plain:\n%s", plain.String())
-		t.Logf("colored (stripped):\n%s", stripped)
+	if err := RenderJSON(&plain, rep); err != nil {
+		t.Fatalf("RenderJSON: %v", err)
 	}
 
 	var decoded Report
@@ -358,27 +238,20 @@ func TestRenderJSON_SummaryParityAndRoundTrip(t *testing.T) {
 	sumIdx := strings.Index(plain.String(), `"summary"`)
 	regIdx := strings.Index(plain.String(), `"regressions"`)
 	if sumIdx < 0 || regIdx < 0 || sumIdx > regIdx {
-		t.Errorf("field order: summary at %d, regressions at %d; want summary first", sumIdx, regIdx)
+		t.Errorf("field order: summary at %d, regressions at %d; want summary first",
+			sumIdx, regIdx)
 	}
 }
 
-// TestRenderJSON_EmptySummaryCategories pins the []-not-null contract that
-// keeps the two renderers in parity when a report has zero results.
+// TestRenderJSON_EmptySummaryCategories pins the []-not-null contract for a
+// report with zero results.
 func TestRenderJSON_EmptySummaryCategories(t *testing.T) {
 	rep := Report{Target: "empty.example", Summary: Summarize(nil)}
 	var plain bytes.Buffer
-	if err := RenderJSON(&plain, rep, false); err != nil {
-		t.Fatalf("plain RenderJSON: %v", err)
+	if err := RenderJSON(&plain, rep); err != nil {
+		t.Fatalf("RenderJSON: %v", err)
 	}
 	if !strings.Contains(plain.String(), `"categories": []`) {
 		t.Errorf("empty categories must render as [], got:\n%s", plain.String())
-	}
-	var colored bytes.Buffer
-	if err := RenderJSON(&colored, rep, true); err != nil {
-		t.Fatalf("colored RenderJSON: %v", err)
-	}
-	stripped := stripANSI.ReplaceAll(colored.Bytes(), []byte{})
-	if !bytes.Equal(stripped, plain.Bytes()) {
-		t.Errorf("colored (stripped) != plain for empty summary")
 	}
 }

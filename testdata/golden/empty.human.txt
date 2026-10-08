@@ -1,0 +1,137 @@
+bedrock report for test.invalid (59 results, passive only, resolver 127.0.0.1:<resolver-port>)
+
+Not run or not applicable (34)
+N/A   6 results: skipped: --no-active
+      dns.axfr, bimi.svg.aspect, bimi.svg.profile, bimi.vmc.chain,
+      bimi.vmc.logotype, email.mtasts.policy
+N/A   2 results: no NS records resolved
+      dns.ns.diversity, dns.ns.ipv6
+N/A   1 result: no CDS published
+      dnssec.cds.matches_ds
+N/A   1 result: no parsed BIMI record (TXT check did not produce one)
+      bimi.svg.fetch
+N/A   1 result: no usable MX records — DANE not applicable
+      email.dane
+N/A   1 result: no DKIM keys discoverable on common selectors; see email.dkim.selector.none
+      email.dkim2.readiness
+N/A   1 result: no v=DMARC1 records on the tree walk (2 of 8 queries); see email.dmarc.record
+      email.dmarc.discovery
+N/A   1 result: no DMARC record; no report destinations to authorize
+      email.dmarc.extdest
+N/A   1 result: no DMARC record to evaluate np against (see email.dmarc.record)
+      email.dmarc.np
+N/A   1 result: no DMARC record; the requirement applies to p=reject publishers
+      email.dmarc.reject_dkim
+N/A   1 result: no MX records — null MX not applicable
+      email.nullmx
+N/A   1 result: no usable MX records
+      email.smtp.starttls
+N/A   16 results: active probing disabled (--no-active)
+      web.cert.chain, web.cookies, web.crl.status, web.headers,
+      web.hsts, web.http2, web.http3, web.mixedcontent,
+      web.ocsp.responder, web.ocsp.staple, web.redirect,
+      web.securitytxt, web.tls.curves, web.tls.fingerprint.ja3s,
+      web.tls.fingerprint.ja4s, web.tls.profile
+
+Passed (2)
+PASS  dns.cname.apex  No CNAME at apex (correct)
+PASS  dns.dangling.summary  No dangling-DNS candidates found among probed hosts
+
+Information (11)
+INFO  dns.cname.chain  No CNAME chain at www.test.invalid: www.test.invalid is not a CNAME
+INFO  dnssec.cds.published  No CDS/CDNSKEY published: operator manages DS at parent manually (CDS/CDNSKEY are optional, RFC 7344 §3)
+INFO  dnssec.sentinel  Root KSK sentinel test skipped: no resolver returned a usable root DNSKEY RRset: 127.0.0.1:<resolver-port>: answered NXDOMAIN
+INFO  dnssec.signed  Domain is not DNSSEC-signed: no DS records at parent; no DNSKEY records at apex
+INFO  bimi.gmail.dmarc  BIMI Gmail gate: DMARC quarantine|reject enforced, strict alignment: DMARC not parsed (no entry at email.dmarc.parsed)
+INFO  bimi.vmc.fetch  BIMI Verified Mark Certificate fetched over HTTPS: no parsed BIMI record
+INFO  email.arc.dmarc  DMARC enforcement complements ARC: no DMARC record cached; ARC adds value primarily once DMARC enforcement is in place
+INFO  email.arc.guidance  ARC (Authenticated Received Chain) deployment guidance: ARC preserves authentication results across legitimate intermediaries (mailing lists, forwarders) by stamping ARC-Authentication-Results, ARC-Message-Signature, and ARC-Seal headers on each hop. RFC 8617 is being reclassified as Historic (draft-ietf-dmarc-arc-to-historic); DKIM2 absorbs this role with a per-hop DKIM2-Signature chain.
+INFO  email.rbl  DNS blocklist (DNSBL) listings: disabled (pass --enable-rbl to query third-party blocklists)
+INFO  subdomain.discover  Subdomain enumeration: disabled (--subdomains off)
+INFO  web.ct.lookup  Certificate Transparency log lookup: disabled (--enable-ct off)
+
+Warnings (4)
+WARN  dns.aaaa.apex  No AAAA record at apex (IPv6 not advertised)
+      evidence: AAAA RRset is empty
+      refs: RFC 3596
+
+WARN  dns.zone.mx  Apex MX records
+      evidence: lookup error: NXDOMAIN
+      refs: RFC 1912 §2.5, RFC 7505
+
+WARN  email.arc.dkim  DKIM keys available for ARC signing
+      evidence: ARC requires DKIM keys (none found at default._domainkey.test.invalid)
+      refs: RFC 8617 §4.1, RFC 6376
+
+WARN  web.caa  CAA records present (RFC 8659)
+      evidence: no CAA records at apex (any CA is permitted to issue)
+      refs: RFC 8659 §3, RFC 8659 §4
+      fix (3 lines):
+test.invalid. IN CAA 0 issue "letsencrypt.org"
+test.invalid. IN CAA 0 issuewild ";"
+test.invalid. IN CAA 0 iodef "mailto:security@test.invalid"
+
+Failures (8)
+FAIL  dns.ns.count  Apex NS RRset
+      evidence: NS lookup failed: NXDOMAIN
+      refs: RFC 1034 §4.1, RFC 1912 §2.8
+      fix (1 line):
+Publish at least two NS records at the apex pointing to authoritative nameservers reachable over IPv4 (and ideally IPv6).
+
+FAIL  dns.zone.soa  SOA record
+      evidence: lookup error: NXDOMAIN
+      refs: RFC 1035 §3.3.13, RFC 1912 §2.2, RFC 2308 §5
+      fix (7 lines):
+test.invalid. IN SOA ns1.test.invalid. hostmaster.test.invalid. (
+    2026041601   ; serial
+    7200         ; refresh (2h)
+    3600         ; retry   (1h)
+    1209600      ; expire  (2w)
+    3600         ; minimum (1h, RFC 2308 negative cache)
+)
+
+FAIL  bimi.txt  BIMI assertion record (default._bimi)
+      evidence: no TXT record at default._bimi.test.invalid
+      refs: BIMI Group draft §4, Gmail BIMI requirements
+      fix (1 line):
+default._bimi.test.invalid. IN TXT "v=BIMI1; l=https://test.invalid/bimi/logo.svg; a=https://test.invalid/bimi/vmc.pem"
+
+FAIL  email.dkim.selector.none  DKIM key discoverable on a common selector
+      evidence: no DKIM key found at any of: default, dkim, mail, selector1, selector2, key1, key2, k1, k2, k3, mx, s1, s2, google, google2, smtpapi, mg, mailo, pm, scph0823, scph1023, scph0124, amazonses, mfsv01, mfsv02, mfsv03, mfsv04, mfsv05, 200608, et, zendesk1, zendesk2, klaviyo, k1klaviyo, mte1, mte2, mandrill, drip, ac1, ac2, convertkit, brevo, ovh, hetzner
+      refs: RFC 6376 §3.6.1, RFC 6376 §3.6.2
+      fix (1 line):
+<selector>._domainkey.test.invalid. IN TXT "v=DKIM1; k=rsa; p=<base64-public-key>"
+
+FAIL  email.dmarc.record  DMARC record present and well-formed
+      evidence: no v=DMARC1 record at _dmarc.test.invalid or any tree-walk ancestor (RFC 9989 §4.8, 2 of 8 queries)
+      refs: RFC 9989 §4.7, RFC 9989 §4.8, RFC 9990
+      fix (1 line):
+_dmarc.test.invalid. IN TXT "v=DMARC1; p=reject; rua=mailto:dmarc-reports@test.invalid; adkim=s; aspf=s"
+
+FAIL  email.mtasts.txt  MTA-STS TXT record present and well-formed
+      evidence: no v=STSv1 TXT record at _mta-sts.test.invalid
+      refs: RFC 8461 §3.1
+      fix (1 line):
+_mta-sts.test.invalid. IN TXT "v=STSv1; id=20260416000000Z"
+
+FAIL  email.spf.record  SPF record present and well-formed
+      evidence: no v=spf1 TXT record at apex
+      refs: RFC 7208 §3, RFC 7208 §4.6.4, RFC 7208 §11
+      fix (1 line):
+test.invalid. IN TXT "v=spf1 -all"
+
+FAIL  email.tlsrpt.record  TLS-RPT record present and well-formed
+      evidence: no v=TLSRPTv1 TXT record at _smtp._tls.test.invalid
+      refs: RFC 8460 §3
+      fix (1 line):
+_smtp._tls.test.invalid. IN TXT "v=TLSRPTv1; rua=mailto:tlsrpt@test.invalid"
+
+Summary for test.invalid
+DNS         2 FAIL   2 WARN   2 PASS   1 INFO   3 N/A
+DNSSEC      0 FAIL   0 WARN   0 PASS   3 INFO   1 N/A
+Email       6 FAIL   1 WARN   0 PASS   5 INFO  14 N/A
+Subdomain   0 FAIL   0 WARN   0 PASS   1 INFO   0 N/A
+WWW         0 FAIL   1 WARN   0 PASS   1 INFO  16 N/A
+Total       8 FAIL   4 WARN   2 PASS  11 INFO  34 N/A
+
+Result: FAIL. 8 FAIL (DNS 2, Email 6), 4 WARN. Exit code 1.

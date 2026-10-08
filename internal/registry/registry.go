@@ -57,7 +57,13 @@ func All() []Check {
 // cannot tank its siblings; the panic is recorded as a registry.panic Fail
 // result. The final result slice is sorted by (category, id) for stable
 // output.
-func Run(ctx context.Context, env *probe.Env) []report.Result {
+//
+// onDone, when not nil, is called exactly once per check, from that check's
+// goroutine, after the check's results (or its registry.panic result) have
+// been recorded. Calls therefore arrive concurrently, and every call returns
+// before Run does. The check keeps its worker slot until onDone returns, so a
+// slow onDone delays the next check in its category.
+func Run(ctx context.Context, env *probe.Env, onDone func(Check)) []report.Result {
 	// Snapshot the registry under the read lock so later Register calls
 	// (shouldn't happen — init() runs before Run — but cheap to guard
 	// against) cannot mutate the slice we iterate.
@@ -98,6 +104,11 @@ func Run(ctx context.Context, env *probe.Env) []report.Result {
 					defer inner.Done()
 					sem <- struct{}{}
 					defer func() { <-sem }()
+					// Deferred before the recovery below, so it runs after the
+					// check's results or its panic result are recorded.
+					if onDone != nil {
+						defer onDone(c)
+					}
 					// Per-check panic recovery so one bad check cannot abort
 					// its siblings. The recovered value becomes a Fail result
 					// tagged with the check's own category and id.

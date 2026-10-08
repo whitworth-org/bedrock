@@ -1,8 +1,11 @@
-// Package report defines the cross-cutting Result type and the JSON
-// renderer.
-//
-// All checks return []Result. Output is JSON only; the actual emission
-// (plain or ANSI-colorized) lives in json.go.
+// Package report defines the Result type every check returns and the two
+// ways bedrock prints a Report: RenderJSON (json.go), the machine output that
+// pipes, files and --json receive, and RenderHuman (human.go), the report a
+// terminal receives. Both pass every string through SanitizeForTerminal, so
+// target data cannot carry escape sequences; the terminal report also turns
+// TAB into a space and spells as \uXXXX every character that would render
+// as nothing or reorder text (DisplaySafe), and so does every other line
+// bedrock writes to a terminal.
 package report
 
 import (
@@ -64,14 +67,21 @@ func (s *Status) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Result is the output of a single check. Remediation is required when
-// Status == Fail; the renderer will surface a missing remediation as a bug.
+// Result is the output of a single check. Most FAIL results carry a
+// Remediation; the terminal report prints no fix for one that has none.
 type Result struct {
-	ID          string   `json:"id"`
-	Category    string   `json:"category"`
-	Title       string   `json:"title"`
-	Status      Status   `json:"status"`
-	Evidence    string   `json:"evidence,omitempty"`
+	ID       string `json:"id"`
+	Category string `json:"category"`
+	Title    string `json:"title"`
+	Status   Status `json:"status"`
+	Evidence string `json:"evidence,omitempty"`
+	// Remediation is a fix the user can paste as-is. The terminal report
+	// prints every line of it verbatim from column 0 and adds no indent, so
+	// write it exactly as it should be pasted: in a zone file a leading
+	// blank makes a record inherit the previous owner name. Its line breaks
+	// must come only from bedrock's own templates; a value interpolated
+	// into one (a record name, header value or hostname) must not carry LF
+	// or CR, or it could forge extra lines of the fix.
 	Remediation string   `json:"remediation,omitempty"`
 	RFCRefs     []string `json:"rfc_refs,omitempty"`
 }
@@ -128,8 +138,8 @@ type Summary struct {
 }
 
 // Summarize tallies results into a Summary. Categories are sorted so the
-// output is deterministic; the slice is always non-nil so the plain
-// encoder emits [] (not null), keeping the colored renderer in parity.
+// output is deterministic; the slice is always non-nil so the JSON encoder
+// emits [] (not null) for a report with no results.
 func Summarize(results []Result) *Summary {
 	byCat := map[string]*StatusCounts{}
 	var order []string

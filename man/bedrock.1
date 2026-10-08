@@ -43,11 +43,19 @@ may be an internationalised domain name; it is normalised to ASCII
 .B \-\-version
 Print the version line and exit.
 .TP
+.B \-\-json
+Write the JSON report even when standard output is a terminal.
+This flag has no config-file key.
+.TP
 .B \-\-no\-color
-Force plain (un-highlighted) JSON output even when standard output is a
-terminal. Colour is also suppressed when the
+Print the terminal report without colour.
+Colour is also off when
 .B NO_COLOR
-environment variable is set, or when standard output is not a TTY.
+is set to a non-empty value or
+.B TERM
+is
+.BR dumb .
+JSON output is never coloured.
 .TP
 .B \-\-no\-active
 Skip active probes.
@@ -99,6 +107,10 @@ Accepts any Go duration string
 .RB ( 500ms ", " 5s ", " 1m ).
 Default:
 .BR 5s .
+A
+.I timeout
+in the config file that does not parse gets a warning on standard error,
+and the scan uses the default.
 .TP
 .BI \-\-config " path"
 Read defaults from a JSON config file at
@@ -107,9 +119,8 @@ Keys mirror the long-form flag names with hyphens replaced by underscores.
 Flag values supplied on the command line override config values.
 .TP
 .BI \-\-only " csv"
-Comma-separated list of categories to include in output
-(e.g.\&
-.BR Email,WWW ).
+Comma-separated list of categories to include in output:
+.BR DNS ", " DNSSEC ", " Email ", " WWW ", " Subdomain .
 Other categories are still executed but suppressed at render time.
 .TP
 .BI \-\-exclude " csv"
@@ -119,6 +130,7 @@ Comma-separated list of categories to exclude from output.
 Comma-separated list of specific check IDs to include
 (e.g.\&
 .BR email.dmarc.record,web.hsts ).
+A warning on standard error names any entry that matches no result.
 .TP
 .BI \-\-severity " level"
 Minimum severity to include in output. One of
@@ -174,9 +186,76 @@ exit non-zero only on NEW failures versus the baseline.
 Pre-existing failures that have not changed are ignored.
 Useful as a CI gate that won't fail on legacy issues you've consciously
 deferred.
+Without
+.B \-\-baseline
+every
+.B FAIL
+is ignored, and a warning on standard error says so.
 .SH OUTPUT
-The tool always writes a single JSON document to standard output. The
-schema is
+The format depends on where standard output goes:
+a terminal gets a text report;
+a pipe, a file, or
+.B \-\-json
+gets one JSON document.
+A program that reads the output through a pseudo-terminal, as with
+.BR "ssh \-t" ,
+.BR "docker run \-t" ,
+.BR script (1)
+or
+.BR expect (1),
+therefore gets the text report.
+Better not to allocate one
+.RB ( "ssh \-T" ,
+or
+.B docker run
+without
+.BR \-t ):
+standard output is then a pipe, which gets JSON and no progress lines.
+Where a pseudo-terminal cannot be avoided, pass
+.B \-\-json
+and keep standard error, which shares the terminal, out of the stream
+.RB ( "2>/dev/null"
+inside the session), or set
+.BR CI=1 .
+.SS Terminal report
+The report runs from least to most important, so the last screen holds
+the fixes and the result:
+a header;
+checks that did not run or do not apply, grouped by reason;
+one line per
+.B PASS
+and
+.B INFO
+result;
+each
+.B WARN
+and
+.B FAIL
+in full, with its evidence, references, and fix;
+with
+.BR \-\-baseline ,
+the new failures;
+a summary per category;
+and a verdict that gives the exit status.
+Each fix follows a
+.RI \(lqfix\ ( N \ lines):\(rq
+label and is printed unindented, so most fixes paste as-is.
+.PP
+Colour marks only
+.BR bedrock 's
+own words: status words, section headings, non-zero
+.B FAIL
+and
+.B WARN
+counts, and the verdict.
+.BR \-\-no\-color ,
+a non-empty
+.BR NO_COLOR ,
+or
+.B TERM=dumb
+turns it off.
+.SS JSON
+The schema is
 .RI { target ", " results "[], " summary } ,
 where each result has
 .IR id ", " category ", " title ", " status ", " evidence ", " remediation ", " rfc_refs .
@@ -186,15 +265,82 @@ object totals the rendered results per category and per status. It is
 computed after the filtering options, so totals always match the
 .I results
 array.
-When standard output is a terminal and colour is not suppressed (see
-.BR \-\-no\-color ),
-the JSON is ANSI syntax-highlighted; otherwise it is emitted plain so it
-pipes cleanly into
-.BR jq (1)
-and other consumers.
+With
+.BR \-\-baseline ,
+a
+.I regressions
+array lists the
+.I id
+and
+.I title
+of each new
+.BR FAIL ;
+it is omitted when there are none.
+.SS Standard error
+While a scan runs, standard error gets progress lines that are appended,
+never redrawn: a start line, a heartbeat after 3 seconds and then every
+10 seconds naming up to two checks not done yet (running, or queued for a
+worker), and a line on interrupt.
+They appear only when standard error is a terminal,
+.B CI
+is unset or empty, and standard output is a terminal or a regular file;
+never with a pipe.
+When those conditions hold and standard output is a regular file,
+standard error also ends with the verdict, the checks an interrupt cut
+short, and up to ten failing IDs.
 .PP
-ANSI, C0, C1, and DEL bytes in attacker-controlled evidence are replaced
-with U+FFFD before rendering.
+SIGINT or SIGTERM stops the scan and prints the partial report.
+The exit status follows the results it holds, which can include a
+.B FAIL
+from a check the interrupt cut short.
+The terminal report says
+.B INCOMPLETE
+and lists the checks that did not finish, by check name:
+a check can report its results under other IDs, and the results a
+cut-short check did report may reflect the interrupt rather than the
+target.
+With
+.B \-\-only
+or
+.BR \-\-exclude ,
+the list keeps to the categories the report shows.
+The JSON has no such marker, so standard error always says
+.BR INCOMPLETE :
+in the verdict when progress is on, otherwise in a single verdict line.
+A second SIGINT ends
+.B bedrock
+at once, without a report.
+.PP
+Warnings and errors also go to standard error, one line each, whatever it
+is: an
+.B \-\-ids
+entry that matches no result (not checked after an interrupt),
+.B \-\-regression\-only
+without
+.BR \-\-baseline ,
+and a config
+.I timeout
+that does not parse.
+To parse the JSON, keep standard error out of the stream.
+.SS Untrusted text
+In both formats, every C0 control character except TAB, every C1 control
+character, and DEL in the report's text is replaced with U+FFFD;
+only a fix keeps its line breaks, normalised to LF.
+Data from the target therefore cannot carry terminal escape sequences.
+The terminal report also turns TAB into a space and shows as
+.B \euXXXX
+.RB ( \eUXXXXXXXX
+above U+FFFF) every character that is not graphic or that renders as
+nothing: format characters such as bidirectional overrides and zero-width
+spaces, line and paragraph separators, private-use and unassigned code
+points, fillers, and variation selectors.
+It never wraps, truncates, or colours text from the target.
+Progress lines, warnings and errors on standard error get the same
+treatment.
+Target text that itself reads
+.B \eu202E
+looks the same as an escaped character; the JSON report has the exact
+text.
 .SH SEVERITY
 Each check returns one of five statuses:
 .TP
@@ -240,12 +386,17 @@ a new
 versus the baseline).
 .TP
 .B 2
-Usage error, invalid target, render failure, or unreachable resolver.
+Usage error, invalid input or configuration, or a failed write.
 .SH EXAMPLES
 .TP
-Basic audit, human-readable text:
+Basic audit; a terminal gets the text report:
 .EX
 $ bedrock example.org
+.EE
+.TP
+The JSON report on a terminal:
+.EX
+$ bedrock \-\-json example.org
 .EE
 .TP
 Pin a recursive resolver for reproducibility:
@@ -253,14 +404,13 @@ Pin a recursive resolver for reproducibility:
 $ bedrock \-\-resolver 1.1.1.1:53 example.org
 .EE
 .TP
-Filter the JSON to just failures with
-.BR jq (1):
+.RB "Filter the JSON to just failures with " jq (1):
 .EX
 $ bedrock example.org | \\
     jq '.results[] | select(.status == "FAIL")'
 .EE
 .TP
-Save a plain-JSON report to a file for review:
+Save the JSON report; standard error on a terminal shows the verdict:
 .EX
 $ bedrock example.org > example.org.report.json
 .EE
@@ -270,11 +420,13 @@ DNS-only audit of a third-party domain (no outbound TCP beyond DNS):
 $ bedrock \-\-no\-active partner.example.com
 .EE
 .TP
-Use in a CI pipeline; non-zero exit fails the job on any
-.B FAIL :
+.RB "Fail a CI job on any " FAIL ", logging only the totals:"
 .EX
-$ bedrock prod.example.com > posture.json || \\
-    { cat posture.json; exit 1; }
+$ bedrock prod.example.com > posture.json || {
+    status=$?
+    jq \-c .summary.totals posture.json
+    exit "$status"
+  }
 .EE
 .SH FILES
 .TP
@@ -289,18 +441,35 @@ When set to a non-empty value, bypasses the resolver-IP denylist so
 loopback / RFC 1918 resolvers can be used. Intended for hermetic test
 environments only; production callers must leave this unset.
 .TP
+.B CI
+When set to a non-empty value, as most CI services do, turns off the
+progress lines and the verdict on standard error.
+.TP
 .B NO_COLOR
-When set to a non-empty value, suppresses ANSI colouring of the JSON
-output regardless of whether standard output is a terminal (see
-.BR \-\-no\-color ).
+When set to a non-empty value, turns off colour in the terminal report,
+as
+.B \-\-no\-color
+does.
+It does not select JSON; use
+.B \-\-json
+for that.
+.TP
+.B TERM
+When set to
+.BR dumb ,
+turns off colour in the terminal report.
 .PP
 Otherwise
 .B bedrock
-ignores all environment variables other than
-.B NO_COLOR
-and those consulted by the Go runtime
+ignores all environment variables other than those consulted by the Go
+runtime
 .RB ( SSL_CERT_FILE ", " SSL_CERT_DIR )
 for system root certificates and any standard OS resolver configuration.
+In particular,
+.B FORCE_COLOR
+and
+.B CLICOLOR_FORCE
+have no effect.
 .SH STANDARDS
 .B bedrock
 checks reference, among others:

@@ -47,9 +47,9 @@ Each `v*` tag push publishes linux / macOS / windows × amd64 / arm64 archives, 
 ## Quick start
 
 ```bash
-bedrock example.org              # default audit, JSON on stdout (ANSI-coloured on a TTY)
+bedrock example.org              # default audit, text report on a terminal
 bedrock example.org | jq .       # canonical JSON for tooling
-NO_COLOR=1 bedrock example.org   # plain JSON regardless of TTY
+bedrock --json example.org       # JSON on a terminal too
 bedrock --no-active example.org  # DNS-only — no outbound TCP
 ```
 
@@ -66,7 +66,8 @@ bedrock [flags] <domain>
 | Flag                | Default         | Effect                                                                                               |
 |---------------------|-----------------|------------------------------------------------------------------------------------------------------|
 | `--version`         | —               | Print the version line and exit.                                                                    |
-| `--no-color`        | colour on TTY   | Suppress ANSI colouring. Honoured automatically when stdout is not a terminal or `NO_COLOR` is set.  |
+| `--json`            | off             | Print JSON even when stdout is a terminal. Command line only: there is no config key.                |
+| `--no-color`        | colour on TTY   | No colour in the terminal report, as with a non-empty `NO_COLOR` or `TERM=dumb`. JSON is never coloured. |
 | `--no-active`       | probes on       | Skip active probes (SMTP STARTTLS, HTTPS GETs, MTA-STS fetch, VMC fetch, QUIC dial).                 |
 | `--resolver`        | system resolver | `host[:port]`, preset (`cloudflare` / `google` / `quad9` / `opendns`), `<preset>-dot`, `<preset>-doh`, `tls://host`, `https://url`. |
 | `--resolvers`       | —               | CSV of resolvers. The first serves every lookup; `dnssec.sentinel` tests each one.                   |
@@ -74,13 +75,13 @@ bedrock [flags] <domain>
 | `--config`          | —               | Path to a JSON config file. Flag values override config values.                                      |
 | `--only`            | —               | CSV of categories to include (`DNS`, `DNSSEC`, `Email`, `WWW`, `Subdomain`).                         |
 | `--exclude`         | —               | CSV of categories to exclude.                                                                        |
-| `--ids`             | —               | CSV of specific check IDs to include (e.g. `web.hsts,email.dmarc.record`).                           |
+| `--ids`             | —               | CSV of specific check IDs to include (e.g. `web.hsts,email.dmarc.record`). A warning on stderr names entries that match no result. |
 | `--severity`        | —               | Minimum severity to show: `info`, `pass`, `warn`, `fail`. `N/A` is always shown.                     |
 | `--subdomains`      | off             | Enumerate subdomains via passive sources (hackertarget, anubis, threatcrowd, wayback) and probe each.|
 | `--enable-ct`       | off             | Query Certificate Transparency via crt.sh.                                                           |
 | `--enable-rbl`      | off             | Query DNSBLs (Spamhaus, Barracuda, SpamCop, SORBS, PSBL). Listings produce `WARN`, not `FAIL`.       |
 | `--baseline`        | —               | Path to a previous JSON report; surface regressions against it.                                      |
-| `--regression-only` | off             | With `--baseline`: exit non-zero only on NEW failures (ignores pre-existing `FAIL`s).                |
+| `--regression-only` | off             | With `--baseline`: exit non-zero only on NEW failures (ignores pre-existing `FAIL`s). Without `--baseline` every `FAIL` is ignored, and stderr says so. |
 
 ### Resolver forms
 
@@ -132,6 +133,8 @@ JSON; keys mirror long-form flag names with hyphens replaced by underscores.
 ```bash
 bedrock --config audit.json example.org
 ```
+
+A `timeout` that does not parse gets a warning on stderr, and the scan uses the default.
 
 ## What bedrock checks
 
@@ -267,9 +270,49 @@ Passive third-party sources: hackertarget, anubis, threatcrowd, wayback. These a
 
 ## Output
 
-Output is JSON. ANSI-coloured on a TTY; plain when redirected, when `NO_COLOR=1` is set, or with `--no-color`. C0 / C1 / DEL bytes in attacker-controlled fields are replaced with `U+FFFD` so untrusted DNS TXT, certificate subjects, and HTTP headers cannot inject terminal escapes.
+The format depends on where stdout goes: a terminal gets a text report; a pipe, a file, or `--json` gets JSON. A program that reads bedrock's output through a pseudo-terminal (`ssh -t`, `docker run -t`, `script`, `expect`) therefore gets the text report. Better not to allocate one (`ssh -T`, `docker run` without `-t`): stdout is then a pipe, which gets JSON and no progress lines. Where a pseudo-terminal cannot be avoided, pass `--json` and keep stderr, which shares the terminal, out of the stream: `ssh -t host 'bedrock --json example.org 2>/dev/null'`, or set `CI=1` (`docker run -t -e CI=1 ...`).
 
-Schema:
+### Terminal report
+
+The report runs from least to most important, so the last screen holds the fixes and the result: a header; checks that did not run or do not apply, grouped by reason; one line per `PASS` and `INFO`; each `WARN` and `FAIL` in full, with evidence, references, and fix; with `--baseline`, the new failures; a summary per category; and a verdict that names the exit code. Each fix follows a `fix (N lines):` label and is printed unindented, so most fixes paste as-is. The start and end of a run on a terminal:
+
+```
+$ bedrock example.org
+bedrock: scanning example.org: 57 checks, active probes, timeout 5s
+bedrock report for example.org (126 results, 2.9s)
+[... N/A, PASS, INFO and WARN sections, then the other FAIL blocks ...]
+FAIL  web.redirect.www.example.org  HTTP→HTTPS redirect (www.example.org)
+      evidence: plain HTTP did not redirect to HTTPS (final: http://www.example.org/)
+      refs: RFC 7525 §3.1.1
+      fix (5 lines):
+server {
+    listen 80;
+    server_name example.org www.example.org;
+    return 301 https://$host$request_uri;
+}
+
+Summary for example.org
+DNS          0 FAIL    1 WARN   10 PASS    1 INFO    0 N/A
+DNSSEC       0 FAIL    0 WARN    9 PASS    1 INFO    0 N/A
+Email       48 FAIL    2 WARN    5 PASS    9 INFO    6 N/A
+Subdomain    0 FAIL    0 WARN    0 PASS    1 INFO    0 N/A
+WWW          5 FAIL    4 WARN   14 PASS   10 INFO    0 N/A
+Total       53 FAIL    7 WARN   38 PASS   22 INFO    6 N/A
+
+Result: FAIL. 53 FAIL (Email 48, WWW 5), 7 WARN. Exit code 1.
+```
+
+Colour marks only bedrock's own words: status words, section headings, non-zero `FAIL` and `WARN` counts, and the verdict. `--no-color` (config `"no_color": true`), a non-empty `NO_COLOR`, or `TERM=dumb` turns it off; `FORCE_COLOR` and `CLICOLOR_FORCE` are ignored.
+
+### Progress on stderr
+
+While a scan runs, stderr gets progress lines that are appended, never redrawn: a start line, a heartbeat at 3 s and every 10 s after that naming up to two checks not done yet (running, or queued for a worker), and a line on interrupt. They appear only when stderr is a terminal, `CI` is unset or empty, and stdout is a terminal or a file; never with a pipe, so `| less` and `| jq` stay clean. `2>/dev/null` hides them. When those conditions hold and stdout is a file, stderr also ends with the verdict, the checks an interrupt cut short, and up to ten failing IDs, so `bedrock example.org > report.json` still shows the result.
+
+Ctrl-C or SIGTERM stops the scan and prints the partial report. The exit code follows the results it holds, which can include a `FAIL` from a check the interrupt cut short. The terminal report says `INCOMPLETE` and lists the checks that did not finish, by check name: a check can report its results under other IDs (`dns.dangling` reports `dns.dangling.summary`), and the results a cut-short check did report may reflect the interrupt rather than the target. With `--only` or `--exclude`, the list keeps to the categories the report shows. The JSON has no such marker, so stderr always says `INCOMPLETE`: in the verdict when progress is on, otherwise in a single verdict line. A second Ctrl-C ends bedrock at once, without a report.
+
+Warnings and errors also go to stderr, one `bedrock: ` line each, whatever stderr is: an `--ids` entry that matches no result (not checked after an interrupt, which can leave a valid ID without one), `--regression-only` without `--baseline`, and a config `timeout` that does not parse. To parse the JSON, keep stderr out of the stream: `bedrock example.org 2>bedrock.log | jq`, not `2>&1 | jq`.
+
+### JSON
 
 ```json
 {
@@ -294,7 +337,11 @@ Schema:
 }
 ```
 
-The `summary` block totals the rendered results per category and per status. It is computed after `--only` / `--exclude` / `--severity` / `--ids` filtering, so the counts always match the `results` array it accompanies.
+The `summary` block totals the rendered results per category and per status. It is computed after `--only` / `--exclude` / `--severity` / `--ids` filtering, so the counts always match the `results` array it accompanies. With `--baseline`, a `regressions` array lists the `id` and `title` of each new `FAIL`; it is omitted when there are none.
+
+### Untrusted text
+
+In both formats, every C0 control character except TAB, every C1 control character, and DEL in the report's text is replaced with `U+FFFD`; only a fix keeps its line breaks, normalised to LF. Data from the target therefore cannot carry terminal escape sequences. The terminal report also turns TAB into a space and shows as `\uXXXX` (`\UXXXXXXXX` above U+FFFF) every character that is not graphic or that renders as nothing: format characters such as bidirectional overrides and zero-width spaces, line and paragraph separators, private-use and unassigned code points, fillers, and variation selectors. It never wraps, truncates, or colours text from the target. Progress lines, warnings and errors on stderr get the same treatment. Target text that itself reads `\u202E` looks the same as an escaped character; the JSON report has the exact text.
 
 ### Exit codes
 
@@ -302,7 +349,7 @@ The `summary` block totals the rendered results per category and per status. It 
 |------|------------------------------------------------------------------|
 | 0    | No `FAIL` results. `WARN` and `INFO` do not affect exit code.    |
 | 1    | At least one `FAIL` (or, with `--regression-only`, a new `FAIL`).|
-| 2    | Usage error, invalid target, unreachable resolver, render error. |
+| 2    | Usage error, invalid input or configuration, or a failed write. |
 
 ## Regression tracking
 
@@ -315,6 +362,8 @@ bedrock --baseline baseline.json --regression-only example.org
 Duplicate IDs in a baseline file cause every current `FAIL` for that ID to be reported as a regression (fails closed: an ambiguous baseline cannot mask a regression).
 
 ## CI integration
+
+The first run saves the baseline, and later runs fail on `FAIL`s that are new since then. Any run fails when bedrock exits 2. The log gets the number of new `FAIL`s but never text from the target.
 
 ```yaml
 name: Domain audit
@@ -338,9 +387,15 @@ jobs:
           path: baseline.json
           key: bedrock-baseline-${{ github.repository }}
       - run: |
-          bedrock example.org > current.json
-          [ -f baseline.json ] && bedrock --baseline baseline.json --regression-only example.org
+          bedrock example.org > current.json || [ $? -eq 1 ]
+          status=0
+          if [ -f baseline.json ]; then
+            bedrock --baseline baseline.json --regression-only example.org \
+              > regression-run.json || status=$?
+            jq '.regressions | length' regression-run.json
+          fi
           mv current.json baseline.json
+          exit "$status"
 ```
 
 ## Development
@@ -364,7 +419,9 @@ main.go                     flag parsing, target normalisation, signal handling,
 internal/registry/          check registration + parallel category execution + panic recovery
 internal/probe/             DNS (miekg/dns) + HTTP primitives, named resolvers, DoT, DoH, SSRF-safe dialer
 internal/probe/tlsfp/       Native ServerHello parser + JA3S/JA4S fingerprint compute (no third-party deps)
-internal/report/            Result type + JSON renderer + ANSI colouring + terminal sanitisation
+internal/report/            Result type + JSON and terminal-report renderers + terminal sanitisation
+internal/tty/               terminal and regular-file detection, colour rules (Windows console via kernel32)
+internal/progress/          append-only scan progress lines for stderr
 internal/cli/               result filters + JSON config loader
 internal/baseline/          baseline diff for --baseline / --regression-only (fail-closed on duplicate IDs)
 internal/version/           build-time version, populated via -ldflags
