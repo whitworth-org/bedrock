@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
@@ -61,19 +62,28 @@ func (s *securityTxt) values(name string) []string { return s.fields[name] }
 func runSecurityTxt(ctx context.Context, env *probe.Env) []report.Result {
 	origin := "https://" + env.Target + "/.well-known/security.txt"
 	resp, err := fetchSecTxt(ctx, env, origin)
-	if err != nil {
+	switch {
+	case err != nil && checkutil.Incomplete(ctx, err):
+		res := report.Result{ID: securityTxtID, Category: category, Title: securityTxtTitle,
+			RFCRefs: []string{"RFC 9116"}}
+		return []report.Result{checkutil.Inconclusive(res, err)}
+	case err != nil:
 		return secTxtAbsent(ctx, env, origin, "GET failed: "+err.Error())
+	case resp.Status != http.StatusOK && !resp.Verified:
+		// The legacy path is on the same host, so it cannot be fetched over
+		// verified HTTPS either.
+		return []report.Result{secTxtMissing(env.Target, origin,
+			fmt.Sprintf("HTTP %d; the TLS chain also failed verification", resp.Status))}
+	case resp.Status != http.StatusOK:
+		return secTxtAbsent(ctx, env, origin, fmt.Sprintf("HTTP %d", resp.Status))
 	}
-	if resp.Body == nil {
+	if !resp.Verified {
 		// probe.HTTP.Get fell back to its verification-disabled diagnostic
 		// retry and dropped the body: the file is not retrievable over
 		// verified HTTPS, which §3 requires.
 		return []report.Result{secTxtResult(report.Fail,
 			origin+" is served with an unverifiable TLS chain; RFC 9116 §3 requires verified HTTPS",
 			securityTxtRemediation(env.Target, time.Now()), "RFC 9116 §3")}
-	}
-	if resp.Status != http.StatusOK {
-		return secTxtAbsent(ctx, env, origin, fmt.Sprintf("HTTP %d", resp.Status))
 	}
 	return classifySecTxt(ctx, env, origin, resp)
 }
@@ -106,7 +116,7 @@ func classifySecTxt(ctx context.Context, env *probe.Env, origin string, resp *pr
 		violations = append([]string{ctIssue}, violations...)
 	}
 	if finalURL != origin {
-		summary = append(summary, "retrieved via redirect: "+finalURL)
+		summary = append(summary, "retrieved via redirect: "+report.ClipValue(finalURL))
 	}
 	return []report.Result{secTxtVerdict(env.Target, violations, warnings, summary)}
 }
@@ -133,7 +143,7 @@ func secTxtVerdict(target string, violations, warnings, summary []string) report
 func secTxtAbsent(ctx context.Context, env *probe.Env, origin, reason string) []report.Result {
 	legacy := "https://" + env.Target + "/security.txt"
 	if resp, err := fetchSecTxt(ctx, env, legacy); err == nil &&
-		resp.Status == http.StatusOK && resp.Body != nil {
+		resp.Status == http.StatusOK && resp.Verified {
 		if st, perr := parseSecurityTxt(string(resp.Body)); perr == nil && looksLikeSecTxt(st) {
 			return []report.Result{secTxtResult(report.Warn,
 				"security.txt found only at legacy "+legacy+" ("+origin+": "+reason+
@@ -141,9 +151,14 @@ func secTxtAbsent(ctx context.Context, env *probe.Env, origin, reason string) []
 				securityTxtRemediation(env.Target, time.Now()), "RFC 9116 §3")}
 		}
 	}
-	return []report.Result{secTxtResult(report.Warn,
-		"no security.txt at "+origin+" ("+reason+")",
-		securityTxtRemediation(env.Target, time.Now()), "RFC 9116")}
+	return []report.Result{secTxtMissing(env.Target, origin, reason)}
+}
+
+// secTxtMissing is the Warn for a domain publishing no security.txt at
+// origin, the well-known path, for reason.
+func secTxtMissing(target, origin, reason string) report.Result {
+	return secTxtResult(report.Warn, "no security.txt at "+origin+" ("+reason+")",
+		securityTxtRemediation(target, time.Now()), "RFC 9116")
 }
 
 // fetchSecTxt GETs target under its own per-operation timeout (mirrors
@@ -174,10 +189,10 @@ func looksLikeSecTxt(st *securityTxt) bool {
 func secTxtContentTypeIssue(header string) string {
 	mt, params, err := mime.ParseMediaType(header)
 	if err != nil || mt != "text/plain" {
-		return fmt.Sprintf("Content-Type %q; §3 requires text/plain", header)
+		return fmt.Sprintf("Content-Type %q; §3 requires text/plain", report.ClipValue(header))
 	}
 	if cs, ok := params["charset"]; ok && !strings.EqualFold(cs, "utf-8") {
-		return fmt.Sprintf("Content-Type charset %q; §3 requires utf-8", cs)
+		return fmt.Sprintf("Content-Type charset %q; §3 requires utf-8", report.ClipValue(cs))
 	}
 	return ""
 }
@@ -337,7 +352,7 @@ func secTxtCanonicalIssue(st *securityTxt, finalURL string) string {
 			return ""
 		}
 	}
-	return "retrieval URI " + finalURL +
+	return "retrieval URI " + report.ClipValue(finalURL) +
 		" is not listed in Canonical; §2.5.2: the file should not be trusted for it"
 }
 

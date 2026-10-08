@@ -1,6 +1,6 @@
 bedrock report for test.invalid (59 results, passive only, resolver 127.0.0.1:<resolver-port>)
 
-Not run or not applicable (34)
+Not run or not applicable (35)
 N/A   6 results: skipped: --no-active
       dns.axfr, bimi.svg.aspect, bimi.svg.profile, bimi.vmc.chain,
       bimi.vmc.logotype, email.mtasts.policy
@@ -8,8 +8,8 @@ N/A   2 results: no NS records resolved
       dns.ns.diversity, dns.ns.ipv6
 N/A   1 result: no CDS published
       dnssec.cds.matches_ds
-N/A   1 result: no parsed BIMI record (TXT check did not produce one)
-      bimi.svg.fetch
+N/A   2 results: no parsed BIMI record (TXT check did not produce one)
+      bimi.gmail.dmarc, bimi.svg.fetch
 N/A   1 result: no usable MX records — DANE not applicable
       email.dane
 N/A   1 result: no DKIM keys discoverable on common selectors; see email.dkim.selector.none
@@ -37,12 +37,11 @@ Passed (2)
 PASS  dns.cname.apex  No CNAME at apex (correct)
 PASS  dns.dangling.summary  No dangling-DNS candidates found among probed hosts
 
-Information (11)
+Information (10)
 INFO  dns.cname.chain  No CNAME chain at www.test.invalid: www.test.invalid is not a CNAME
 INFO  dnssec.cds.published  No CDS/CDNSKEY published: operator manages DS at parent manually (CDS/CDNSKEY are optional, RFC 7344 §3)
 INFO  dnssec.sentinel  Root KSK sentinel test skipped: no resolver returned a usable root DNSKEY RRset: 127.0.0.1:<resolver-port>: answered NXDOMAIN
 INFO  dnssec.signed  Domain is not DNSSEC-signed: no DS records at parent; no DNSKEY records at apex
-INFO  bimi.gmail.dmarc  BIMI Gmail gate: DMARC quarantine|reject enforced, strict alignment: DMARC not parsed (no entry at email.dmarc.parsed)
 INFO  bimi.vmc.fetch  BIMI Verified Mark Certificate fetched over HTTPS: no parsed BIMI record
 INFO  email.arc.dmarc  DMARC enforcement complements ARC: no DMARC record cached; ARC adds value primarily once DMARC enforcement is in place
 INFO  email.arc.guidance  ARC (Authenticated Received Chain) deployment guidance: ARC preserves authentication results across legitimate intermediaries (mailing lists, forwarders) by stamping ARC-Authentication-Results, ARC-Message-Signature, and ARC-Seal headers on each hop. RFC 8617 is being reclassified as Historic (draft-ietf-dmarc-arc-to-historic); DKIM2 absorbs this role with a per-hop DKIM2-Signature chain.
@@ -81,14 +80,9 @@ Publish at least two NS records at the apex pointing to authoritative nameserver
 FAIL  dns.zone.soa  SOA record
       evidence: lookup error: NXDOMAIN
       refs: RFC 1035 §3.3.13, RFC 1912 §2.2, RFC 2308 §5
-      fix (7 lines):
-test.invalid. IN SOA ns1.test.invalid. hostmaster.test.invalid. (
-    2026041601   ; serial
-    7200         ; refresh (2h)
-    3600         ; retry   (1h)
-    1209600      ; expire  (2w)
-    3600         ; minimum (1h, RFC 2308 negative cache)
-)
+      fix (2 lines):
+; serial <YYYYMMDDnn>, refresh 2h, retry 1h, expire 2w, minimum 1h (RFC 2308 negative cache)
+test.invalid. IN SOA ns1.test.invalid. hostmaster.test.invalid. <YYYYMMDDnn> 7200 3600 1209600 3600
 
 FAIL  bimi.txt  BIMI assertion record (default._bimi)
       evidence: no TXT record at default._bimi.test.invalid
@@ -112,7 +106,7 @@ FAIL  email.mtasts.txt  MTA-STS TXT record present and well-formed
       evidence: no v=STSv1 TXT record at _mta-sts.test.invalid
       refs: RFC 8461 §3.1
       fix (1 line):
-_mta-sts.test.invalid. IN TXT "v=STSv1; id=20260416000000Z"
+_mta-sts.test.invalid. IN TXT "v=STSv1; id=<YYYYMMDDhhmmssZ>"
 
 FAIL  email.spf.record  SPF record present and well-formed
       evidence: no v=spf1 TXT record at apex
@@ -129,9 +123,9 @@ _smtp._tls.test.invalid. IN TXT "v=TLSRPTv1; rua=mailto:tlsrpt@test.invalid"
 Summary for test.invalid
 DNS         2 FAIL   2 WARN   2 PASS   1 INFO   3 N/A
 DNSSEC      0 FAIL   0 WARN   0 PASS   3 INFO   1 N/A
-Email       6 FAIL   1 WARN   0 PASS   5 INFO  14 N/A
+Email       6 FAIL   1 WARN   0 PASS   4 INFO  15 N/A
 Subdomain   0 FAIL   0 WARN   0 PASS   1 INFO   0 N/A
 WWW         0 FAIL   1 WARN   0 PASS   1 INFO  16 N/A
-Total       8 FAIL   4 WARN   2 PASS  11 INFO  34 N/A
+Total       8 FAIL   4 WARN   2 PASS  10 INFO  35 N/A
 
 Result: FAIL. 8 FAIL (DNS 2, Email 6), 4 WARN. Exit code 1.

@@ -3,12 +3,18 @@ package web
 import (
 	"context"
 	"fmt"
+	"net"
 	"time"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/probe/tlsfp"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
+
+// fingerprintPort is the port the ServerHello capture dials; only tests
+// change it.
+var fingerprintPort = "443"
 
 // runTLSFingerprintJA3S emits a per-host JA3S TLS server fingerprint. JA3S
 // (Salesforce, 2017) is the legacy MD5 fingerprint over the cleartext
@@ -30,11 +36,11 @@ func runTLSFingerprintJA4S(ctx context.Context, env *probe.Env) []report.Result 
 
 // runTLSFingerprint is the shared per-host fingerprint walker. It iterates
 // the same apex+www host set used by the TLS-profile check (candidateHosts),
-// dials each over the SSRF-safe dialer, captures and parses the cleartext
-// ServerHello, and emits one Result per host carrying the requested
-// fingerprint kind. Hosts that fail to handshake produce a Fail result;
-// successful handshakes produce an Info result so they don't pollute the
-// pass/fail signal of policy-driven checks.
+// takes each host's ServerHello capture (see captureServerHello), and emits
+// one Result per host carrying the requested fingerprint kind. Successful
+// captures produce an Info result so they don't pollute the pass/fail
+// signal of policy-driven checks; failed ones are graded by
+// fingerprintFailed.
 func runTLSFingerprint(ctx context.Context, env *probe.Env, kind string) []report.Result {
 	if !env.Active {
 		return []report.Result{{
@@ -56,12 +62,6 @@ func runTLSFingerprint(ctx context.Context, env *probe.Env, kind string) []repor
 		}}
 	}
 
-	timeout := env.Timeout
-	if timeout > 30*time.Second {
-		timeout = 30 * time.Second
-	}
-	dial := probe.SafeDialContext(timeout, false)
-
 	var out []report.Result
 	for _, host := range hosts {
 		// Mid-flight cancellation gate so a cancelled scan stops dialing
@@ -69,37 +69,62 @@ func runTLSFingerprint(ctx context.Context, env *probe.Env, kind string) []repor
 		if err := ctx.Err(); err != nil {
 			break
 		}
-
-		// Two checks (ja3s, ja4s) share the same captured ServerHello — but
-		// since each Wrap registration calls runTLSFingerprint independently,
-		// we cache the per-host result on env to avoid a second handshake.
-		// The cache key embeds the host so apex+www don't collide.
-		cacheKey := "web.tls.fingerprint.cap:" + host
-		var res *tlsfp.Result
-		if cached, ok := env.CacheGet(cacheKey); ok {
-			if r, ok := cached.(*tlsfp.Result); ok {
-				res = r
-			}
+		c := captureServerHello(ctx, env, host)
+		if c.err != nil {
+			out = append(out, fingerprintFailed(ctx, host, kind, c))
+			continue
 		}
-		if res == nil {
-			r, err := tlsfp.Capture(ctx, host, "443", dial, timeout)
-			if err != nil {
-				out = append(out, report.Result{
-					ID:       "web.tls.fingerprint." + kind + "." + host,
-					Category: category,
-					Title:    "TLS fingerprint (" + kind + ") — " + host,
-					Status:   report.Fail,
-					Evidence: "capture failed: " + err.Error(),
-				})
-				continue
-			}
-			env.CachePut(cacheKey, r)
-			res = r
-		}
-
-		out = append(out, fingerprintResult(host, kind, res))
+		out = append(out, fingerprintResult(host, kind, c.res))
 	}
 	return out
+}
+
+// serverHelloCapture is the outcome of capturing one host's ServerHello.
+// res is set when err is nil, and also when the handshake completed but the
+// captured ServerHello could not be parsed.
+type serverHelloCapture struct {
+	res *tlsfp.Result
+	err error
+}
+
+// captureServerHello returns host's ServerHello capture shared by the JA3S
+// and JA4S checks, capturing it over the SSRF-safe dialer on first use, so
+// each host is handshaken once and both fingerprints describe the same
+// ServerHello.
+func captureServerHello(ctx context.Context, env *probe.Env, host string) *serverHelloCapture {
+	c := probe.Shared(env, probe.CacheKeyTLSFingerprint+":"+host, func() *serverHelloCapture {
+		timeout := min(env.Timeout, 30*time.Second)
+		dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return probe.SafeDial(ctx, network, addr, timeout)
+		}
+		res, err := tlsfp.Capture(ctx, host, fingerprintPort, dial, timeout)
+		return &serverHelloCapture{res: res, err: err}
+	})
+	if c == nil {
+		return &serverHelloCapture{err: fmt.Errorf("ServerHello capture from %s %w", host,
+			checkutil.ErrSharedProbePanicked)}
+	}
+	return c
+}
+
+// fingerprintFailed grades a capture that ended in an error. It is
+// Inconclusive when the capture could not complete or when the handshake
+// completed but bedrock could not parse the ServerHello, which says nothing
+// about the server; a refused connection or handshake stays a FAIL.
+func fingerprintFailed(
+	ctx context.Context, host, kind string, c *serverHelloCapture,
+) report.Result {
+	r := report.Result{
+		ID:       "web.tls.fingerprint." + kind + "." + host,
+		Category: category,
+		Title:    "TLS fingerprint (" + kind + ") — " + host,
+	}
+	if c.res != nil || checkutil.Incomplete(ctx, c.err) {
+		return checkutil.Inconclusive(r, c.err)
+	}
+	r.Status = report.Fail
+	r.Evidence = "capture failed: " + c.err.Error()
+	return r
 }
 
 func fingerprintResult(host, kind string, r *tlsfp.Result) report.Result {

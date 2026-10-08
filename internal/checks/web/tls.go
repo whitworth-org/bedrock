@@ -7,9 +7,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"net"
-	"strings"
-	"time"
 
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
@@ -53,32 +50,31 @@ func runTLS(ctx context.Context, env *probe.Env) []report.Result {
 	}
 
 	var out []report.Result
-	for i, host := range hosts {
+	for _, host := range hosts {
 		// Mid-flight ctx gate so a cancelled scan stops dialing more
 		// hosts instead of pushing each one through to handshake timeout.
 		if err := ctx.Err(); err != nil {
 			break
 		}
-		state, err := dialTLSPriority(ctx, host, env.Timeout)
-		if err != nil {
-			out = append(out, report.Result{
+		h := hostTLS(ctx, env, host)
+		if h.err != nil {
+			out = append(out, handshakeFailed(ctx, report.Result{
 				ID: "web.tls.profile." + host, Category: category,
 				Title:       "TLS handshake (" + host + ")",
 				Status:      report.Fail,
-				Evidence:    "TLS handshake failed: " + err.Error(),
-				Remediation: "ensure HTTPS listener is reachable and presents a valid certificate at " + host,
+				Remediation: tlsHandshakeRemediation(host),
 				RFCRefs:     []string{"RFC 7525 §3.1"},
-			})
+			}, h.err))
 			continue
 		}
-		// Cache the first state so other checks (cert hygiene, HSTS context)
-		// can reuse it without an extra handshake.
-		if i == 0 {
-			env.CachePut(probe.CacheKeyTLSCxn, state)
-		}
-		out = append(out, scoreTLSAgainstProfiles(host, state, cfg)...)
+		out = append(out, scoreTLSAgainstProfiles(host, h.state, cfg)...)
 	}
 	return out
+}
+
+func tlsHandshakeRemediation(host string) string {
+	return "ensure an HTTPS listener on " + report.InlineValue(host) +
+		" is reachable on port 443 and completes a TLS handshake"
 }
 
 // candidateHosts returns the hostnames to probe — apex always, plus www if
@@ -95,39 +91,6 @@ func candidateHosts(ctx context.Context, env *probe.Env) []string {
 		hosts = append(hosts, www)
 	}
 	return hosts
-}
-
-// dialTLSPriority attempts handshakes in priority order: TLS 1.3 first, then
-// TLS 1.2. We negotiate the highest version the server is willing to do so
-// the scoring sees the server's preferred posture, not whatever floor we set.
-func dialTLSPriority(ctx context.Context, host string, timeout time.Duration) (*tls.ConnectionState, error) {
-	addr := net.JoinHostPort(host, "443")
-	dctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	d := &net.Dialer{Timeout: timeout}
-	// First try with a TLS 1.2 floor — Go will negotiate the highest mutually
-	// supported version (typically 1.3). If that handshake fails we retry
-	// against a TLS 1.0/1.1 floor so we can still SCORE legacy servers
-	// (they get a Fail downstream, but we want evidence rather than a bare
-	// dial error).
-	cfg := &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
-	conn, err := tls.DialWithDialer(d, "tcp", addr, cfg)
-	if err == nil {
-		state := conn.ConnectionState()
-		_ = conn.Close()
-		return &state, nil
-	}
-	if dctx.Err() != nil {
-		return nil, dctx.Err()
-	}
-	cfg = &tls.Config{ServerName: host, MinVersion: tls.VersionTLS10}
-	conn, err2 := tls.DialWithDialer(d, "tcp", addr, cfg)
-	if err2 == nil {
-		state := conn.ConnectionState()
-		_ = conn.Close()
-		return &state, nil
-	}
-	return nil, fmt.Errorf("tls dial: %w (legacy retry: %v)", err, err2)
 }
 
 // scoreTLSAgainstProfiles picks the highest profile the negotiated state
@@ -248,8 +211,8 @@ func tlsVersionName(v uint16) string {
 
 // opensslCipherName converts a Go cipher constant name (e.g.
 // "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256") to the OpenSSL form
-// ("ECDHE-RSA-AES128-GCM-SHA256"). TLS 1.3 suites already share names, so
-// we return them unchanged.
+// ("ECDHE-RSA-AES128-GCM-SHA256"). TLS 1.3 suites share their names, so
+// they come back unchanged.
 //
 // This is a partial mapping — covers the suites the embedded profile JSON
 // lists in modern/intermediate/old. Anything else returns the input unchanged;
@@ -258,10 +221,6 @@ func tlsVersionName(v uint16) string {
 func opensslCipherName(goName string) string {
 	if v, ok := cipherMap[goName]; ok {
 		return v
-	}
-	// TLS 1.3 suite names are identical in OpenSSL and Go.
-	if strings.HasPrefix(goName, "TLS_AES_") || strings.HasPrefix(goName, "TLS_CHACHA20_") {
-		return goName
 	}
 	return goName
 }
@@ -334,5 +293,3 @@ func contains(haystack []string, needle string) bool {
 	}
 	return false
 }
-
-// errNoTLSState is returned when a downstream check needs the cached TLS

@@ -5,7 +5,7 @@ A single-binary CLI auditor for DNS, DNSSEC, Email (incl. BIMI), and Web / TLS. 
 - Single static binary, no runtime dependencies.
 - Runs locally: no upload, no account, no telemetry. Optional third-party lookups (crt.sh, DNSBLs) are off by default.
 - Deterministic output: results are sorted by `(category, id)`; categories run in parallel.
-- SSRF-safe HTTP client: denies RFC 1918, loopback, link-local, ULA, CGNAT, and cloud-metadata addresses so attacker-influenced DNS cannot reach internal endpoints.
+- SSRF-safe probes: every probe connection (HTTP, TLS, SMTP, AXFR, QUIC) refuses RFC 1918, loopback, link-local, ULA, CGNAT, multicast, reserved, and cloud-metadata addresses so attacker-influenced DNS cannot reach internal endpoints. A resolver given as an IP address is checked against the same list; one given by name is checked only when DoH dials it, since UDP and DoT dial the name unchecked.
 - Exit code reflects posture (`0` clean, `1` at least one `FAIL`, `2` usage error).
 
 ## Install
@@ -71,17 +71,17 @@ bedrock [flags] <domain>
 | `--no-active`       | probes on       | Skip active probes (SMTP STARTTLS, HTTPS GETs, MTA-STS fetch, VMC fetch, QUIC dial).                 |
 | `--resolver`        | system resolver | `host[:port]`, preset (`cloudflare` / `google` / `quad9` / `opendns`), `<preset>-dot`, `<preset>-doh`, `tls://host`, `https://url`. |
 | `--resolvers`       | —               | CSV of resolvers. The first serves every lookup; `dnssec.sentinel` tests each one.                   |
-| `--timeout`         | `5s`            | Per-operation timeout (each DNS query, each HTTPS GET, each handshake).                              |
+| `--timeout`         | `5s`            | Per-operation timeout, greater than zero (each DNS query, each HTTPS GET, each handshake).           |
 | `--config`          | —               | Path to a JSON config file. Flag values override config values.                                      |
 | `--only`            | —               | CSV of categories to include (`DNS`, `DNSSEC`, `Email`, `WWW`, `Subdomain`).                         |
 | `--exclude`         | —               | CSV of categories to exclude.                                                                        |
-| `--ids`             | —               | CSV of specific check IDs to include (e.g. `web.hsts,email.dmarc.record`). A warning on stderr names entries that match no result. |
+| `--ids`             | —               | CSV of specific check IDs to include (e.g. `web.hsts,email.dmarc.record`), plus the run-level `dns.resolver.unreachable` and `registry.panic.*` results. A warning on stderr names entries that match no result. |
 | `--severity`        | —               | Minimum severity to show: `info`, `pass`, `warn`, `fail`. `N/A` is always shown.                     |
 | `--subdomains`      | off             | Enumerate subdomains via passive sources (hackertarget, anubis, threatcrowd, wayback) and probe each.|
 | `--enable-ct`       | off             | Query Certificate Transparency via crt.sh.                                                           |
 | `--enable-rbl`      | off             | Query DNSBLs (Spamhaus, Barracuda, SpamCop, SORBS, PSBL). Listings produce `WARN`, not `FAIL`.       |
 | `--baseline`        | —               | Path to a previous JSON report; surface regressions against it.                                      |
-| `--regression-only` | off             | With `--baseline`: exit non-zero only on NEW failures (ignores pre-existing `FAIL`s). Without `--baseline` every `FAIL` is ignored, and stderr says so. |
+| `--regression-only` | off             | Requires `--baseline`: exit non-zero only on NEW failures (ignores pre-existing `FAIL`s).            |
 
 ### Resolver forms
 
@@ -89,12 +89,12 @@ bedrock [flags] <domain>
 bedrock --resolver cloudflare        example.org     # 1.1.1.1:53 (UDP)
 bedrock --resolver cloudflare-dot    example.org     # 1.1.1.1:853 (DoT, RFC 7858)
 bedrock --resolver cloudflare-doh    example.org     # https://cloudflare-dns.com/dns-query (DoH, RFC 8484)
-bedrock --resolver tls://1.1.1.1:853 example.org     # explicit DoT
+bedrock --resolver tls://one.one.one.one example.org # explicit DoT (by DNS name, not IP address)
 bedrock --resolver https://dns.quad9.net/dns-query example.org   # explicit DoH
 bedrock --resolvers cloudflare,google,quad9 example.org          # lookups use cloudflare; dnssec.sentinel tests all three
 ```
 
-Private-IP / loopback / metadata resolvers are rejected by default; set `BEDROCK_ALLOW_PRIVATE_RESOLVER=1` for hermetic test labs only.
+Private-IP / loopback / metadata resolvers given as IP addresses, and probes of such addresses, are rejected by default; a resolver given by name is checked only when DoH dials it. Set `BEDROCK_ALLOW_PRIVATE_RESOLVER=1` for hermetic test labs only.
 
 ### Root KSK rollover readiness
 
@@ -110,7 +110,7 @@ Private-IP / loopback / metadata resolvers are rejected by default; set `BEDROCK
 bedrock --no-active --ids dnssec.sentinel --resolver cloudflare-dot example.org
 ```
 
-`--ids`, `--only`, and `--exclude` filter only the report: the target is still audited, and this check still queries every resolver. After changing a resolver's trust anchors, flush its cache before testing again, because its earlier answers for these fixed names can stay cached for up to its negative-cache TTL, often an hour. Plain-UDP presets are labelled `<name>-udp` because they reach whatever answers port 53 on your network, which can be a transparent interceptor rather than the named provider; the `-dot` and `-doh` presets test the provider itself. System resolvers appear as `system-1`, `system-2`, and so on, in `/etc/resolv.conf` order, so reports do not carry local network addresses.
+`--ids` filters only the report: the target is still audited, and this check still queries every resolver. `--only` and `--exclude` skip whole categories, so `--exclude DNSSEC` skips this check. After changing a resolver's trust anchors, flush its cache before testing again, because its earlier answers for these fixed names can stay cached for up to its negative-cache TTL, often an hour. Plain-UDP presets are labelled `<name>-udp` because they reach whatever answers port 53 on your network, which can be a transparent interceptor rather than the named provider; the `-dot` and `-doh` presets test the provider itself. System resolvers appear as `system-1`, `system-2`, and so on, in `/etc/resolv.conf` order, so reports do not carry local network addresses.
 
 ### Configuration file
 
@@ -138,7 +138,7 @@ A `timeout` that does not parse gets a warning on stderr, and the scan uses the 
 
 ## What bedrock checks
 
-Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only `FAIL` affects the exit code.
+Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only `FAIL` affects the exit code. When a probe could not complete (a timeout, a reset connection, an unreachable network, a temporary DNS failure such as `SERVFAIL` or `REFUSED`, an SSRF refusal, or an interrupted scan), a check that grades the target reports `WARN` with evidence starting `could not determine:`, and an informational check stays `INFO` and quotes the error. A refused connection and `NXDOMAIN` are answers from the target and are graded as such. Checks of content fetched over a TLS chain that did not verify report `N/A` with evidence `TLS chain invalid; see web.cert.*`.
 
 ### DNS
 
@@ -154,14 +154,17 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 | `dns.cname.apex`         | Apex is NOT a CNAME (RFC 1912 §2.4, RFC 2181 §10.3).                             |
 | `dns.cname.chain`        | `www.` CNAME chain is sane.                                                      |
 | `dns.dangling.summary`   | Probes common hosts (`www`, `api`, `mail`, `cdn`, …) for dangling CNAMEs.        |
-| `dns.axfr.<ns>`          | Every authoritative NS refuses AXFR from the public Internet (RFC 5936 §6).      |
+| `dns.axfr.<ns>`          | Each authoritative NS refuses AXFR from the public Internet (RFC 5936 §6); an answer holding only the SOA passes. At most 8 nameservers are probed, 4 at a time; a `dns.axfr` `INFO` result names the rest. |
+| `dns.resolver.unreachable` | `FAIL` when the resolver answered none of the scan's DNS queries (it sent no reply, or only errors such as `SERVFAIL` or `REFUSED`), so every DNS result is inconclusive. Reported even when `--only` or `--exclude` skips the DNS category or `--ids` names other checks. |
 
 ### DNSSEC
 
 | Check ID                  | What it verifies                                                                |
 |---------------------------|---------------------------------------------------------------------------------|
 | `dnssec.signed`           | DS at parent and DNSKEY at apex.                                                |
-| `dnssec.chain`            | RRSIG over DNSKEY and RRSIG over SOA cryptographically verify.                  |
+| `dnssec.chain.ds_match`   | A DS at the parent matches a published zone key (RFC 4034 §5, RFC 4035 §5.2).   |
+| `dnssec.chain.dnskey_rrsig` | RRSIG over DNSKEY by a DS-referenced key verifies and is within its validity period (RFC 4035 §5.2, §5.3). |
+| `dnssec.chain.soa_rrsig`  | RRSIG over the apex SOA verifies and is within its validity period (RFC 4035 §5.3). |
 | `dnssec.algorithm.dnskey` | DNSKEY algorithm is MUST / RECOMMENDED (RFC 8624 §3.1).                         |
 | `dnssec.algorithm.ds`     | DS digest type is MUST (SHA-256 or SHA-384) (RFC 8624 §3.3).                    |
 | `dnssec.nsec.type`        | Authenticated denial of existence: NSEC or NSEC3 with safe iterations.          |
@@ -174,8 +177,9 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 
 | Check ID                                     | What it verifies                                                                 |
 |----------------------------------------------|----------------------------------------------------------------------------------|
-| `email.spf.record`                           | Exactly one `v=spf1` TXT, valid syntax, terminating `-all` / `~all`.             |
-| `email.dkim.selector.<name>`                 | Probes ~44 well-known selectors plus ESP-specific ones derived from SPF includes; accepts `v=DKIM1` and `v=DKIM2` records, validates `k=` (`rsa`/`ed25519`) and that ed25519 keys decode to 32 bytes (RFC 8463). |
+| `email.spf.record`                           | Exactly one `v=spf1` TXT, valid syntax, terminating `-all` / `~all`. `+all` FAILs, and so does a pass-qualified `ip4:0.0.0.0/0` or `ip6:::/0`, which permits every sender the same way. |
+| `email.dkim.selector.<name>`                 | Probes ~44 well-known selectors plus ESP-specific ones derived from SPF includes; accepts `v=DKIM1` and `v=DKIM2` records, validates `k=` (`rsa`/`ed25519`) and that ed25519 keys decode to 32 bytes (RFC 8463). An RSA key under 1024 bits, or an `h=` list without `sha256`, FAILs; a 1024–2047-bit RSA key WARNs (RFC 8301 §3.1, §3.2). |
+| `email.dkim.wildcard`                        | A `*._domainkey` wildcard key, reported once instead of under every selector it answers; `INFO` when its empty `p=` revokes them. |
 | `email.dkim2.readiness`                      | DNS-observable DKIM2 signals (draft-ietf-dkim-dkim2-spec): `PASS` on published `v=DKIM2` keys, `INFO` on ed25519-only or DKIM1/rsa-only posture. Never fails: DKIM2 is a draft. |
 | `email.dmarc.record`                         | Effective DMARC policy via the RFC 9989 §4.8 DNS tree walk (≤8 queries; replaces the Public Suffix List): strict tag parsing, `rua`/`ruf` scheme allowlist, duplicate-tag rejection, `np`/`psd`/`t` tags, retired `pct`/`rf`/`ri` flagged, `t=y` steps the effective policy down one level. Subdomains inherit the organizational record through `sp=`. |
 | `email.dmarc.discovery`                      | How discovery resolved: Organizational Domain and the RFC 9989 selection rule (`psd=n`, `psd=y` one-below, fewest labels), the policy domain, queries used, and any malformed/multiple records the walk ignored. |
@@ -183,12 +187,12 @@ Each check returns one of: **PASS**, **WARN**, **FAIL**, **INFO**, **N/A**. Only
 | `email.dmarc.np.rfc8020`                     | np enforceability: probes a random nonexistent subdomain of the Organizational Domain; `PASS` on NXDOMAIN (RFC 8020), `WARN` on wildcard or NOERROR zones where receivers cannot apply `np=`. |
 | `email.dmarc.extdest`                        | RFC 9990 external-destination consent: `rua`/`ruf` hosts outside the Organizational Domain must publish `v=DMARC1` at `<policy-domain>._report._dmarc.<dest>`, or compliant generators refuse to report. |
 | `email.dmarc.reject_dkim`                    | RFC 9989 `p=reject` requirement: publishers MUST apply DKIM and MUST NOT rely on SPF alone; `WARN` when no DKIM key is discoverable on common selectors. |
-| `email.mtasts.txt`                           | `_mta-sts` TXT well-formed, `v=STSv1`, `id=` opaque token.                       |
-| `email.mtasts.policy`                        | HTTPS fetch of `mta-sts.<domain>/.well-known/mta-sts.txt` (no redirects, TLS 1.2 floor, strict chain). |
-| `email.tlsrpt.record`                        | `_smtp._tls` TXT, `v=TLSRPTv1`, valid `rua=` schemes.                            |
-| `email.dane.<mx-host>`                       | TLSA under `_25._tcp.<mx>`; usage/selector/matching validation; DNSSEC AD-bit enforced. |
+| `email.mtasts.txt`                           | `_mta-sts` TXT well-formed, `v=STSv1`, `id=` opaque token. `N/A` for a domain that publishes null MX. |
+| `email.mtasts.policy`                        | HTTPS fetch of `mta-sts.<domain>/.well-known/mta-sts.txt` (no redirects, TLS 1.2 floor, strict chain). `N/A` for a domain that publishes null MX. |
+| `email.tlsrpt.record`                        | `_smtp._tls` TXT, `v=TLSRPTv1`, valid `rua=` schemes. `N/A` for a domain that publishes null MX. |
+| `email.dane.<mx-host>`                       | TLSA under `_25._tcp.<mx>`; usage/selector/matching validation; DNSSEC AD-bit enforced. Covers the 10 most preferred MX hosts; an `email.dane` `INFO` result names the rest. |
 | `email.nullmx`                               | RFC 7505 null-MX declaration (`0 .`).                                            |
-| `email.smtp.starttls.<mx-host>`              | Connect to each MX, EHLO, STARTTLS advertisement, handshake success + version.   |
+| `email.smtp.starttls.<mx-host>`              | Connect to each of the 10 most preferred MX hosts, EHLO, STARTTLS advertisement, handshake success + version; an `email.smtp.starttls` `INFO` result names the rest. |
 | `email.arc.*`                                | ARC deployment guidance (DKIM availability, DMARC enforcement alignment); RFC 8617 is headed to Historic, so guidance steers new deployments toward DKIM2. |
 | `email.rbl` (opt-in via `--enable-rbl`)      | Apex and MX IPs vs Spamhaus, Barracuda, SpamCop, SORBS, Surriel PSBL.            |
 | `email.google_workspace_mx`                  | **INFO only** — detects legacy `ASPMX.L.GOOGLE.COM` layout and recommends migration to the new single `SMTP.GOOGLE.COM` MX. Silent for non-Google MX and domains already on the new form. |
@@ -229,7 +233,7 @@ DNS scan can verify published keys and algorithms, not live signature chains.
 | `bimi.vmc.fetch`      | VMC PEM fetched over HTTPS via the strict client.                                     |
 | `bimi.vmc.chain`      | Leaf passes BIMI EKU gate (`1.3.6.1.5.5.7.3.31` VMC or `…3.32` CMC); chain validates against system roots; ≤16 PEM blocks. |
 | `bimi.vmc.logotype`   | RFC 3709 LogotypeExtn ASN.1 decoded; SHA-256 of SVG matches the hash in the cert.     |
-| `bimi.gmail.dmarc`    | Gmail BIMI requirements: DMARC `quarantine`/`reject` enforced (no `t=y` test mode, no sampling via retired `pct`), strict alignment. |
+| `bimi.gmail.dmarc`    | Gmail BIMI requirements: DMARC `quarantine`/`reject` enforced, also by the Organizational Domain's record (no `sp=none`, no `t=y` test mode, no sampling via retired `pct`). Strict alignment is recommended in the evidence, not required. |
 
 ### Web / TLS
 
@@ -257,7 +261,7 @@ DNS scan can verify published keys and algorithms, not live signature chains.
 | `web.mixedcontent`                    | Apex body (first 1 MiB) scanned for `http://` src/href references.                  |
 | `web.http2`                           | HTTP/2 advertised via ALPN (`h2`).                                                  |
 | `web.http3`                           | HTTP/3 via Alt-Svc or direct QUIC dial.                                             |
-| `web.ocsp.staple`                     | Server staples an OCSP response (RFC 6066 §8).                                      |
+| `web.ocsp.staple`                     | Server staples an OCSP response (RFC 6066 §8); `N/A` when the leaf certificate names no OCSP responder. |
 | `web.ocsp.responder`                  | Independent OCSP responder reachable.                                               |
 | `web.crl.status`                      | CRL distribution point reachable; leaf not listed.                                  |
 | `web.ct.lookup` (opt-in `--enable-ct`)| Certificate Transparency entries observed in crt.sh (RFC 9162).                     |
@@ -278,8 +282,8 @@ The report runs from least to most important, so the last screen holds the fixes
 
 ```
 $ bedrock example.org
-bedrock: scanning example.org: 57 checks, active probes, timeout 5s
-bedrock report for example.org (126 results, 2.9s)
+bedrock: scanning example.org: 57 checks, active probes, timeout 5s
+bedrock report for example.org (84 results, 1.2s)
 [... N/A, PASS, INFO and WARN sections, then the other FAIL blocks ...]
 FAIL  web.redirect.www.example.org  HTTP→HTTPS redirect (www.example.org)
       evidence: plain HTTP did not redirect to HTTPS (final: http://www.example.org/)
@@ -292,14 +296,14 @@ server {
 }
 
 Summary for example.org
-DNS          0 FAIL    1 WARN   10 PASS    1 INFO    0 N/A
-DNSSEC       0 FAIL    0 WARN    9 PASS    1 INFO    0 N/A
-Email       48 FAIL    2 WARN    5 PASS    9 INFO    6 N/A
-Subdomain    0 FAIL    0 WARN    0 PASS    1 INFO    0 N/A
-WWW          5 FAIL    4 WARN   14 PASS   10 INFO    0 N/A
-Total       53 FAIL    7 WARN   38 PASS   22 INFO    6 N/A
+DNS         0 FAIL   1 WARN  10 PASS   1 INFO   0 N/A
+DNSSEC      0 FAIL   0 WARN  10 PASS   1 INFO   0 N/A
+Email       1 FAIL   2 WARN   4 PASS   9 INFO  11 N/A
+Subdomain   0 FAIL   0 WARN   0 PASS   1 INFO   0 N/A
+WWW         5 FAIL   4 WARN  16 PASS   8 INFO   0 N/A
+Total       6 FAIL   7 WARN  40 PASS  20 INFO  11 N/A
 
-Result: FAIL. 53 FAIL (Email 48, WWW 5), 7 WARN. Exit code 1.
+Result: FAIL. 6 FAIL (Email 1, WWW 5), 7 WARN. Exit code 1.
 ```
 
 Colour marks only bedrock's own words: status words, section headings, non-zero `FAIL` and `WARN` counts, and the verdict. `--no-color` (config `"no_color": true`), a non-empty `NO_COLOR`, or `TERM=dumb` turns it off; `FORCE_COLOR` and `CLICOLOR_FORCE` are ignored.
@@ -310,7 +314,7 @@ While a scan runs, stderr gets progress lines that are appended, never redrawn: 
 
 Ctrl-C or SIGTERM stops the scan and prints the partial report. The exit code follows the results it holds, which can include a `FAIL` from a check the interrupt cut short. The terminal report says `INCOMPLETE` and lists the checks that did not finish, by check name: a check can report its results under other IDs (`dns.dangling` reports `dns.dangling.summary`), and the results a cut-short check did report may reflect the interrupt rather than the target. With `--only` or `--exclude`, the list keeps to the categories the report shows. The JSON has no such marker, so stderr always says `INCOMPLETE`: in the verdict when progress is on, otherwise in a single verdict line. A second Ctrl-C ends bedrock at once, without a report.
 
-Warnings and errors also go to stderr, one `bedrock: ` line each, whatever stderr is: an `--ids` entry that matches no result (not checked after an interrupt, which can leave a valid ID without one), `--regression-only` without `--baseline`, and a config `timeout` that does not parse. To parse the JSON, keep stderr out of the stream: `bedrock example.org 2>bedrock.log | jq`, not `2>&1 | jq`.
+Warnings and errors also go to stderr, one `bedrock: ` line each, whatever stderr is: an `--ids` entry that matches no result (not checked after an interrupt, which can leave a valid ID without one) and a config `timeout` that does not parse. To parse the JSON, keep stderr out of the stream: `bedrock example.org 2>bedrock.log | jq`, not `2>&1 | jq`.
 
 ### JSON
 
@@ -349,7 +353,7 @@ In both formats, every C0 control character except TAB, every C1 control charact
 |------|------------------------------------------------------------------|
 | 0    | No `FAIL` results. `WARN` and `INFO` do not affect exit code.    |
 | 1    | At least one `FAIL` (or, with `--regression-only`, a new `FAIL`).|
-| 2    | Usage error, invalid input or configuration, or a failed write. |
+| 2    | Usage error or invalid flag value, invalid input or configuration, or a failed write. |
 
 ## Regression tracking
 
@@ -359,7 +363,9 @@ bedrock example.org > baseline.json
 bedrock --baseline baseline.json --regression-only example.org
 ```
 
-Duplicate IDs in a baseline file cause every current `FAIL` for that ID to be reported as a regression (fails closed: an ambiguous baseline cannot mask a regression).
+Duplicate IDs in a baseline file cause every current `FAIL` for that ID to be reported as a regression (fails closed: an ambiguous baseline cannot mask a regression). A default run gives every result its own ID; runs with `--enable-rbl` or `--subdomains` are outside that guarantee.
+
+Regenerate the baseline after upgrading bedrock. A release can rename result IDs, and a renamed ID that fails counts once as a regression.
 
 ## CI integration
 
@@ -410,7 +416,7 @@ make fuzz         # short fuzz sweep (targets added incrementally)
 make release-check  # goreleaser snapshot (cross-platform)
 ```
 
-Hermetic tests bypass the resolver-IP denylist via `BEDROCK_ALLOW_PRIVATE_RESOLVER=1`.
+Hermetic tests bypass the SSRF denylist via `BEDROCK_ALLOW_PRIVATE_RESOLVER=1`.
 
 ## Project layout
 

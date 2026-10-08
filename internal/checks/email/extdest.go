@@ -24,14 +24,11 @@ func runDMARCExtDest(ctx context.Context, env *probe.Env) []report.Result {
 	const title = "External DMARC report destinations authorized (RFC 9990)"
 	refs := []string{"RFC 9990", "RFC 9991"}
 
-	walk := ensureDMARCWalk(ctx, env)
+	walk := EnsureDMARCWalk(ctx, env)
 	if walk == nil || walk.Policy == nil {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:   report.NotApplicable,
-			Evidence: "no DMARC record; no report destinations to authorize",
-			RFCRefs:  refs,
-		}}
+		res := report.Result{ID: id, Category: category, Title: title, RFCRefs: refs}
+		return []report.Result{noPolicyResult(walk, res,
+			"no DMARC record; no report destinations to authorize")}
 	}
 	dests := reportDestHosts(walk.Policy)
 	if len(dests) == 0 {
@@ -97,9 +94,7 @@ func extDestVerdict(ctx context.Context, env *probe.Env, policyDomain string,
 			"destination(s) have not authorized %s (no v=DMARC1 record at %s._report._dmarc.<dest>): %s"+
 				" — compliant receivers will not send reports there%s",
 			policyDomain, policyDomain, strings.Join(missing, ", "), note)
-		res.Remediation = fmt.Sprintf(
-			`%s._report._dmarc.%s. IN TXT "v=DMARC1" (published by the destination operator)`,
-			policyDomain, missing[0])
+		res.Remediation = extDestRemediation(policyDomain, missing[0])
 	case len(inconclusive) > 0:
 		res.Status = report.Info
 		res.Evidence = "authorization lookups inconclusive: " + strings.Join(inconclusive, ", ") + note
@@ -109,6 +104,15 @@ func extDestVerdict(ctx context.Context, env *probe.Env, policyDomain string,
 			policyDomain, strings.Join(authorized, ", "), note)
 	}
 	return res
+}
+
+// extDestRemediation is the consent record the destination publishes. The
+// note is a ';' comment: in a zone file, text in parentheses would become
+// extra TXT strings and corrupt the record.
+func extDestRemediation(policyDomain, dest string) string {
+	return fmt.Sprintf(`%s._report._dmarc.%s. IN TXT "v=DMARC1"`+
+		" ; published by the destination operator",
+		report.InlineValue(policyDomain), report.InlineValue(dest))
 }
 
 // checkExtDestConsent looks for the RFC 9990 consent record at

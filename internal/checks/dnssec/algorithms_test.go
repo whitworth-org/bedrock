@@ -1,10 +1,13 @@
 package dnssec
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	mdns "github.com/miekg/dns"
 
+	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
@@ -67,6 +70,90 @@ func TestScoreDSDigest(t *testing.T) {
 				t.Fatalf("scoreDSDigest(%s) returned empty evidence", c.name)
 			}
 		})
+	}
+}
+
+// algorithmResults runs the algorithms check on a signed zone whose DNSKEYs
+// use algs and whose DS records use digests.
+func algorithmResults(t *testing.T, algs, digests []uint8) map[string]report.Result {
+	t.Helper()
+	cd := &chainData{signed: true}
+	for _, a := range algs {
+		cd.keySet = append(cd.keySet, &mdns.DNSKEY{Algorithm: a})
+	}
+	for _, d := range digests {
+		cd.dsSet = append(cd.dsSet, &mdns.DS{DigestType: d})
+	}
+	env := &probe.Env{Target: "example.test"}
+	env.CachePut(cacheKeyChain, cd)
+	got := byID(t, runAlgorithms(context.Background(), env))
+	if len(got) != 2 {
+		t.Fatalf("got %d results, want one per table: %+v", len(got), got)
+	}
+	return got
+}
+
+// TestRunAlgorithms pins one result per RFC 8624 table, graded by its worst
+// value, with every value in the evidence, worst first.
+func TestRunAlgorithms(t *testing.T) {
+	cases := []struct {
+		name          string
+		algs, digests []uint8
+		id            string
+		status        report.Status
+		evidence      string
+	}{
+		{
+			name: "DS digest types 1 and 2", algs: []uint8{13}, digests: []uint8{1, 2},
+			id: "dnssec.algorithm.ds", status: report.Fail,
+			evidence: "SHA-1 — MUST NOT (RFC 8624 §3.3); SHA-256 — MUST (RFC 4509, RFC 8624 §3.3)",
+		},
+		{
+			name: "algorithms 8 and 13", algs: []uint8{8, 13}, digests: []uint8{2},
+			id: "dnssec.algorithm.dnskey", status: report.Pass,
+			evidence: "RSASHA256 — MUST per RFC 8624 §3.1; " +
+				"ECDSAP256SHA256 — MUST / RECOMMENDED (RFC 8624 §3.1)",
+		},
+		{
+			name: "MUST NOT algorithm listed first", algs: []uint8{8, 12}, digests: []uint8{2},
+			id: "dnssec.algorithm.dnskey", status: report.Fail,
+			evidence: "ECC-GOST — MUST NOT (RFC 8624 §3.1); RSASHA256 — MUST per RFC 8624 §3.1",
+		},
+		{
+			name: "unclassified algorithm", algs: []uint8{13, 99}, digests: []uint8{2},
+			id: "dnssec.algorithm.dnskey", status: report.Warn,
+			evidence: "algorithm 99 not classified by RFC 8624; ECDSAP256SHA256",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := algorithmResults(t, c.algs, c.digests)[c.id]
+			if r.Status != c.status || !strings.HasPrefix(r.Evidence, c.evidence) {
+				t.Errorf("%s = %s %q, want %s with evidence starting %q",
+					c.id, r.Status, r.Evidence, c.status, c.evidence)
+			}
+			if (r.Status == report.Fail) != (r.Remediation != "") {
+				t.Errorf("%s = %s with remediation %q; only a FAIL has one",
+					c.id, r.Status, r.Remediation)
+			}
+		})
+	}
+}
+
+// TestRunAlgorithmsBoundsEvidence pins that the evidence names at most ten
+// values and counts the rest, since a zone can publish hundreds of keys.
+func TestRunAlgorithmsBoundsEvidence(t *testing.T) {
+	var algs []uint8
+	for a := uint8(100); a < 113; a++ {
+		algs = append(algs, a)
+	}
+
+	r := algorithmResults(t, algs, []uint8{2})["dnssec.algorithm.dnskey"]
+
+	if n := strings.Count(r.Evidence, "not classified"); n != 10 ||
+		!strings.HasSuffix(r.Evidence, "; and 3 more") {
+		t.Errorf("evidence %q names %d of 13 algorithms, want 10 and \"; and 3 more\"",
+			r.Evidence, n)
 	}
 }
 

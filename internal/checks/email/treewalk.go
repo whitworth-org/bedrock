@@ -5,9 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 // This file implements the RFC 9989 DNS tree walk — the DMARCbis replacement
@@ -51,7 +52,16 @@ type DMARCWalk struct {
 	PolicyDomain string          // domain whose record supplies the effective policy
 	Policy       *DMARC          // effective policy record; nil when none applies
 	Queries      int             // DNS queries actually issued
+
+	// stopped says why the walk ended before its last query: the scan's
+	// context ended first.
+	stopped error
 }
+
+// errWalkPanicked is why a consumer of the shared walk has none: the check
+// whose goroutine ran the walk panicked, and the registry reports that.
+var errWalkPanicked = errors.New("DMARC tree walk: no result, because the check that ran it " +
+	"panicked; see its registry.panic result")
 
 // dmarcWalkNames returns the _dmarc-prefixed query names for the RFC 9989
 // tree walk, longest first. Names of up to eight labels shed one label per
@@ -129,8 +139,11 @@ func walkStep(ctx context.Context, env *probe.Env, qname string) DMARCWalkStep {
 // Organizational Domain and effective policy record.
 func dmarcTreeWalk(ctx context.Context, env *probe.Env) *DMARCWalk {
 	walk := &DMARCWalk{Author: env.Target}
-	for _, qname := range dmarcWalkNames(env.Target) {
-		if ctx.Err() != nil {
+	names := dmarcWalkNames(env.Target)
+	for _, qname := range names {
+		if err := ctx.Err(); err != nil {
+			walk.stopped = fmt.Errorf("DMARC tree walk stopped after %d of %d queries: %w",
+				len(walk.Steps), len(names), err)
 			break
 		}
 		walk.Steps = append(walk.Steps, walkStep(ctx, env, qname))
@@ -209,46 +222,81 @@ func selectPolicyRecord(author, org string, steps []DMARCWalkStep) (string, *DMA
 	return "", nil
 }
 
-// onceFor returns the sync.Once associated with env in m, creating it under
-// mu on first use. Shared by the per-Env priming primitives (DMARC tree
-// walk, DKIM selector sweep) so racing consumers run each network sweep
-// exactly once per scan.
-func onceFor(mu *sync.Mutex, m map[*probe.Env]*sync.Once, env *probe.Env) *sync.Once {
-	mu.Lock()
-	defer mu.Unlock()
-	o, ok := m[env]
-	if !ok {
-		o = &sync.Once{}
-		m[env] = o
-	}
-	return o
-}
-
-var (
-	dmarcWalkOnceMu sync.Mutex
-	dmarcWalkOnces  = map[*probe.Env]*sync.Once{}
-)
-
-// ensureDMARCWalk runs the tree walk for env.Target exactly once per scan
-// and returns the cached result. It also publishes the effective policy
-// record under probe.CacheKeyDMARC so legacy consumers (np, ARC, the BIMI
-// Gmail gate) transparently see the DMARCbis-discovered policy. The first
-// caller's ctx drives the walk; each query carries its own env timeout.
-func ensureDMARCWalk(ctx context.Context, env *probe.Env) *DMARCWalk {
+// EnsureDMARCWalk runs the tree walk for env.Target at most once per scan
+// and returns it. It also publishes the effective policy record under
+// probe.CacheKeyDMARC for the consumers that read only that record (np, the
+// BIMI Gmail gate). The first caller's ctx drives the walk; each query
+// carries its own env timeout. The result is nil only when env is nil or
+// the walk panicked.
+func EnsureDMARCWalk(ctx context.Context, env *probe.Env) *DMARCWalk {
 	if env == nil {
 		return nil
 	}
-	if w := cachedWalk(env); w != nil {
-		return w
-	}
-	onceFor(&dmarcWalkOnceMu, dmarcWalkOnces, env).Do(func() {
-		walk := dmarcTreeWalk(ctx, env)
-		env.CachePut(probe.CacheKeyDMARCWalk, walk)
-		if walk.Policy != nil {
-			env.CachePut(probe.CacheKeyDMARC, walk.Policy)
-		}
+	walk := probe.Shared(env, probe.CacheKeyDMARCWalk, func() *DMARCWalk {
+		return dmarcTreeWalk(ctx, env)
 	})
-	return cachedWalk(env)
+	// Publish after Shared, from every caller: np reads CacheKeyDMARC and then
+	// the walk, and a caller that finds the walk cached must not return before
+	// the record is published.
+	if walk != nil && walk.Policy != nil {
+		env.CachePut(probe.CacheKeyDMARC, walk.Policy)
+	}
+	return walk
+}
+
+// EffectivePolicy returns the DMARC policy that applies to the Author
+// Domain: p= of its own record, or sp= of a record inherited from an
+// ancestor (RFC 9989 §4.10.1). It returns "" when no record applies.
+func (w *DMARCWalk) EffectivePolicy() string {
+	if w == nil || w.Policy == nil {
+		return ""
+	}
+	if w.inherited() {
+		return w.Policy.SubdomainPolicy
+	}
+	return w.Policy.Policy
+}
+
+// inherited reports whether the policy record belongs to an ancestor of the
+// Author Domain rather than to the Author Domain itself.
+func (w *DMARCWalk) inherited() bool {
+	return w.PolicyDomain != w.Author
+}
+
+// Incomplete returns why the walk's outcome is uncertain, or nil: there is
+// no walk because the check that ran it panicked, the walk stopped early
+// because the scan was interrupted, it issued no queries, or one of them
+// failed (timeout, SERVFAIL, ...). A failed or missing query can hide a
+// record, so a missing record is not proven missing, and the Organizational
+// Domain, or the record that applies when the Author Domain has none of its
+// own, may differ from the one the walk selected.
+func (w *DMARCWalk) Incomplete() error {
+	switch {
+	case w == nil:
+		return errWalkPanicked
+	case w.stopped != nil:
+		return w.stopped
+	case len(w.Steps) == 0:
+		return errors.New("DMARC tree walk issued no queries")
+	}
+	for _, s := range w.Steps {
+		if s.Outcome == walkError {
+			return fmt.Errorf("TXT lookup for %s: %s", s.QueryName, s.Detail)
+		}
+	}
+	return nil
+}
+
+// noPolicyResult is res for a check that grades the DMARC record that
+// applies, when walk found none: N/A with evidence, or inconclusive when the
+// walk is incomplete and so may have missed the record.
+func noPolicyResult(walk *DMARCWalk, res report.Result, evidence string) report.Result {
+	if err := walk.Incomplete(); err != nil {
+		return checkutil.Inconclusive(res, err)
+	}
+	res.Status = report.NotApplicable
+	res.Evidence = evidence
+	return res
 }
 
 func cachedWalk(env *probe.Env) *DMARCWalk {

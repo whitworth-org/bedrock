@@ -32,7 +32,7 @@ func TestCaptureAgainstHTTPTestServer(t *testing.T) {
 	}
 
 	// Vanilla dialer — httptest.NewTLSServer listens on 127.0.0.1, which
-	// SafeDialContext (correctly) blocks. The check wiring uses the safe
+	// probe.SafeDial (correctly) blocks. The check wiring uses the safe
 	// dialer in production; this test exercises the parser/compute path.
 	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
 		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, addr)

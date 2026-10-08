@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -61,75 +62,87 @@ func classifyMarkCert(cert *x509.Certificate) markCertType {
 	return markCertOther
 }
 
+// Cache keys of the a= certificate fetch (*outcome[[]byte]) and of its
+// chain verification (*outcome[*x509.Certificate]), which ensureVMC and
+// ensureVMCLeaf alone store.
+const (
+	cacheKeyBIMIVMC     = "bimi.vmc"
+	cacheKeyBIMIVMCLeaf = "bimi.vmc.leaf"
+)
+
+// unknownIssuerEvidence is bimi.vmc.chain's INFO evidence for a chain to a
+// root outside the system trust store: the BIMI roots are absent from the
+// public trust stores, so this is the usual outcome for a real VMC.
+const unknownIssuerEvidence = "VMC issuer is not in the system trust store; " +
+	"bedrock does not bundle BIMI roots"
+
 type vmcFetchCheck struct{}
 
 func (vmcFetchCheck) ID() string       { return "bimi.vmc.fetch" }
 func (vmcFetchCheck) Category() string { return category }
 
 func (vmcFetchCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
-	const id = "bimi.vmc.fetch"
-	const title = "BIMI Verified Mark Certificate fetched over HTTPS"
-	refs := []string{"BIMI Group draft §4.5", "RFC 3709 (Logotype extension)"}
+	return ensureVMC(ctx, env).results(vmcFetchBase())
+}
 
-	rec, ok := getRecord(env)
-	if !ok {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status: report.Info, Evidence: "no parsed BIMI record",
-			RFCRefs: refs,
-		}}
+func vmcFetchBase() report.Result {
+	return report.Result{
+		ID: "bimi.vmc.fetch", Category: category,
+		Title:   "BIMI Verified Mark Certificate fetched over HTTPS",
+		RFCRefs: []string{"BIMI Group draft §4.5", "RFC 3709 (Logotype extension)"},
 	}
-	if !env.Active {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status: report.NotApplicable, Evidence: "skipped: --no-active",
-			RFCRefs: refs,
-		}}
+}
+
+// ensureVMC fetches the a= certificate at most once per scan however many
+// checks ask (see probe.Shared) and returns the bimi.vmc.fetch outcome,
+// whose product is the body only when the fetch passed.
+func ensureVMC(ctx context.Context, env *probe.Env) *outcome[[]byte] {
+	return probe.Shared(env, cacheKeyBIMIVMC, func() *outcome[[]byte] { return fetchVMC(ctx, env) })
+}
+
+// fetchVMC fetches the certificate the BIMI record names over verified
+// HTTPS, refusing an a= URL that bimi.txt rejects before connecting.
+func fetchVMC(ctx context.Context, env *probe.Env) *outcome[[]byte] {
+	rec := ensureRecord(ctx, env)
+	if res, skipped := vmcNotFetched(vmcFetchBase(), rec, env.Active); skipped {
+		return &outcome[[]byte]{result: res}
 	}
-	if rec.A == "" {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "no a= URL in BIMI record (Gmail requires a VMC)",
-			Remediation: vmcFetchRemediation(),
-			RFCRefs:     refs,
-		}}
-	}
+	res := vmcFetchBase()
+	res.Status = report.Fail
+	res.Remediation = vmcFetchRemediation()
 
 	ctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
-
-	// VMC authenticity is bound to the TLS chain — use GetStrict so a
-	// malformed chain is a hard failure, not a degraded success.
-	resp, err := env.HTTP.GetStrict(ctx, rec.A)
+	resp, err := getVerified(ctx, env, rec.A)
 	if err != nil {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "GET " + rec.A + " failed: " + err.Error(),
-			Remediation: vmcFetchRemediation(),
-			RFCRefs:     refs,
-		}}
+		return &outcome[[]byte]{result: fetchFailed(ctx, res, rec.A, err)}
 	}
-	if resp.Status != 200 {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    fmt.Sprintf("GET %s returned HTTP %d", rec.A, resp.Status),
-			Remediation: vmcFetchRemediation(),
-			RFCRefs:     refs,
-		}}
-	}
-	env.CachePut(cacheKeyBIMIVMCBytes, resp.Body)
-	return []report.Result{{
-		ID: id, Category: category, Title: title,
-		Status:   report.Pass,
-		Evidence: fmt.Sprintf("HTTP 200, %d bytes", len(resp.Body)),
-		RFCRefs:  refs,
-	}}
+	res.Status = report.Pass
+	res.Evidence = fmt.Sprintf("HTTP 200, %d bytes", len(resp.Body))
+	res.Remediation = ""
+	return &outcome[[]byte]{result: res, product: resp.Body}
 }
 
-const cacheKeyBIMIVMCBytes = "bimi.vmc.bytes"
+// vmcNotFetched returns res graded for a certificate that is not fetched,
+// and true; or false when the certificate is to be fetched. An a= URL that
+// bimi.txt rejects, a missing one included, is N/A here so that one problem
+// counts as one FAIL.
+func vmcNotFetched(res report.Result, rec *Record, active bool) (report.Result, bool) {
+	switch {
+	case rec == nil:
+		res.Status, res.Evidence = report.Info, "no parsed BIMI record"
+	case !active:
+		res.Status, res.Evidence = report.NotApplicable, "skipped: --no-active"
+	default:
+		err := httpsURL(rec.A)
+		if err == nil {
+			return res, false
+		}
+		res.Status = report.NotApplicable
+		res.Evidence = "a= URL not fetched: " + err.Error() + " (see bimi.txt)"
+	}
+	return res, true
+}
 
 type vmcChainCheck struct{}
 
@@ -137,36 +150,47 @@ func (vmcChainCheck) ID() string       { return "bimi.vmc.chain" }
 func (vmcChainCheck) Category() string { return category }
 
 func (vmcChainCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
-	const id = "bimi.vmc.chain"
-	const title = "BIMI VMC chain validates against system trust store"
-	refs := []string{"BIMI Group draft §4.5"}
+	return ensureVMCLeaf(ctx, env).results(vmcChainBase())
+}
 
+func vmcChainBase() report.Result {
+	return report.Result{
+		ID: "bimi.vmc.chain", Category: category,
+		Title:   "BIMI VMC chain validates against system trust store",
+		RFCRefs: []string{"BIMI Group draft §4.5"},
+	}
+}
+
+// ensureVMCLeaf verifies the a= certificate chain at most once per scan
+// however many checks ask (see probe.Shared) and returns the
+// bimi.vmc.chain outcome, whose product is the leaf only when its chain
+// verified.
+func ensureVMCLeaf(ctx context.Context, env *probe.Env) *outcome[*x509.Certificate] {
+	return probe.Shared(env, cacheKeyBIMIVMCLeaf, func() *outcome[*x509.Certificate] {
+		return verifyVMC(ctx, env)
+	})
+}
+
+// verifyVMC parses the fetched certificate chain and verifies it against
+// the system trust store.
+func verifyVMC(ctx context.Context, env *probe.Env) *outcome[*x509.Certificate] {
+	res := vmcChainBase()
 	if !env.Active {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status: report.NotApplicable, Evidence: "skipped: --no-active",
-			RFCRefs: refs,
-		}}
+		res.Status, res.Evidence = report.NotApplicable, "skipped: --no-active"
+		return &outcome[*x509.Certificate]{result: res}
 	}
-	pemBytes, ok := getVMCBytes(env)
-	if !ok {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status: report.Info, Evidence: "no VMC bytes cached",
-			RFCRefs: refs,
-		}}
+	pemBytes := ensureVMC(ctx, env).value()
+	if pemBytes == nil {
+		res.Status, res.Evidence = report.Info, "no VMC bytes cached"
+		return &outcome[*x509.Certificate]{result: res}
 	}
+	res.Status = report.Fail
+	res.Remediation = vmcFetchRemediation()
 	leaf, intermediates, err := parsePEMChain(pemBytes)
 	if err != nil {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "PEM chain parse failed: " + err.Error(),
-			Remediation: vmcFetchRemediation(),
-			RFCRefs:     refs,
-		}}
+		res.Evidence = "PEM chain parse failed: " + err.Error()
+		return &outcome[*x509.Certificate]{result: res}
 	}
-
 	// EKU gate: before any chain validation, refuse leaves that do not carry
 	// the BIMI / Common Mark EKU. Without this, any publicly-trusted TLS leaf
 	// (e.g. a server certificate from a mainstream CA) would pass the chain
@@ -174,62 +198,62 @@ func (vmcChainCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
 	// and CMC (id-kp-CommonMarkCertificate) are acceptable for BIMI.
 	certType := classifyMarkCert(leaf)
 	if certType == markCertOther {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "leaf does not carry BIMI VMC or Common Mark EKU (id-kp-BrandIndicatorForMessageIdentification / id-kp-CommonMarkCertificate)",
-			Remediation: vmcFetchRemediation(),
-			RFCRefs:     refs,
-		}}
+		res.Evidence = "leaf does not carry BIMI VMC or Common Mark EKU " +
+			"(id-kp-BrandIndicatorForMessageIdentification / id-kp-CommonMarkCertificate)"
+		return &outcome[*x509.Certificate]{result: res}
 	}
+	if err := verifyMarkChain(leaf, intermediates); err != nil {
+		return &outcome[*x509.Certificate]{result: chainFailed(res, err)}
+	}
+	res.Status = report.Pass
+	res.Remediation = ""
+	res.Evidence = fmt.Sprintf(
+		"certificate type: %s; subject=%q issuer=%q notBefore=%s notAfter=%s",
+		certType, leaf.Subject.String(), leaf.Issuer.String(),
+		leaf.NotBefore.UTC().Format("2006-01-02T15:04:05Z"),
+		leaf.NotAfter.UTC().Format("2006-01-02T15:04:05Z"),
+	)
+	return &outcome[*x509.Certificate]{result: res, product: leaf}
+}
 
+// verifyMarkChain verifies leaf, through intermediates, against the system
+// trust store. Mark certificates carry an EKU the standard library does not
+// know, so any EKU is accepted here: verifyVMC's EKU gate has already
+// required the BIMI or Common Mark one.
+func verifyMarkChain(leaf *x509.Certificate, intermediates []*x509.Certificate) error {
 	roots, err := x509.SystemCertPool()
 	if err != nil {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "load system roots: " + err.Error(),
-			Remediation: vmcFetchRemediation(),
-			RFCRefs:     refs,
-		}}
+		return fmt.Errorf("load system roots: %w", err)
 	}
 	pool := x509.NewCertPool()
 	for _, c := range intermediates {
 		pool.AddCert(c)
 	}
-	// Mark Verifying Certificates use a non-standard EKU (BIMI / id-kp-mark);
-	// system roots can still chain-validate trust, but Go's stdlib will reject
-	// the EKU. Pass ExtKeyUsage=Any so the chain check focuses on signing trust.
-	// The EKU gate above is what prevents arbitrary public TLS leaves from
-	// chaining through here.
-	if _, err := leaf.Verify(x509.VerifyOptions{
+	_, err = leaf.Verify(x509.VerifyOptions{
 		Roots:         roots,
 		Intermediates: pool,
 		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
-	}); err != nil {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "chain validation failed: " + err.Error(),
-			Remediation: vmcFetchRemediation(),
-			RFCRefs:     refs,
-		}}
+	})
+	if err != nil {
+		return fmt.Errorf("chain validation failed: %w", err)
 	}
-	env.CachePut(cacheKeyBIMIVMCLeaf, leaf)
-	return []report.Result{{
-		ID: id, Category: category, Title: title,
-		Status: report.Pass,
-		Evidence: fmt.Sprintf(
-			"certificate type: %s; subject=%q issuer=%q notBefore=%s notAfter=%s",
-			certType, leaf.Subject.String(), leaf.Issuer.String(),
-			leaf.NotBefore.UTC().Format("2006-01-02T15:04:05Z"),
-			leaf.NotAfter.UTC().Format("2006-01-02T15:04:05Z"),
-		),
-		RFCRefs: refs,
-	}}
+	return nil
 }
 
-const cacheKeyBIMIVMCLeaf = "bimi.vmc.leaf"
+// chainFailed grades err from verifyMarkChain. A chain to an unknown root
+// is INFO, not FAIL, since bedrock cannot tell a BIMI root from no root at
+// all; every other error, such as an expired certificate, stays FAIL.
+func chainFailed(fail report.Result, err error) report.Result {
+	var unknown x509.UnknownAuthorityError
+	if errors.As(err, &unknown) {
+		fail.Status = report.Info
+		fail.Evidence = unknownIssuerEvidence
+		fail.Remediation = ""
+		return fail
+	}
+	fail.Evidence = err.Error()
+	return fail
+}
 
 type vmcLogotypeCheck struct{}
 
@@ -248,19 +272,11 @@ func (vmcLogotypeCheck) Run(ctx context.Context, env *probe.Env) []report.Result
 			RFCRefs: refs,
 		}}
 	}
-	leafV, ok := env.CacheGet(cacheKeyBIMIVMCLeaf)
-	if !ok {
+	leaf := ensureVMCLeaf(ctx, env).value()
+	if leaf == nil {
 		return []report.Result{{
 			ID: id, Category: category, Title: title,
 			Status: report.Info, Evidence: "no validated VMC leaf cached",
-			RFCRefs: refs,
-		}}
-	}
-	leaf, ok := leafV.(*x509.Certificate)
-	if !ok {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status: report.Info, Evidence: "cached leaf is the wrong type",
 			RFCRefs: refs,
 		}}
 	}
@@ -297,20 +313,8 @@ func (vmcLogotypeCheck) Run(ctx context.Context, env *probe.Env) []report.Result
 		}}
 	}
 
-	// Recompute the SVG digest from the cached body when possible (we always
-	// recompute defensively so a stale or wrong-typed cache entry can't
-	// spoof a Pass), and fall back to the cached digest if the SVG bytes
-	// aren't around (--no-active was set after the SVG fetch, etc.).
-	var svgDigest []byte
-	if body, ok := getSVGBytes(env); ok {
-		sum := sha256.Sum256(body)
-		svgDigest = sum[:]
-	} else if d, ok := env.CacheGet(cacheKeyBIMISVGSHA256); ok {
-		if b, ok := d.([]byte); ok && len(b) == 32 {
-			svgDigest = b
-		}
-	}
-	if svgDigest == nil {
+	body := ensureSVG(ctx, env).value()
+	if body == nil {
 		return []report.Result{{
 			ID: id, Category: category, Title: title,
 			Status:   report.Warn,
@@ -318,6 +322,8 @@ func (vmcLogotypeCheck) Run(ctx context.Context, env *probe.Env) []report.Result
 			RFCRefs:  refs,
 		}}
 	}
+	sum := sha256.Sum256(body)
+	svgDigest := sum[:]
 
 	// Walk every (image, hash) pair the cert binds. Pass on the first match;
 	// remember the URI(s) and media types we saw for evidence either way.
@@ -454,15 +460,6 @@ func selectLeafIndex(certs []*x509.Certificate) int {
 		}
 	}
 	return 0
-}
-
-func getVMCBytes(env *probe.Env) ([]byte, bool) {
-	v, ok := env.CacheGet(cacheKeyBIMIVMCBytes)
-	if !ok {
-		return nil, false
-	}
-	b, ok := v.([]byte)
-	return b, ok
 }
 
 func vmcFetchRemediation() string {

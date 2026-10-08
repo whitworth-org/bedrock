@@ -140,9 +140,10 @@ func enumerate(parentCtx context.Context, env *probe.Env, domain string, timeout
 	return out, notes
 }
 
-// httpGet issues a User-Agent-tagged GET and returns the body (capped at
-// 4 MiB to avoid blowing memory on a misbehaving source). Status codes
-// outside 2xx are turned into errors so the caller logs an Info note.
+// httpGet issues a User-Agent-tagged GET and returns the body (probe.HTTP
+// truncates it at 1 MiB, so a misbehaving source cannot exhaust memory).
+// Status codes outside 2xx are turned into errors so the caller logs an
+// Info note.
 func httpGet(ctx context.Context, env *probe.Env, target string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {

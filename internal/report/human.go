@@ -34,7 +34,7 @@ const idListWidth = 72
 type View struct {
 	Color          bool          // paint bedrock's own words; false emits no ESC byte
 	Elapsed        time.Duration // scan time; 0 omits it, which keeps goldens stable
-	Scanned        int           // results before --only, --exclude, --severity and --ids
+	Scanned        int           // results before --severity and --ids
 	Passive        bool          // --no-active
 	Resolvers      []string      // as given, credentials removed; none omits them
 	Baseline       string        // --baseline path; "" when unset
@@ -354,15 +354,15 @@ func (h *human) verdict(r Report, v View) {
 }
 
 // verdictWord names the result and its colour. A PASS over nothing evaluated
-// (no results shown, or --regression-only with no baseline to compare with)
-// stays unpainted, so it cannot read as an all-clear at a glance.
+// (no results shown) stays unpainted, so it cannot read as an all-clear at a
+// glance.
 func verdictWord(r Report, v View) (word, sgr string) {
 	switch {
 	case v.Interrupted:
 		return "INCOMPLETE", sgrYellow
 	case v.Exit != 0:
 		return "FAIL", sgrRed
-	case r.Summary.Totals.Total == 0 || (v.RegressionOnly && v.Baseline == ""):
+	case r.Summary.Totals.Total == 0:
 		return "PASS", ""
 	}
 	return "PASS", sgrGreen
@@ -394,8 +394,7 @@ func countsText(s *Summary, scanned int) string {
 	t := s.Totals
 	switch {
 	case t.Total == 0 && scanned > 0:
-		return fmt.Sprintf("0 of %d results shown; check --only, --exclude, --severity and --ids.",
-			scanned)
+		return fmt.Sprintf("0 of %d results shown; check --severity and --ids.", scanned)
 	case t.Total == 0:
 		return "No results."
 	case t.Fail == 0:
@@ -405,13 +404,8 @@ func countsText(s *Summary, scanned int) string {
 }
 
 func regressionText(r Report, baseline string) string {
-	fails := r.Summary.Totals.Fail
-	if baseline == "" && len(r.Regressions) == 0 {
-		return fmt.Sprintf("No --baseline to compare with, so --regression-only ignores %d FAIL.",
-			fails)
-	}
 	return fmt.Sprintf("%d new FAIL since %s; %d FAIL in total.",
-		len(r.Regressions), baselineName(baseline), fails)
+		len(r.Regressions), baselineName(baseline), r.Summary.Totals.Fail)
 }
 
 func baselineName(baseline string) string {

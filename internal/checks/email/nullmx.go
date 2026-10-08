@@ -2,8 +2,8 @@ package email
 
 import (
 	"context"
-	"errors"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
@@ -12,25 +12,15 @@ import (
 // "." asserts the domain accepts no mail. The check is purely informational —
 // it tells the operator whether their domain is mail-accepting or not.
 func runNullMX(ctx context.Context, env *probe.Env) []report.Result {
-	ctx, cancel := env.WithTimeout(ctx)
-	defer cancel()
-
 	const id = "email.nullmx"
 	const title = "Null MX (RFC 7505) declaration"
 	refs := []string{"RFC 7505 §3"}
 
-	mxs, err := env.DNS.LookupMX(ctx, env.Target)
-	if err != nil && !errors.Is(err, probe.ErrNXDOMAIN) {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status: report.NotApplicable, Evidence: "MX lookup failed: " + err.Error(),
-			RFCRefs: refs,
-		}}
+	mxs, err := targetMX(ctx, env)
+	if err != nil {
+		res := report.Result{ID: id, Category: category, Title: title, RFCRefs: refs}
+		return []report.Result{checkutil.Inconclusive(res, err)}
 	}
-
-	// Cache the MX set for downstream checks (cheap to redo, but keeps the
-	// shape used by other categories).
-	env.CachePut(probe.CacheKeyMX, mxs)
 
 	if isNullMX(mxs) {
 		return []report.Result{{

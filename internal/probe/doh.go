@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/miekg/dns"
@@ -27,9 +29,11 @@ const dohMaxResponse = 1 << 16
 // (DNSSEC + NSEC3 responses can exceed practical GET length limits).
 //
 // Defences:
-//   - response Content-Type must begin with application/dns-message (case
-//     insensitive); otherwise fail closed so an HTML captive portal or a
-//     JSON DoH variant cannot smuggle a parse path.
+//   - redirects are not followed (see newDoHClient), so a 3xx fails with its
+//     status instead of moving the query to another server or to plaintext.
+//   - response Content-Type must be application/dns-message (parameters are
+//     ignored); otherwise fail closed so an HTML captive portal or a JSON
+//     DoH variant cannot smuggle a parse path.
 //   - response body is bounded by dohMaxResponse; oversize is a hard error.
 func dohExchange(ctx context.Context, client *http.Client, url string, m *dns.Msg) (*dns.Msg, error) {
 	wire, err := m.Pack()
@@ -42,6 +46,11 @@ func dohExchange(ctx context.Context, client *http.Client, url string, m *dns.Ms
 	}
 	req.Header.Set("Content-Type", "application/dns-message")
 	req.Header.Set("Accept", "application/dns-message")
+	// A present but empty Idempotency-Key marks the POST as safe to resend
+	// without sending the header, so net/http retries a query that met a
+	// kept-alive connection the server had just closed instead of failing
+	// with EOF. A DNS query has no side effects.
+	req.Header["Idempotency-Key"] = nil
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -53,14 +62,14 @@ func dohExchange(ctx context.Context, client *http.Client, url string, m *dns.Ms
 		return nil, fmt.Errorf("doh status %d", resp.StatusCode)
 	}
 	ct := resp.Header.Get("Content-Type")
-	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)), "application/dns-message") {
+	if !isDNSMessage(ct) {
 		return nil, fmt.Errorf("doh unexpected content-type %q (want application/dns-message)", ct)
 	}
 	// Read one byte past the cap so we can distinguish "exactly at cap" from
 	// "cap hit and more bytes were on the wire".
 	body, err := io.ReadAll(io.LimitReader(resp.Body, dohMaxResponse+1))
 	if err != nil {
-		return nil, fmt.Errorf("read doh response: %w", err)
+		return nil, fmt.Errorf("read doh response: %w", scrubResolverError(err))
 	}
 	if len(body) > dohMaxResponse {
 		return nil, fmt.Errorf("doh response exceeds 64 KiB cap")
@@ -72,19 +81,37 @@ func dohExchange(ctx context.Context, client *http.Client, url string, m *dns.Ms
 	return out, nil
 }
 
+// isDNSMessage reports whether the Content-Type value ct names exactly
+// application/dns-message. Parameters are ignored, including malformed ones.
+func isDNSMessage(ct string) bool {
+	mediaType, _, err := mime.ParseMediaType(ct)
+	if err != nil && !errors.Is(err, mime.ErrInvalidMediaParameter) {
+		return false
+	}
+	return mediaType == "application/dns-message"
+}
+
 // newDoHClient returns a dedicated HTTP client for DoH. We give it the same
 // per-operation timeout as DNS so a stalled DoH endpoint doesn't outlive
-// the rest of the scan. The dialer is the same SSRF-safe dialer used by
-// the regular HTTP client; resolver endpoints are public by definition.
+// the rest of the scan. Connections are kept alive between queries, and
+// closed after 30s idle, so a scan's queries share one handshake. Redirects
+// are not followed. The dialer is the same SSRF-safe dialer used by the
+// regular HTTP client; resolver endpoints are public by definition.
 func newDoHClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 		Transport: &http.Transport{
-			TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
-			ForceAttemptHTTP2:   true,
-			DisableKeepAlives:   true,
-			TLSHandshakeTimeout: timeout,
-			DialContext:         safeDialContext(timeout, false),
+			TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12},
+			ForceAttemptHTTP2:      true,
+			IdleConnTimeout:        30 * time.Second,
+			TLSHandshakeTimeout:    timeout,
+			MaxResponseHeaderBytes: MaxResponseHeaderBytes,
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return SafeDial(ctx, network, addr, timeout)
+			},
 		},
 	}
 }

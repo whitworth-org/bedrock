@@ -97,9 +97,8 @@ func startScanFixture(t *testing.T) (string, *atomic.Int64) {
 	t.Helper()
 	// The fake resolver listens on loopback, which bedrock otherwise rejects.
 	t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "1")
-	spec, queries, shutdown := startFakeDNS(t, nil)
-	t.Cleanup(shutdown)
-	return spec, queries
+	h := &fakeDNSHandler{}
+	return serveDNS(t, h), &h.queries
 }
 
 // scanArgs returns a command line that scans test.invalid through the fake
@@ -410,8 +409,8 @@ func TestRunVerdictNamesTheExitCode(t *testing.T) {
 	same := writeFile(t, "same.json", readGolden(t, "empty.json"))
 	older := writeBaseline(t, "email.spf.record")
 	const fails = "8 FAIL (DNS 2, Email 6), 4 WARN."
-	noneShown := fmt.Sprintf("PASS. 0 of %d results shown; "+
-		"check --only, --exclude, --severity and --ids.", len(goldenReport(t).Results))
+	noneShown := fmt.Sprintf("PASS. 0 of %d results shown; check --severity and --ids.",
+		len(goldenReport(t).Results))
 	tests := []struct {
 		name    string
 		flags   []string
@@ -421,8 +420,6 @@ func TestRunVerdictNamesTheExitCode(t *testing.T) {
 		{"FAILs", nil, "FAIL. " + fails, 1},
 		{"no FAIL shown", []string{"--ids", "dns.aaaa.apex"}, "PASS. 0 FAIL, 1 WARN.", 0},
 		{"nothing shown", []string{"--ids", "dns.nope"}, noneShown, 0},
-		{"regression-only without a baseline", []string{"--regression-only"},
-			"PASS. No --baseline to compare with, so --regression-only ignores 8 FAIL.", 0},
 		{"regression-only, nothing new", []string{"--baseline", same, "--regression-only"},
 			"PASS. 0 new FAIL since " + same + "; 8 FAIL in total.", 0},
 		{"regression-only, one new FAIL", []string{"--baseline", older, "--regression-only"},
@@ -460,13 +457,13 @@ func (c *steppingClock) Now() time.Time {
 func (*steppingClock) After(time.Duration) <-chan time.Time { return nil }
 
 // TestRunHeaderCountsTheScan checks what the terminal report's first line
-// takes from the run: how many results the filters left of the whole scan,
-// the time the scan took, passive mode and the resolver.
+// takes from the run: how many results --ids left of those the scan gave,
+// which --only limits to the DNS checks, the time the scan took, passive
+// mode and the resolver.
 func TestRunHeaderCountsTheScan(t *testing.T) {
 	spec, _ := startScanFixture(t)
-	all := goldenReport(t).Results
 	dns := 0
-	for _, r := range all {
+	for _, r := range goldenReport(t).Results {
 		if r.Category == "DNS" {
 			dns++
 		}
@@ -475,9 +472,10 @@ func TestRunHeaderCountsTheScan(t *testing.T) {
 	// Without progress the scan reads the clock twice: at its start and end.
 	sys.clock = &steppingClock{step: 1500 * time.Millisecond}
 	stdout := &fakeStream{kind: terminal}
-	code := run(context.Background(), scanArgs(spec, "--only", "DNS"), stdout, &bytes.Buffer{}, sys)
+	args := scanArgs(spec, "--only", "DNS", "--ids", "dns.ns.count")
+	code := run(context.Background(), args, stdout, &bytes.Buffer{}, sys)
 	want := fmt.Sprintf("bedrock report for test.invalid "+
-		"(%d of %d results, 1.5s, passive only, resolver %s)", dns, len(all), spec)
+		"(1 of %d results, 1.5s, passive only, resolver %s)", dns, spec)
 	if got := lineStarting(stdout.String(), "bedrock report for "); code != 1 || got != want {
 		t.Errorf("exit code %d, header %q\nwant 1 and %q", code, got, want)
 	}
@@ -498,8 +496,11 @@ func TestRunWarnsAboutUnmatchedIDs(t *testing.T) {
 		{"every entry matches", []string{"--ids", "dns.axfr,web.hsts"}, ""},
 		{"each unknown entry named once", []string{"--ids", "dns.nope,dns.axfr,dns.nope,web.hsst"},
 			`bedrock: --ids entries "dns.nope", "web.hsst" match` + many},
-		{"an entry another filter hides still matches",
-			[]string{"--only", "DNS", "--ids", "web.hsts"}, ""},
+		{"an entry --severity hides still matches",
+			[]string{"--severity", "fail", "--ids", "dns.aaaa.apex"}, ""},
+		{"an entry in a category --only skips matches nothing",
+			[]string{"--only", "DNS", "--ids", "web.hsts"},
+			`bedrock: --ids entry "web.hsts" matches` + one},
 		{"entries from the config file", []string{"--config", config},
 			`bedrock: config "ids" entry "dns.nope" matches` + one},
 		{"the flag wins over the config file", []string{"--config", config, "--ids", "web.hsst"},
@@ -543,9 +544,7 @@ func interruptAtFirstQuery(t *testing.T) (context.Context, string) {
 	t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "1")
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	spec, _, shutdown := startFakeDNS(t, cancel)
-	t.Cleanup(shutdown)
-	return ctx, spec
+	return ctx, serveDNS(t, &fakeDNSHandler{onQuery: cancel})
 }
 
 // unfinishedAtInterrupt reads the progress line an interrupt prints on
@@ -658,22 +657,29 @@ func unfinishedListed(rep string) []string {
 	return ids
 }
 
-// TestRunListsOnlyUnfinishedChecksTheReportCovers interrupts a scan run with
-// --only DNS. The report lists, and the verdict counts, only the DNS checks
-// that did not finish, while the scan as a whole still counts as interrupted.
-func TestRunListsOnlyUnfinishedChecksTheReportCovers(t *testing.T) {
+// TestRunTracksOnlyTheChecksItRuns interrupts a scan run with --only DNS,
+// which runs only the DNS checks. Progress counts only those, and the report
+// lists, and the verdict counts, every one of them that did not finish.
+func TestRunTracksOnlyTheChecksItRuns(t *testing.T) {
 	category := map[string]string{}
+	dnsChecks := 0
 	for _, c := range registry.All() {
 		category[c.ID()] = c.Category()
+		if c.Category() == "DNS" {
+			dnsChecks++
+		}
 	}
 	ctx, spec := interruptAtFirstQuery(t)
 	stdout, stderr := &fakeStream{kind: terminal}, &fakeStream{kind: terminal}
 	run(ctx, scanArgs(spec, "--only", "DNS"), stdout, stderr, fakeSystem(noColor))
+	start := fmt.Sprintf("bedrock: scanning test.invalid: %d checks,", dnsChecks)
+	if !strings.HasPrefix(stderr.String(), start) {
+		t.Errorf("stderr does not start %q:\n%s", start, stderr.String())
+	}
 	unfinished := unfinishedAtInterrupt(t, stderr.String())
 	listed := unfinishedListed(stdout.String())
-	if len(listed) >= unfinished {
-		t.Fatalf("listed %d of %d unfinished checks; want the interrupt to leave checks "+
-			"outside DNS unfinished, so --only has some to drop", len(listed), unfinished)
+	if len(listed) != unfinished {
+		t.Errorf("listed %d of %d unfinished checks, want them all", len(listed), unfinished)
 	}
 	for _, id := range listed {
 		if category[id] != "DNS" {
@@ -935,11 +941,13 @@ func TestRunUsageErrorsPrintOneLine(t *testing.T) {
 
 // TestRunRejectsBadInputBeforeScanning checks that each input error exits 2
 // with one line before any check runs: the fake resolver sees no query. An
-// invalid severity or domain is a usage error, so its line points at --help.
+// invalid flag value or domain is a usage error, so its line points at
+// --help.
 func TestRunRejectsBadInputBeforeScanning(t *testing.T) {
 	spec, queries := startScanFixture(t)
 	missing := filepath.Join(t.TempDir(), "missing.json")
 	badSeverity := writeFile(t, "severity.json", `{"severity": "loud"}`)
+	regressionOnly := writeFile(t, "regression.json", `{"regression_only": true}`)
 	tests := []struct {
 		name string
 		args []string
@@ -952,6 +960,13 @@ func TestRunRejectsBadInputBeforeScanning(t *testing.T) {
 		{"missing config", scanArgs(spec, "--config", missing), "read config " + missing, false},
 		{"bad config severity", scanArgs(spec, "--config", badSeverity), `invalid severity "loud"`,
 			true},
+		{"every invalid flag value", scanArgs(spec, "--only", "Emial", "--timeout", "0"),
+			`unknown category "Emial" (want one of: DNS, DNSSEC, Email, Subdomain, WWW); ` +
+				"invalid --timeout 0s", true},
+		{"--regression-only without --baseline", scanArgs(spec, "--regression-only"),
+			"--regression-only requires --baseline", true},
+		{"regression_only in the config without a baseline",
+			scanArgs(spec, "--config", regressionOnly), "--regression-only requires --baseline", true},
 		{"invalid domain", []string{"--resolver", spec, "exa mple.org"},
 			`invalid domain "exa mple.org": idna: disallowed rune U+0020`, true},
 		{"domain with a control byte", []string{"--resolver", spec, "x\x1by.org"},
@@ -987,7 +1002,7 @@ func TestRunRejectsPrivateResolversBeforeScanning(t *testing.T) {
 	if code != 2 || stdout != "" {
 		t.Errorf("exit code = %d, stdout = %q; want 2 and nothing", code, stdout)
 	}
-	assertOneLine(t, stderr, "invalid resolvers: resolver 127.0.0.1 is loopback")
+	assertOneLine(t, stderr, "resolver 127.0.0.1 is loopback")
 	if strings.Contains(stderr, "s3cr3t") || strings.Contains(stderr, "abc123") {
 		t.Errorf("stderr = %q repeats another entry's credentials", stderr)
 	}
@@ -1011,35 +1026,6 @@ func TestRunScansOnPastABadConfigTimeout(t *testing.T) {
 	}
 	if queries.Load() == 0 || !json.Valid([]byte(stdout)) {
 		t.Error("the scan did not run, or stdout is not the JSON report")
-	}
-}
-
-// TestRunWarnsAboutRegressionOnlyWithoutBaseline checks that --regression-only
-// with no baseline, which makes every run pass, gets a warning on stderr
-// whatever stderr is, since a pipe or CI run sees no terminal report.
-func TestRunWarnsAboutRegressionOnlyWithoutBaseline(t *testing.T) {
-	spec, _ := startScanFixture(t)
-	config := writeFile(t, "config.json", `{"regression_only": true}`)
-	same := writeFile(t, "same.json", readGolden(t, "empty.json"))
-	const warning = "bedrock: --regression-only has no --baseline to compare with, so every " +
-		"FAIL is ignored; set --baseline to an earlier JSON report\n"
-	tests := []struct {
-		name  string
-		flags []string
-		want  string
-	}{
-		{"flag", []string{"--regression-only"}, warning},
-		{"config file", []string{"--config", config}, warning},
-		{"with a baseline", []string{"--regression-only", "--baseline", same}, ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ci := map[string]string{"CI": "1"}
-			code, _, stderr := runOn(t, pipe, pipe, ci, scanArgs(spec, tt.flags...)...)
-			if code != 0 || stderr != tt.want {
-				t.Errorf("exit code = %d, stderr = %q\nwant 0 and %q", code, stderr, tt.want)
-			}
-		})
 	}
 }
 
@@ -1222,6 +1208,8 @@ func TestMergeConfig(t *testing.T) {
 		"--severity", "fail", "--ids", "c", "--subdomains=false", "--enable-rbl=false",
 		"--enable-ct=false", "--baseline", "flag.json", "--regression-only=false", "example.org",
 	}
+	oneResolverFlag := fromConfig
+	oneResolverFlag.resolver, oneResolverFlag.resolversCSV = "", "f1"
 	fromFlags := options{
 		resolver: "flag-resolver", resolversCSV: "f1", timeout: 3 * time.Second,
 		onlyCSV: "Email", excludeCSV: "DNS", severity: "fail", idsCSV: "c",
@@ -1236,6 +1224,8 @@ func TestMergeConfig(t *testing.T) {
 		{"empty config keeps defaults", &cli.Config{}, []string{"example.org"},
 			options{timeout: 5 * time.Second, domain: "example.org"}},
 		{"config fills unset flags", full, []string{"example.org"}, fromConfig},
+		{"one resolver flag overrides both config keys", full,
+			[]string{"--resolvers", "f1", "example.org"}, oneResolverFlag},
 		{"flags win over config", full, allFlags, fromFlags},
 	}
 	for _, tt := range tests {

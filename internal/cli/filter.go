@@ -4,17 +4,21 @@ package cli
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
+	"github.com/whitworth-org/bedrock/internal/registry"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// Filter is applied to []report.Result after every check has run, before the
-// report is rendered. Empty fields disable the corresponding filter.
+// Filter selects what a scan runs and reports. Only and Exclude choose the
+// categories to run, through KeepCategory, before the scan; the other
+// fields filter the results in Apply, before the report is rendered. Empty
+// fields disable the corresponding filter.
 type Filter struct {
-	// Only keeps results whose Category is in this set (case-insensitive).
+	// Only runs just the categories in this set (case-insensitive).
 	Only []string
-	// Exclude drops results whose Category is in this set (case-insensitive).
+	// Exclude skips the categories in this set (case-insensitive).
 	Exclude []string
 	// MinSeverity keeps only results at or above this severity, where the
 	// ranking is Info < Pass < Warn < Fail. NotApplicable is always kept
@@ -23,7 +27,8 @@ type Filter struct {
 	// SeveritySet is true when MinSeverity was supplied; without it the
 	// renderer shows everything.
 	SeveritySet bool
-	// IDs keeps only results whose check ID exactly matches one of these.
+	// IDs keeps only results whose check ID exactly matches one of these,
+	// and the run-level results.
 	IDs []string
 }
 
@@ -67,30 +72,32 @@ func SplitCSV(s string) []string {
 	return out
 }
 
-// Apply returns the subset of results that survive every active filter,
-// preserving order.
+// KeepCategory reports whether the scan runs the checks in category: it is
+// in Only, when Only is set, and not in Exclude. Names match ignoring case
+// and surrounding space, as ValidateCategories does.
+func (f Filter) KeepCategory(category string) bool {
+	matches := func(name string) bool {
+		return strings.EqualFold(strings.TrimSpace(name), category)
+	}
+	if len(f.Only) > 0 && !slices.ContainsFunc(f.Only, matches) {
+		return false
+	}
+	return !slices.ContainsFunc(f.Exclude, matches)
+}
+
+// Apply returns the results that pass the IDs and MinSeverity filters,
+// preserving order. It leaves categories alone: KeepCategory already chose
+// which ran. A run-level result such as dns.resolver.unreachable (see
+// registry.RunLevel) is reported whatever Only, Exclude and IDs say.
 func (f Filter) Apply(results []report.Result) []report.Result {
 	if !f.active() {
 		return results
 	}
-	keepCat := lowerSet(f.Only)
-	dropCat := lowerSet(f.Exclude)
 	keepID := stringSet(f.IDs)
 
 	out := make([]report.Result, 0, len(results))
 	for _, r := range results {
-		cat := strings.ToLower(r.Category)
-		if len(keepCat) > 0 {
-			if _, ok := keepCat[cat]; !ok {
-				continue
-			}
-		}
-		if len(dropCat) > 0 {
-			if _, ok := dropCat[cat]; ok {
-				continue
-			}
-		}
-		if len(keepID) > 0 {
+		if len(keepID) > 0 && !registry.RunLevel(r) {
 			if _, ok := keepID[r.ID]; !ok {
 				continue
 			}
@@ -104,7 +111,7 @@ func (f Filter) Apply(results []report.Result) []report.Result {
 }
 
 func (f Filter) active() bool {
-	return len(f.Only) > 0 || len(f.Exclude) > 0 || len(f.IDs) > 0 || f.SeveritySet
+	return len(f.IDs) > 0 || f.SeveritySet
 }
 
 // meetsSeverity ranks Info < Pass < Warn < Fail. NotApplicable always passes
@@ -130,17 +137,6 @@ func rank(s report.Status) int {
 	default:
 		return -1
 	}
-}
-
-func lowerSet(in []string) map[string]struct{} {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]struct{}, len(in))
-	for _, s := range in {
-		out[strings.ToLower(strings.TrimSpace(s))] = struct{}{}
-	}
-	return out
 }
 
 func stringSet(in []string) map[string]struct{} {

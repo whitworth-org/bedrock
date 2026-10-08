@@ -393,16 +393,13 @@ func TestVerdict(t *testing.T) {
 		{"pass with warnings", passing, View{}, "PASS. 0 FAIL, 1 WARN. Exit code 0."},
 		{"empty", Report{}, View{}, "PASS. No results. Exit code 0."},
 		{"filtered to nothing", Report{}, View{Scanned: 56}, "PASS. 0 of 56 results shown; " +
-			"check --only, --exclude, --severity and --ids. Exit code 0."},
+			"check --severity and --ids. Exit code 0."},
 		{"regression-only with regressions", regressed,
 			View{RegressionOnly: true, Baseline: "base.json", Exit: 1},
 			"FAIL. 1 new FAIL since base.json; 3 FAIL in total. Exit code 1."},
 		{"regression-only without regressions", fixture,
 			View{RegressionOnly: true, Baseline: "base.json"},
 			"PASS. 0 new FAIL since base.json; 3 FAIL in total. Exit code 0."},
-		{"regression-only without a baseline", fixture, View{RegressionOnly: true},
-			"PASS. No --baseline to compare with, so --regression-only ignores 3 FAIL. " +
-				"Exit code 0."},
 		{"interrupted with unfinished checks", fixture,
 			View{Interrupted: true, Unfinished: []string{"web.hsts"}, Exit: 1},
 			"INCOMPLETE. Scan interrupted; 1 check did not finish. " +
@@ -614,9 +611,8 @@ func TestRenderHumanDisplaySafe(t *testing.T) {
 }
 
 // TestRenderHumanPaintsPassOnlyOverEvaluatedResults checks that a PASS over
-// nothing evaluated stays unpainted, so it cannot read as an all-clear at a
-// glance: no results shown, or --regression-only with no baseline to
-// compare with. A PASS over real results is green.
+// nothing evaluated, with no results shown, stays unpainted, so it cannot
+// read as an all-clear at a glance. A PASS over real results is green.
 func TestRenderHumanPaintsPassOnlyOverEvaluatedResults(t *testing.T) {
 	passing := Report{Target: "example.org", Results: []Result{
 		{ID: "a", Category: "DNS", Status: Pass}}}
@@ -631,7 +627,6 @@ func TestRenderHumanPaintsPassOnlyOverEvaluatedResults(t *testing.T) {
 		{"results shown", passing, View{}, green},
 		{"no results", empty, View{}, plain},
 		{"filtered to nothing", empty, View{Scanned: 56}, plain},
-		{"regression-only without a baseline", humanFixture(), View{RegressionOnly: true}, plain},
 		{"regression-only with a baseline", humanFixture(),
 			View{RegressionOnly: true, Baseline: "base.json"}, green},
 	}

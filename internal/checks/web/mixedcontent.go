@@ -24,8 +24,24 @@ func runMixedContent(ctx context.Context, env *probe.Env) []report.Result {
 			RFCRefs:  []string{"W3C Mixed Content"},
 		}}
 	}
-	resp := getHTTPSRoot(ctx, env)
-	if resp == nil || len(resp.Body) == 0 {
+	resp, err := getHTTPSRoot(ctx, env)
+	if err != nil {
+		return []report.Result{{
+			ID: "web.mixedcontent", Category: category,
+			Title:    "Mixed-content scan",
+			Status:   report.Info,
+			Evidence: "could not fetch https://" + env.Target + "/: " + err.Error(),
+			RFCRefs:  []string{"W3C Mixed Content"},
+		}}
+	}
+	if !resp.Verified {
+		return []report.Result{chainInvalid(report.Result{
+			ID: "web.mixedcontent", Category: category,
+			Title:   "Mixed-content scan",
+			RFCRefs: []string{"W3C Mixed Content"},
+		})}
+	}
+	if len(resp.Body) == 0 {
 		return []report.Result{{
 			ID: "web.mixedcontent", Category: category,
 			Title:    "Mixed-content scan",

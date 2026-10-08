@@ -88,3 +88,16 @@ func TestRunDKIM2Readiness(t *testing.T) {
 		})
 	}
 }
+
+// TestRunDKIM2ReadinessWildcard: a v=DKIM2 key that a _domainkey wildcard
+// gives every selector is not a key published on any of them.
+func TestRunDKIM2ReadinessWildcard(t *testing.T) {
+	env := newCannedEnv(t, "example.com", cannedZone{txt: map[string][]string{
+		"*._domainkey.example.com": {"v=DKIM2; k=ed25519; p=" + ed25519TestKey},
+	}})
+	res := runDKIM2Readiness(context.Background(), env)
+	if len(res) != 1 || res[0].Status != report.NotApplicable ||
+		!contains(res[0].Evidence, "see email.dkim.wildcard") {
+		t.Fatalf("results = %+v, want one N/A that points at email.dkim.wildcard", res)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -147,6 +148,22 @@ func TestExchangeAllCheckingDisabledSetsCD(t *testing.T) {
 	assertQueriedOnce(t, h, queryFlags{do: true, cd: true, rd: true, opcode: mdns.OpcodeQuery})
 }
 
+// TestExchangeCheckingDisabledSetsCD pins the DS, DNSKEY and SOA queries of
+// the DNSSEC chain check: DO=1 and CD=1, so a validating resolver returns a
+// bogus zone's records, and the reply comes back whatever its rcode.
+func TestExchangeCheckingDisabledSetsCD(t *testing.T) {
+	t.Setenv(allowPrivateResolverEnv, "1")
+	h := &rcodeHandler{rcode: mdns.RcodeServerFailure}
+	d := NewDNS(startUDPResolver(t, h), time.Second)
+
+	resp, err := d.ExchangeCheckingDisabled(context.Background(), "example.test.", mdns.TypeDS)
+
+	if err != nil || resp.Rcode != mdns.RcodeServerFailure {
+		t.Fatalf("want the SERVFAIL reply, got resp=%v err=%v", resp, err)
+	}
+	assertQueriedOnce(t, h, queryFlags{do: true, cd: true, rd: true, opcode: mdns.OpcodeQuery})
+}
+
 // TestExchangeAllWithDOSpecError returns the deferred resolver-spec error in
 // a single MultiResp.
 func TestExchangeAllWithDOSpecError(t *testing.T) {
@@ -208,6 +225,29 @@ func TestDoHServfailIsAResponse(t *testing.T) {
 
 	if len(got) != 1 || got[0].Err != nil || got[0].Msg.Rcode != mdns.RcodeServerFailure {
 		t.Fatalf("want a SERVFAIL response over DoH, got %+v", got)
+	}
+}
+
+// TestDoHResponseSizeCap pins the 64 KiB cap on a DoH response body: one
+// byte over is refused as oversize, while a body at the cap is read whole.
+func TestDoHResponseSizeCap(t *testing.T) {
+	cases := []struct {
+		size     int
+		oversize bool
+	}{{dohMaxResponse + 1, true}, {dohMaxResponse, false}}
+	for _, c := range cases {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/dns-message")
+			_, _ = w.Write(make([]byte, c.size))
+		}))
+
+		_, err := dohDNS(srv).LookupA(context.Background(), "example.test")
+		srv.Close()
+
+		refused := err != nil && strings.Contains(err.Error(), "exceeds 64 KiB cap")
+		if refused != c.oversize {
+			t.Errorf("%d-byte body: got %v, want refused as oversize: %v", c.size, err, c.oversize)
+		}
 	}
 }
 

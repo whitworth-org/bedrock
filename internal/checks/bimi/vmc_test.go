@@ -5,8 +5,15 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"encoding/pem"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/registry"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 // certWithUnknownEKU builds a stub *x509.Certificate carrying the given
@@ -318,4 +325,132 @@ func TestClassifyMarkCert(t *testing.T) {
 	if got := classifyMarkCert(cOther); got != markCertOther {
 		t.Errorf("unrelated EKU: got %s want %s", got, markCertOther)
 	}
+}
+
+// markEnv returns an Env for example.test whose BIMI record names logoURL
+// and vmcURL.
+func markEnv(t *testing.T, logoURL, vmcURL string, timeout time.Duration) *probe.Env {
+	t.Helper()
+	return newZoneEnv(t, "example.test", bimiZone(logoURL, vmcURL), timeout)
+}
+
+// markResults runs the three VMC checks, each on its own fresh Env, and
+// returns their results by ID.
+func markResults(
+	t *testing.T, logoURL, vmcURL string, timeout time.Duration,
+) map[string]report.Result {
+	t.Helper()
+	out := map[string]report.Result{}
+	for _, c := range []registry.Check{vmcFetchCheck{}, vmcChainCheck{}, vmcLogotypeCheck{}} {
+		out[c.ID()] = runOne(t, c, markEnv(t, logoURL, vmcURL, timeout))
+	}
+	return out
+}
+
+// wantResult is the status a check should report and a prefix of its
+// evidence.
+type wantResult struct {
+	status   report.Status
+	evidence string
+}
+
+// checkResults compares got with want by check ID, and checks that only a
+// FAIL carries a remediation.
+func checkResults(t *testing.T, got map[string]report.Result, want map[string]wantResult) {
+	t.Helper()
+	for id, w := range want {
+		r := got[id]
+		if r.Status != w.status || !strings.HasPrefix(r.Evidence, w.evidence) {
+			t.Errorf("%s = %s %q, want %s %q", id, r.Status, r.Evidence, w.status, w.evidence)
+		}
+		if (r.Status == report.Fail) != (r.Remediation != "") {
+			t.Errorf("%s: status %s with remediation %q", id, r.Status, r.Remediation)
+		}
+	}
+}
+
+func TestVMCChecksGrade(t *testing.T) {
+	future := time.Now().Add(24 * time.Hour)
+	svg := []byte(validSVG)
+	tlsLeaf, _ := trustedCA(t).issue(t, &x509.Certificate{
+		Subject:     pkix.Name{CommonName: "localhost"},
+		NotBefore:   time.Now().Add(-time.Hour),
+		NotAfter:    future,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	})
+	const pemType = "application/x-pem-file"
+	expired := vmcPEM(t, trustedCA(t), svg, time.Now().Add(-time.Hour))
+	tlsPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: tlsLeaf})
+	s := newSite(t, map[string]siteFile{
+		"/logo.svg":      {"image/svg+xml", svg},
+		"/other.svg":     {"image/svg+xml", []byte(wrongAspectSVG)},
+		"/vmc.pem":       {pemType, vmcPEM(t, trustedCA(t), svg, future)},
+		"/unknown.pem":   {pemType, vmcPEM(t, untrustedCA(t), svg, future)},
+		"/expired.pem":   {pemType, expired},
+		"/tls.pem":       {pemType, tlsPEM},
+		"/not-a-pem.pem": {"text/plain", []byte("hello")},
+		"/huge.pem":      {pemType, make([]byte, 1<<20+1)},
+	})
+	moved := serveTLS(t, trustedCA(t), http.RedirectHandler(s.base+"/vmc.pem", http.StatusFound))
+	const (
+		unbound   = "certificate type: VMC; SVG sha256="
+		notCached = "no validated VMC leaf cached"
+	)
+	cases := []struct {
+		name, logo, vmc string
+		want            map[string]wantResult
+	}{
+		{"valid", "/logo.svg", s.base + "/vmc.pem", map[string]wantResult{
+			"bimi.vmc.fetch":    {report.Pass, "HTTP 200, "},
+			"bimi.vmc.chain":    {report.Pass, "certificate type: VMC; "},
+			"bimi.vmc.logotype": {report.Pass, "certificate type: VMC; logotype extension binds"},
+		}},
+		{"redirected", "/logo.svg", moved + "/vmc.pem", map[string]wantResult{
+			"bimi.vmc.fetch": {report.Pass, "HTTP 200, "},
+			"bimi.vmc.chain": {report.Pass, "certificate type: VMC; "},
+		}},
+		{"other logo", "/other.svg", s.base + "/vmc.pem", map[string]wantResult{
+			"bimi.vmc.logotype": {report.Fail, unbound},
+		}},
+		{"no logo", "/missing.svg", s.base + "/vmc.pem", map[string]wantResult{
+			"bimi.vmc.logotype": {report.Warn, "certificate type: VMC; logotype extension parsed"},
+		}},
+		{"unknown issuer", "/logo.svg", s.base + "/unknown.pem", map[string]wantResult{
+			"bimi.vmc.fetch":    {report.Pass, "HTTP 200, "},
+			"bimi.vmc.chain":    {report.Info, unknownIssuerEvidence},
+			"bimi.vmc.logotype": {report.Info, notCached},
+		}},
+		{"expired", "/logo.svg", s.base + "/expired.pem", map[string]wantResult{
+			"bimi.vmc.chain": {
+				report.Fail, "chain validation failed: x509: certificate has expired",
+			},
+			"bimi.vmc.logotype": {report.Info, notCached},
+		}},
+		{"TLS certificate", "/logo.svg", s.base + "/tls.pem", map[string]wantResult{
+			"bimi.vmc.chain": {report.Fail, "leaf does not carry BIMI VMC or Common Mark EKU"},
+		}},
+		{"not PEM", "/logo.svg", s.base + "/not-a-pem.pem", map[string]wantResult{
+			"bimi.vmc.chain": {report.Fail, "PEM chain parse failed: no CERTIFICATE blocks found"},
+		}},
+		{"over the cap", "/logo.svg", s.base + "/huge.pem", map[string]wantResult{
+			"bimi.vmc.fetch":    {report.Fail, "GET " + s.base + "/huge.pem failed: body exceeds"},
+			"bimi.vmc.chain":    {report.Info, "no VMC bytes cached"},
+			"bimi.vmc.logotype": {report.Info, notCached},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			checkResults(t, markResults(t, s.base+tc.logo, tc.vmc, 2*time.Second), tc.want)
+		})
+	}
+}
+
+// TestVMCFetchStalledServerIsInconclusive: a server that never answers
+// leaves the certificate unknown, not failing.
+func TestVMCFetchStalledServerIsInconclusive(t *testing.T) {
+	got := markResults(t, "https://localhost/logo.svg", stallingURL(t), 500*time.Millisecond)
+	checkResults(t, got, map[string]wantResult{
+		"bimi.vmc.fetch": {report.Warn, "could not determine: "},
+		"bimi.vmc.chain": {report.Info, "no VMC bytes cached"},
+	})
 }

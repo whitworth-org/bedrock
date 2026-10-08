@@ -119,8 +119,8 @@ type destination struct {
 	verdict  bool      // stderr gets the verdict, because stdout is a file
 }
 
-// scanned is a finished scan: every result before filtering, and how the
-// scan went.
+// scanned is a finished scan: every result it gave, before --severity and
+// --ids filter them, and how the scan went.
 type scanned struct {
 	results     []report.Result
 	elapsed     time.Duration
@@ -177,7 +177,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, sys syste
 		warnUnmatchedIDs(stderr, idsSource(fs), plan.filter.IDs, s.results)
 	}
 	rep, regressions := buildReport(plan, s.results)
-	view := newView(o, plan, s, dest, exitCode(rep, regressions, o.regressionOnly))
+	view := newView(o, s, dest, exitCode(rep, regressions, o.regressionOnly))
 	if err := render(stdout, rep, view, dest.human); err != nil {
 		return fail(stderr, err)
 	}
@@ -286,7 +286,8 @@ func diagnose(stderr io.Writer, msg string) {
 
 // prepare merges the config file into o and validates every input, so a typo
 // fails in milliseconds rather than after a full scan. Once every input is
-// valid, settings that are accepted but probably unintended get a warning.
+// valid, a config timeout that does not parse gets a warning, as bedrock
+// scans on with the default.
 func prepare(fs *flag.FlagSet, o *options, stderr io.Writer) (*scanPlan, error) {
 	cfg, err := cli.LoadConfig(o.configPath)
 	if err != nil {
@@ -305,22 +306,11 @@ func prepare(fs *flag.FlagSet, o *options, stderr io.Writer) (*scanPlan, error) 
 	if err != nil {
 		return nil, err
 	}
-	warnSettings(stderr, o, timeoutErr)
-	return &scanPlan{env: env, filter: filter, base: base}, nil
-}
-
-// warnSettings writes a stderr warning for each accepted setting the user
-// probably did not mean; timeoutErr is mergeConfig's error. Neither changes
-// the exit code.
-func warnSettings(stderr io.Writer, o *options, timeoutErr error) {
 	if timeoutErr != nil {
 		diagnose(stderr, fmt.Sprintf("%v; scanning with the default timeout %s",
 			timeoutErr, o.timeout))
 	}
-	if o.regressionOnly && o.baselinePath == "" {
-		diagnose(stderr, "--regression-only has no --baseline to compare with, so every FAIL "+
-			"is ignored; set --baseline to an earlier JSON report")
-	}
+	return &scanPlan{env: env, filter: filter, base: base}, nil
 }
 
 // mergeConfig fills in the options the command line left unset from cfg.
@@ -347,8 +337,7 @@ func mergeConfig(cfg *cli.Config, fs *flag.FlagSet, o *options) error {
 	setBool("enable-rbl", &o.enableRBL, cfg.EnableRBL)
 	setBool("enable-ct", &o.enableCT, cfg.EnableCT)
 	setBool("regression-only", &o.regressionOnly, cfg.RegressionOnly)
-	setString("resolver", &o.resolver, cfg.Resolver)
-	setString("resolvers", &o.resolversCSV, strings.Join(cfg.Resolvers, ","))
+	mergeResolvers(cfg, set, o)
 	setString("only", &o.onlyCSV, strings.Join(cfg.Only, ","))
 	setString("exclude", &o.excludeCSV, strings.Join(cfg.Exclude, ","))
 	setString("severity", &o.severity, cfg.Severity)
@@ -362,6 +351,46 @@ func mergeConfig(cfg *cli.Config, fs *flag.FlagSet, o *options) error {
 		return fmt.Errorf("config %s: %w", o.configPath, err)
 	}
 	o.timeout = timeout
+	return nil
+}
+
+// mergeResolvers fills in the resolvers from cfg unless the command line
+// sets either resolver flag. The two flags choose the resolvers together:
+// either one on the command line overrides both config keys.
+func mergeResolvers(cfg *cli.Config, set map[string]bool, o *options) {
+	if set["resolver"] || set["resolvers"] {
+		return
+	}
+	o.resolver = cfg.Resolver
+	o.resolversCSV = strings.Join(cfg.Resolvers, ",")
+}
+
+// validateArgs reports, on one line, every flag value that rules out a
+// useful scan, so run can exit 2 before sending a query.
+func validateArgs(f cli.Filter, timeout time.Duration, regressionOnly bool, baseline string) error {
+	categories := registry.Categories()
+	err := errors.Join(
+		cli.ValidateCategories(f.Only, categories),
+		cli.ValidateCategories(f.Exclude, categories),
+		cli.ValidateTimeout(timeout),
+		cli.ValidateRegressionOnly(regressionOnly, baseline),
+	)
+	if err == nil {
+		return nil
+	}
+	// errors.Join puts each error on a line of its own.
+	return errors.New(strings.ReplaceAll(err.Error(), "\n", "; "))
+}
+
+// resolverSpecs lists the resolvers to use: --resolvers when it names any,
+// else --resolver, else none, which selects the system resolvers.
+func resolverSpecs(resolversCSV, resolver string) []string {
+	if specs := cli.SplitCSV(resolversCSV); len(specs) > 0 {
+		return specs
+	}
+	if resolver != "" {
+		return []string{resolver}
+	}
 	return nil
 }
 
@@ -379,7 +408,8 @@ func normalizeTarget(raw string) (string, error) {
 	return strings.ToLower(ascii), nil
 }
 
-// loadOptions parses --severity into the result filter and loads --baseline.
+// loadOptions parses --severity into the result filter, checks the flag
+// values with validateArgs, and loads --baseline.
 func loadOptions(o *options) (cli.Filter, *report.Report, error) {
 	minSeverity, severitySet, err := cli.ParseSeverity(o.severity)
 	if err != nil {
@@ -392,6 +422,9 @@ func loadOptions(o *options) (cli.Filter, *report.Report, error) {
 		SeveritySet: severitySet,
 		IDs:         cli.SplitCSV(o.idsCSV),
 	}
+	if err := validateArgs(filter, o.timeout, o.regressionOnly, o.baselinePath); err != nil {
+		return cli.Filter{}, nil, usageError{err}
+	}
 	if o.baselinePath == "" {
 		return filter, nil, nil
 	}
@@ -402,20 +435,16 @@ func loadOptions(o *options) (cli.Filter, *report.Report, error) {
 	return filter, base, nil
 }
 
-// newEnv builds the probe environment. --resolvers specs are validated here;
-// a bad --resolver spec surfaces on its first lookup instead.
+// newEnv builds the probe environment. Every resolver spec is validated
+// here, and without one the system must have a resolver.
 func newEnv(target string, o *options) (*probe.Env, error) {
-	var env *probe.Env
-	if resolvers := cli.SplitCSV(o.resolversCSV); len(resolvers) > 0 {
-		var err error
-		env, err = probe.NewEnvMulti(target, o.timeout, !o.noActive, resolvers)
-		if err != nil {
-			// err names the entry at fault. The list is left out, as another
-			// entry's URL can hold a password or token.
-			return nil, fmt.Errorf("invalid resolvers: %w", err)
-		}
-	} else {
-		env = probe.NewEnv(target, o.timeout, !o.noActive, o.resolver)
+	env, err := probe.NewEnvMulti(target, o.timeout, !o.noActive,
+		resolverSpecs(o.resolversCSV, o.resolver))
+	if err != nil {
+		// err names the spec at fault, or says there is no system resolver.
+		// The list is left out, as another entry's URL can hold a password
+		// or token.
+		return nil, err
 	}
 	env.Subdomains = o.subdomains
 	env.EnableRBL = o.enableRBL
@@ -444,11 +473,13 @@ func showProgress(stdout, stderr io.Writer, sys system) bool {
 		(sys.isTerminal(stdout) || sys.isRegular(stdout))
 }
 
-// scan runs every registered check and reports progress to w (nil for
-// none). If ctx is cancelled while checks are unfinished, the scan is marked
-// interrupted, with the checks not done at that moment.
+// scan runs the registered checks in the categories the filter keeps and
+// reports progress on them to w (nil for none). If ctx is cancelled while
+// checks are unfinished, the scan is marked interrupted, with the checks not
+// done at that moment.
 func scan(ctx context.Context, plan *scanPlan, w io.Writer, clock progress.Clock) scanned {
-	prog := progress.New(w, checkIDs(), clock)
+	keep := plan.filter.KeepCategory
+	prog := progress.New(w, checkIDs(keep), clock)
 	prog.Start(progress.Info{
 		Target: plan.env.Target, Active: plan.env.Active, Timeout: plan.env.Timeout,
 	})
@@ -456,7 +487,8 @@ func scan(ctx context.Context, plan *scanPlan, w io.Writer, clock progress.Clock
 	interrupts := make(chan []string, 1)
 	stopWatching := context.AfterFunc(ctx, func() { interrupts <- prog.Interrupt() })
 	start := clock.Now()
-	results := registry.Run(ctx, plan.env, func(c registry.Check) { prog.Done(c.ID()) })
+	opts := registry.Options{Keep: keep, OnDone: func(c registry.Check) { prog.Done(c.ID()) }}
+	results := registry.Run(ctx, plan.env, opts)
 	s := scanned{results: results, elapsed: clock.Now().Sub(start)}
 	if !stopWatching() {
 		// ctx was cancelled first, so the callback has run or is running;
@@ -468,12 +500,14 @@ func scan(ctx context.Context, plan *scanPlan, w io.Writer, clock progress.Clock
 	return s
 }
 
-// checkIDs lists the ID of every registered check.
-func checkIDs() []string {
-	checks := registry.All()
-	ids := make([]string, len(checks))
-	for i, c := range checks {
-		ids[i] = c.ID()
+// checkIDs lists the ID of every registered check in a category keep
+// accepts: the checks registry.Run runs.
+func checkIDs(keep func(category string) bool) []string {
+	var ids []string
+	for _, c := range registry.All() {
+		if keep(c.Category()) {
+			ids = append(ids, c.ID())
+		}
 	}
 	return ids
 }
@@ -491,9 +525,10 @@ func idsSource(fs *flag.FlagSet) string {
 }
 
 // warnUnmatchedIDs names, in one stderr line, each --ids entry that no
-// result has, before any filtering: a mistyped ID otherwise just leaves the
-// report without it. source says where the entries came from. Quoting keeps
-// any control character in an entry inert.
+// result of the scan has, before --severity and --ids filter them: a
+// mistyped ID, or one in a category --only or --exclude skips, otherwise
+// just leaves the report without it. source says where the entries came
+// from. Quoting keeps any control character in an entry inert.
 func warnUnmatchedIDs(stderr io.Writer, source string, ids []string, results []report.Result) {
 	found := make(map[string]bool, len(results))
 	for _, r := range results {
@@ -556,7 +591,7 @@ func exitCode(rep report.Report, regressions []report.Result, regressionOnly boo
 
 // newView gathers what the terminal report and the verdict say beyond the
 // report itself; exit is the process exit code, computed once.
-func newView(o *options, plan *scanPlan, s scanned, d destination, exit int) report.View {
+func newView(o *options, s scanned, d destination, exit int) report.View {
 	return report.View{
 		Color:          d.color,
 		Elapsed:        s.elapsed,
@@ -566,39 +601,16 @@ func newView(o *options, plan *scanPlan, s scanned, d destination, exit int) rep
 		Baseline:       o.baselinePath,
 		RegressionOnly: o.regressionOnly,
 		Interrupted:    s.interrupted,
-		Unfinished:     shownChecks(plan.filter, s.unfinished),
+		Unfinished:     s.unfinished,
 		Exit:           exit,
 	}
 }
 
-// shownChecks keeps the checks in ids whose category --only and --exclude
-// let through, so the unfinished list covers what the report shows.
-// --severity and --ids select results, which an unfinished check may not
-// have produced yet, so they keep every check.
-func shownChecks(f cli.Filter, ids []string) []string {
-	category := map[string]string{}
-	for _, c := range registry.All() {
-		category[c.ID()] = c.Category()
-	}
-	checks := make([]report.Result, len(ids))
-	for i, id := range ids {
-		checks[i] = report.Result{ID: id, Category: category[id]}
-	}
-	var out []string
-	for _, c := range (cli.Filter{Only: f.Only, Exclude: f.Exclude}).Apply(checks) {
-		out = append(out, c.ID)
-	}
-	return out
-}
-
-// resolverLabels names the resolvers the scan used, as given but without
-// credentials: --resolvers when it lists any, since newEnv prefers it,
-// otherwise --resolver, which is empty for the system resolver.
+// resolverLabels names the resolvers the scan used, the specs resolverSpecs
+// picks for newEnv, as given but without credentials; the system resolvers
+// get none.
 func resolverLabels(o *options) []string {
-	specs := cli.SplitCSV(o.resolversCSV)
-	if len(specs) == 0 && o.resolver != "" {
-		specs = []string{o.resolver}
-	}
+	specs := resolverSpecs(o.resolversCSV, o.resolver)
 	for i, spec := range specs {
 		specs[i] = redactResolver(spec)
 	}

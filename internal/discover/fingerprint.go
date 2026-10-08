@@ -3,6 +3,7 @@ package discover
 import (
 	"context"
 	"fmt"
+	"net"
 	"sort"
 	"sync"
 
@@ -25,7 +26,7 @@ import (
 //	web.tls.fingerprint.ja3s.<apex|www>
 //	subdomain.tls.fingerprint.ja3s.<host>
 //
-// All dials route through probe.SafeDialContext to keep the SSRF posture
+// All dials route through probe.SafeDial to keep the SSRF posture
 // consistent with the rest of bedrock's HTTP client.
 func fingerprintHosts(ctx context.Context, env *probe.Env, hosts []string) []report.Result {
 	return fingerprintHostsAt(ctx, env, hosts, "443")
@@ -40,7 +41,9 @@ func fingerprintHostsAt(ctx context.Context, env *probe.Env, hosts []string, por
 		return nil
 	}
 	timeout := env.Timeout
-	dial := probe.SafeDialContext(timeout, false)
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return probe.SafeDial(ctx, network, addr, timeout)
+	}
 
 	sem := make(chan struct{}, maxConcurrentDials)
 	var (

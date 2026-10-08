@@ -9,7 +9,7 @@ package dnssec
 
 import (
 	"context"
-	"sync"
+	"fmt"
 
 	mdns "github.com/miekg/dns"
 
@@ -20,7 +20,7 @@ import (
 
 // init registers the DNSSEC checks. The chain check, algorithm check, and
 // NSEC check all share a per-run cache populated by ensureChainData; the
-// helper uses CacheGetOrSet so the data is fetched exactly once regardless
+// helper uses probe.Shared so the data is fetched exactly once regardless
 // of which check happens to run first under the parallel registry.
 func init() {
 	registry.Register(checkutil.Wrap("dnssec.chain", category, runChain))
@@ -31,94 +31,70 @@ func init() {
 
 const category = "DNSSEC"
 
-// Cache keys shared between the dnssec checks (private to this package).
-const (
-	cacheKeyDS     = "dnssec.ds"     // []*mdns.DS
-	cacheKeyDNSKEY = "dnssec.dnskey" // []*mdns.DNSKEY
-	cacheKeySigned = "dnssec.signed" // bool — true when both DS and DNSKEY present
-)
+// cacheKeyChain caches the *chainData the dnssec checks share (private to
+// this package).
+const cacheKeyChain = "dnssec.chain.data"
 
-// chainData holds the artefacts of the DS+DNSKEY queries that all three
-// dnssec checks need. It is computed once per run via CacheGetOrSet.
+// chainData holds the DS and DNSKEY answers that the chain, algorithms, nsec
+// and cds checks share. It is computed once per run via probe.Shared.
 type chainData struct {
-	dsResp  *mdns.Msg
 	keyResp *mdns.Msg
 	dsErr   error
 	keyErr  error
 	dsSet   []*mdns.DS
 	keySet  []*mdns.DNSKEY
-	signed  bool
+	signed  bool // both DS and DNSKEY published
 }
 
-// chainOnceMu guards chainOnces; chainOnces holds one *sync.Once per Env so
-// the DS+DNSKEY queries fire exactly once per scan even when chain,
-// algorithms, nsec, and cds run in parallel under the registry's worker
-// pool.
-//
-// Why not env.CacheGetOrSet: that helper holds the cache mutex for the full
-// duration of the producer, which would serialise every other check's
-// CacheGet / CachePut against our DNS round-trip. Using a separate Once
-// keeps the producer outside the cache lock entirely.
-var (
-	chainOnceMu sync.Mutex
-	chainOnces  = map[*probe.Env]*sync.Once{}
-	chainData_  = map[*probe.Env]*chainData{}
-)
-
-func chainOnceFor(env *probe.Env) (*sync.Once, *chainData) {
-	chainOnceMu.Lock()
-	defer chainOnceMu.Unlock()
-	o, ok := chainOnces[env]
-	if !ok {
-		o = &sync.Once{}
-		chainOnces[env] = o
-	}
-	return o, chainData_[env]
-}
-
-func storeChainData(env *probe.Env, cd *chainData) {
-	chainOnceMu.Lock()
-	chainData_[env] = cd
-	chainOnceMu.Unlock()
-}
-
-// ensureChainData fetches the DS and DNSKEY RRsets for env.Target exactly
-// once per Env. Sub-keys (cacheKeyDS / cacheKeyDNSKEY / cacheKeySigned) are
-// populated in the same call so existing helper functions keep working
-// without further plumbing.
+// ensureChainData fetches the DS and DNSKEY RRsets for env.Target at most
+// once per Env, even when chain, algorithms, nsec, and cds run in parallel
+// under the registry's worker pool. It never returns nil.
 func ensureChainData(ctx context.Context, env *probe.Env) *chainData {
-	once, cached := chainOnceFor(env)
-	if cached != nil {
-		return cached
+	cd := probe.Shared(env, cacheKeyChain, func() *chainData { return fetchChainData(ctx, env) })
+	if cd == nil {
+		// fetchChainData panicked under another check, whose result reports
+		// the panic; describe the chain as unknown rather than unsigned.
+		return &chainData{dsErr: fmt.Errorf(
+			"DS/DNSKEY fetch for %s failed in another DNSSEC check; see its registry.panic result",
+			env.Target)}
 	}
-	once.Do(func() {
-		cctx, cancel := env.WithTimeout(ctx)
-		defer cancel()
-
-		dsResp, dsErr := env.DNS.ExchangeWithDO(cctx, env.Target, mdns.TypeDS)
-		keyResp, keyErr := env.DNS.ExchangeWithDO(cctx, env.Target, mdns.TypeDNSKEY)
-
-		dsSet := extractDS(dsResp)
-		keySet := extractDNSKEY(keyResp)
-		signed := len(dsSet) > 0 && len(keySet) > 0
-
-		// Mirror to the legacy single-purpose cache keys so existing helpers
-		// (cachedDNSKEYs, cachedDSs, the cacheKeySigned reads in nsec /
-		// algorithms) continue to function.
-		env.CachePut(cacheKeyDS, dsSet)
-		env.CachePut(cacheKeyDNSKEY, keySet)
-		env.CachePut(cacheKeySigned, signed)
-
-		storeChainData(env, &chainData{
-			dsResp:  dsResp,
-			keyResp: keyResp,
-			dsErr:   dsErr,
-			keyErr:  keyErr,
-			dsSet:   dsSet,
-			keySet:  keySet,
-			signed:  signed,
-		})
-	})
-	_, cd := chainOnceFor(env)
 	return cd
+}
+
+// fetchChainData queries the DS and DNSKEY RRsets with checking disabled, so
+// a validating resolver hands over a bogus zone's records for the chain check
+// to diagnose. The resolver client gives each query its own --timeout budget.
+func fetchChainData(ctx context.Context, env *probe.Env) *chainData {
+	dsResp, dsErr := queryApexCD(ctx, env, mdns.TypeDS)
+	keyResp, keyErr := queryApexCD(ctx, env, mdns.TypeDNSKEY)
+	dsSet := extractDS(dsResp)
+	keySet := extractDNSKEY(keyResp)
+	return &chainData{
+		keyResp: keyResp,
+		dsErr:   dsErr,
+		keyErr:  keyErr,
+		dsSet:   dsSet,
+		keySet:  keySet,
+		signed:  len(dsSet) > 0 && len(keySet) > 0,
+	}
+}
+
+// queryApexCD sends a DO+CD query for qtype at env.Target and checks the
+// reply's rcode (see checkRcode).
+func queryApexCD(ctx context.Context, env *probe.Env, qtype uint16) (*mdns.Msg, error) {
+	return checkRcode(env.DNS.ExchangeCheckingDisabled(ctx, env.Target, qtype))
+}
+
+// checkRcode returns resp, or an error when the exchange failed or the
+// resolver answered with an rcode other than NOERROR and NXDOMAIN, such as
+// SERVFAIL or REFUSED, which says nothing about whether the records exist.
+// NXDOMAIN reads as an empty answer.
+func checkRcode(resp *mdns.Msg, err error) (*mdns.Msg, error) {
+	switch {
+	case err != nil:
+		return nil, err
+	case resp.Rcode != mdns.RcodeSuccess && resp.Rcode != mdns.RcodeNameError:
+		return nil, &probe.RcodeError{Rcode: resp.Rcode}
+	}
+	return resp, nil
 }

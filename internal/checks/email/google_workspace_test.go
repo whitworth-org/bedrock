@@ -10,13 +10,13 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// newEnvWithMX builds a minimal *probe.Env whose MX cache entry is
-// pre-populated. The check reads from cache before falling back to DNS, so
-// this keeps the test hermetic without starting a resolver.
+// newEnvWithMX builds a minimal *probe.Env whose shared MX lookup is
+// pre-populated. targetMX returns a stored lookup without querying, so this
+// keeps the test hermetic without starting a resolver.
 func newEnvWithMX(t *testing.T, mxs []probe.MX) *probe.Env {
 	t.Helper()
 	env := probe.NewEnv("example.com", time.Second, false, "")
-	env.CachePut(probe.CacheKeyMX, mxs)
+	env.CachePut(probe.CacheKeyMX, &mxLookup{mxs: mxs})
 	return env
 }
 

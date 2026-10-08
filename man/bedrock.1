@@ -27,10 +27,13 @@ pass
 .B \-\-no\-active
 to confine the run to DNS lookups.
 .PP
-The HTTP client blocks denylisted RFC 1918, loopback, link-local, ULA,
-CGNAT, and cloud-metadata addresses to neutralise SSRF via
-attacker-influenced DNS.
-Resolvers pointing at private address space are rejected unless the
+Every probe connection (HTTP, TLS, SMTP, AXFR and QUIC) refuses denylisted
+RFC 1918, loopback, link-local, ULA, CGNAT, multicast, reserved, and
+cloud-metadata addresses to neutralise SSRF via attacker-influenced DNS.
+A resolver given as an IP address in that space is rejected too; one given
+by name is checked only when DoH dials it, since UDP and DoT dial the name
+unchecked.
+These checks apply unless the
 .B BEDROCK_ALLOW_PRIVATE_RESOLVER
 environment variable is set to a non-empty value (intended for hermetic
 test labs).
@@ -72,7 +75,8 @@ Use the specified recursive DNS resolver. Accepted forms:
 .B host
 or
 .B host:port
-\(em UDP plaintext
+\(em UDP plaintext; an IPv6 address takes a port only in brackets
+.RB ( [2001:db8::53]:5353 )
 .IP \(bu 2
 .BR cloudflare ", " google ", " quad9 ", " opendns
 \(em named preset over UDP
@@ -84,7 +88,7 @@ or
 \(em named preset over DNS-over-HTTPS (RFC 8484)
 .IP \(bu 2
 .BI tls:// host[:port]
-\(em explicit DoT to a custom server
+\(em explicit DoT to a custom server, named by DNS name rather than IP address
 .IP \(bu 2
 .BI https:// host/path
 \(em explicit DoH to a custom server
@@ -103,7 +107,7 @@ when both are supplied.
 .TP
 .BI \-\-timeout " duration"
 Per-operation timeout for DNS queries, HTTPS GETs, and TLS handshakes.
-Accepts any Go duration string
+Accepts any Go duration string greater than zero
 .RB ( 500ms ", " 5s ", " 1m ).
 Default:
 .BR 5s .
@@ -116,20 +120,36 @@ and the scan uses the default.
 Read defaults from a JSON config file at
 .IR path .
 Keys mirror the long-form flag names with hyphens replaced by underscores.
-Flag values supplied on the command line override config values.
+Flag values supplied on the command line override config values;
+either resolver flag overrides both the
+.B resolver
+and
+.B resolvers
+keys.
 .TP
 .BI \-\-only " csv"
-Comma-separated list of categories to include in output:
-.BR DNS ", " DNSSEC ", " Email ", " WWW ", " Subdomain .
-Other categories are still executed but suppressed at render time.
+Comma-separated list of categories to run
+(e.g.\&
+.BR Email,WWW ).
+The categories, matched case-insensitively, are
+.BR DNS ", " DNSSEC ", " Email ", " Subdomain ", and " WWW ;
+any other name is a usage error.
+Checks in other categories do not run.
 .TP
 .BI \-\-exclude " csv"
-Comma-separated list of categories to exclude from output.
+Comma-separated list of categories to skip, from the same set as
+.BR \-\-only ;
+their checks do not run.
 .TP
 .BI \-\-ids " csv"
 Comma-separated list of specific check IDs to include
 (e.g.\&
 .BR email.dmarc.record,web.hsts ).
+The run-level results
+.B dns.resolver.unreachable
+and
+.BI registry.panic. id
+are always included.
 A warning on standard error names any entry that matches no result.
 .TP
 .BI \-\-severity " level"
@@ -180,17 +200,12 @@ for that ID to be reported as a regression (fails closed \(em an ambiguous
 baseline cannot mask a regression).
 .TP
 .B \-\-regression\-only
-With
+Requires
 .BR \-\-baseline :
 exit non-zero only on NEW failures versus the baseline.
 Pre-existing failures that have not changed are ignored.
 Useful as a CI gate that won't fail on legacy issues you've consciously
 deferred.
-Without
-.B \-\-baseline
-every
-.B FAIL
-is ignored, and a warning on standard error says so.
 .SH OUTPUT
 The format depends on where standard output goes:
 a terminal gets a text report;
@@ -314,10 +329,7 @@ at once, without a report.
 Warnings and errors also go to standard error, one line each, whatever it
 is: an
 .B \-\-ids
-entry that matches no result (not checked after an interrupt),
-.B \-\-regression\-only
-without
-.BR \-\-baseline ,
+entry that matches no result (not checked after an interrupt)
 and a config
 .I timeout
 that does not parse.
@@ -348,9 +360,19 @@ Each check returns one of five statuses:
 The check satisfied its requirement.
 .TP
 .B WARN
-A non-fatal observation. Does
+A non-fatal observation, or a probe that could not complete (a timeout,
+a reset connection, an unreachable network, a temporary DNS failure such
+as SERVFAIL or REFUSED, an SSRF refusal, an interrupted scan) in a check
+that grades the target, whose evidence starts with
+\(lqcould not determine:\(rq.
+Does
 .I not
 affect the exit code.
+An informational check whose probe could not complete stays
+.B INFO
+and quotes the error.
+A refused connection and NXDOMAIN are answers from the target and are
+graded as such.
 .TP
 .B FAIL
 The requirement was not met. Affects the exit code.
@@ -365,6 +387,9 @@ The check was not applicable to this target
 (e.g.\& BIMI checks against a domain with no MX, or any active probe with
 .B \-\-no\-active
 in effect).
+Checks of content fetched over a TLS chain that did not verify report
+.B N/A
+with evidence \(lqTLS chain invalid; see web.cert.*\(rq.
 .SH EXIT STATUS
 .TP
 .B 0
@@ -384,9 +409,24 @@ The report contained at least one
 a new
 .B FAIL
 versus the baseline).
+A resolver that answers none of the scan's DNS queries, by sending no
+reply or only errors such as SERVFAIL and REFUSED, yields the
+.B dns.resolver.unreachable
+.BR FAIL ,
+whichever categories run.
 .TP
 .B 2
 Usage error, invalid input or configuration, or a failed write.
+These include an unknown category, a malformed or denylisted resolver,
+no system resolver and no
+.BR \-\-resolver ,
+a
+.B \-\-timeout
+of zero or less, and
+.B \-\-regression\-only
+without
+.BR \-\-baseline ;
+each exits before the scan starts.
 .SH EXAMPLES
 .TP
 Basic audit; a terminal gets the text report:
@@ -437,9 +477,9 @@ is not supplied.
 .SH ENVIRONMENT
 .TP
 .B BEDROCK_ALLOW_PRIVATE_RESOLVER
-When set to a non-empty value, bypasses the resolver-IP denylist so
-loopback / RFC 1918 resolvers can be used. Intended for hermetic test
-environments only; production callers must leave this unset.
+When set to a non-empty value, bypasses the SSRF denylist so loopback /
+RFC 1918 resolvers and probe destinations can be used. Intended for
+hermetic test environments only; production callers must leave this unset.
 .TP
 .B CI
 When set to a non-empty value, as most CI services do, turns off the

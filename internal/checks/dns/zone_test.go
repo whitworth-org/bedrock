@@ -1,12 +1,120 @@
 package dns
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
+
+	miekg "github.com/miekg/dns"
 
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
+
+// TestZoneSOA_LookupsHaveTheirOwnTimeouts: the SOA lookup and the shared NS
+// lookup each get a whole per-operation timeout, so two slow answers that
+// together take longer than one timeout still give the MNAME check its NS
+// list.
+func TestZoneSOA_LookupsHaveTheirOwnTimeouts(t *testing.T) {
+	const timeout = 500 * time.Millisecond
+	fake := newFakeDNS(t)
+	fake.add(t, testSOA, "example.test. 300 IN NS ns1.example.test.",
+		"example.test. 300 IN NS ns2.example.test.")
+	fake.setDelay("example.test.", 3*timeout/5)
+	env := fake.env(t, "example.test", timeout)
+
+	results := runZoneSOA(context.Background(), env)
+	if len(results) != 2 || results[0].Status != report.Pass ||
+		results[1].ID != "dns.zone.mname" || results[1].Status != report.Pass {
+		t.Errorf("got %+v, want PASS for the SOA timers and for the MNAME in the NS list", results)
+	}
+}
+
+// TestZoneSOA_AliasIsNotApplicable: a target that is a CNAME is not a zone
+// apex, so neither the alias target's SOA nor a missing one is graded. The
+// fake leaves the CNAME out of the SOA reply, as a resolver that flattens
+// CNAME chains does, so only the CNAME lookup finds the alias.
+func TestZoneSOA_AliasIsNotApplicable(t *testing.T) {
+	fake := newFakeDNS(t)
+	fake.add(t, "www.alias.test. 300 IN CNAME edge.cdn.test.")
+	env := fake.env(t, "www.alias.test", time.Second)
+
+	results := runZoneSOA(context.Background(), env)
+
+	const want = "www.alias.test is an alias (CNAME to edge.cdn.test), not a zone apex"
+	ids := []string{"dns.zone.soa", "dns.zone.mname"}
+	if len(results) != len(ids) {
+		t.Fatalf("got %+v, want N/A results %v", results, ids)
+	}
+	for i, r := range results {
+		if r.ID != ids[i] || r.Status != report.NotApplicable || r.Evidence != want ||
+			r.Remediation != "" {
+			t.Errorf("got %+v, want %s N/A %q", r, ids[i], want)
+		}
+	}
+}
+
+// TestZoneSOA_NoSOA: a name with no SOA at or above it that is not an alias
+// FAILs; when the CNAME lookup that rules out an alias fails, the result is
+// inconclusive instead.
+func TestZoneSOA_NoSOA(t *testing.T) {
+	cases := []struct {
+		name       string
+		cnameRcode int
+		status     report.Status
+		evidence   string
+	}{
+		{"not an alias", miekg.RcodeSuccess, report.Fail, "no SOA returned for apex"},
+		{"CNAME lookup failed", miekg.RcodeServerFailure, wantInconclusive,
+			"could not determine: SOA lookup for host.example.test: CNAME lookup: " +
+				"resolver answered SERVFAIL"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeDNS(t)
+			fake.add(t, "host.example.test. 300 IN A 192.0.2.1")
+			fake.setTypeRcode("host.example.test.", miekg.TypeCNAME, tc.cnameRcode)
+			env := fake.env(t, "host.example.test", time.Second)
+
+			results := runZoneSOA(context.Background(), env)
+
+			if len(results) != 1 || results[0].Status != tc.status ||
+				results[0].Evidence != tc.evidence {
+				t.Errorf("got %+v, want one dns.zone.soa %s %q", results, tc.status, tc.evidence)
+			}
+		})
+	}
+}
+
+// TestZoneMX_LookupFailures: a failed apex MX lookup is inconclusive, while
+// NXDOMAIN, which says the name does not exist, stays a WARN.
+func TestZoneMX_LookupFailures(t *testing.T) {
+	cases := []struct {
+		name     string
+		rcode    int
+		status   report.Status
+		evidence string
+	}{
+		{"SERVFAIL", miekg.RcodeServerFailure, wantInconclusive,
+			"could not determine: MX lookup for example.test: resolver answered SERVFAIL"},
+		{"NXDOMAIN", miekg.RcodeNameError, report.Warn, "lookup error: NXDOMAIN"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeDNS(t)
+			fake.setRcode("example.test.", tc.rcode)
+			env := fake.env(t, "example.test", time.Second)
+
+			results := runZoneMX(context.Background(), env)
+
+			if len(results) != 1 || results[0].Status != tc.status ||
+				results[0].Evidence != tc.evidence || results[0].Remediation != "" {
+				t.Errorf("got %+v, want one dns.zone.mx %s %q", results, tc.status, tc.evidence)
+			}
+		})
+	}
+}
 
 func TestSOATimers_PassWhenAllInRange(t *testing.T) {
 	soa := &probe.SOA{
@@ -94,5 +202,23 @@ func TestSOARemediation_ContainsTarget(t *testing.T) {
 	}
 	if !strings.Contains(out, "minimum") {
 		t.Fatalf("remediation should include the MINIMUM line for RFC 2308 context")
+	}
+}
+
+func TestSOARemediation_OneLineRecordWithPlaceholderSerial(t *testing.T) {
+	out := soaRemediationExample("example.org")
+	var records []string
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, ";") {
+			records = append(records, line)
+		}
+	}
+	if len(records) != 1 {
+		t.Fatalf("want one SOA record line, got %d:\n%s", len(records), out)
+	}
+	fields := strings.Fields(records[0])
+	if len(fields) != 10 || fields[2] != "SOA" || fields[5] != "<YYYYMMDDnn>" {
+		t.Errorf("want owner IN SOA and seven RDATA fields with a <YYYYMMDDnn> serial, got %q",
+			records[0])
 	}
 }

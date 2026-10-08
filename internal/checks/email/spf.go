@@ -1,11 +1,14 @@
 package email
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
@@ -16,9 +19,10 @@ type SPF struct {
 	Mechanisms  []SPFMechanism
 	HasRedirect bool
 	Redirect    string
-	// AllQualifier is the qualifier on the terminating "all" mechanism, or
-	// the empty string when the record has no explicit "all". RFC 7208 §4.7
-	// treats a missing all as an implicit "?all".
+	// AllQualifier is the qualifier of the first "all" mechanism, where
+	// evaluation ends (RFC 7208 §5.1), and "+" for a bare "all" (§4.6.2). It
+	// is the empty string when the record has no "all"; RFC 7208 §4.7 treats
+	// a missing all as an implicit "?all".
 	AllQualifier string
 }
 
@@ -47,8 +51,10 @@ func ParseSPF(raw string) (*SPF, error) {
 		}
 		out.Mechanisms = append(out.Mechanisms, m)
 		switch {
-		case !m.IsModifier && strings.EqualFold(m.Name, "all"):
-			out.AllQualifier = m.Qualifier
+		case isAll(m) && out.AllQualifier == "":
+			// Normalizing a bare "all" to "+" keeps a later "all" from
+			// replacing the first.
+			out.AllQualifier = cmp.Or(m.Qualifier, "+")
 		case m.IsModifier && strings.EqualFold(m.Name, "redirect"):
 			out.HasRedirect = true
 			out.Redirect = m.Value
@@ -124,17 +130,35 @@ func parseSPFTerm(term string) (SPFMechanism, error) {
 	return SPFMechanism{Qualifier: q, Name: name, Value: value}, nil
 }
 
+func isAll(m SPFMechanism) bool {
+	return !m.IsModifier && strings.EqualFold(m.Name, "all")
+}
+
+// evaluated returns the mechanisms a receiver can evaluate: those up to and
+// including the first "all" (RFC 7208 §5.1).
+func (s *SPF) evaluated() []SPFMechanism {
+	var out []SPFMechanism
+	for _, m := range s.Mechanisms {
+		if !m.IsModifier {
+			out = append(out, m)
+		}
+		if isAll(m) {
+			break
+		}
+	}
+	return out
+}
+
 // CountDNSLookups returns the number of terms that would cause a DNS query
-// during evaluation (RFC 7208 §4.6.4: limit is 10).
+// during evaluation (RFC 7208 §4.6.4: limit is 10). Evaluation ends at the
+// first "all" (§5.1), and a redirect beside an "all" is never followed
+// (§6.1).
 func (s *SPF) CountDNSLookups() int {
 	n := 0
-	for _, m := range s.Mechanisms {
-		if m.IsModifier {
-			if strings.EqualFold(m.Name, "redirect") {
-				n++
-			}
-			continue
-		}
+	if s.HasRedirect && s.AllQualifier == "" {
+		n++
+	}
+	for _, m := range s.evaluated() {
 		switch strings.ToLower(m.Name) {
 		case "include", "a", "mx", "ptr", "exists":
 			n++
@@ -143,23 +167,42 @@ func (s *SPF) CountDNSLookups() int {
 	return n
 }
 
+// openRange returns the first evaluated ip4 or ip6 mechanism that passes
+// every address of its family, as +all does: a pass qualifier and a prefix
+// length of 0.
+func (s *SPF) openRange() (SPFMechanism, bool) {
+	for _, m := range s.evaluated() {
+		pass := m.Qualifier == "" || m.Qualifier == "+"
+		family := strings.ToLower(m.Name)
+		prefix, err := netip.ParsePrefix(m.Value)
+		if pass && (family == "ip4" || family == "ip6") && err == nil && prefix.Bits() == 0 {
+			return m, true
+		}
+	}
+	return SPFMechanism{}, false
+}
+
+// lookupTXT returns the TXT strings at name. NXDOMAIN returns none and no
+// error, because it proves the name publishes no record.
+func lookupTXT(ctx context.Context, env *probe.Env, name string) ([]string, error) {
+	txt, err := env.DNS.LookupTXT(ctx, name)
+	if err != nil && !errors.Is(err, probe.ErrNXDOMAIN) {
+		return nil, fmt.Errorf("TXT lookup for %s: %w", name, err)
+	}
+	return txt, nil
+}
+
 func runSPF(ctx context.Context, env *probe.Env) []report.Result {
 	ctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
 
-	const id = "email.spf.record"
-	const title = "SPF record present and well-formed"
-	refs := []string{"RFC 7208 §3", "RFC 7208 §4.6.4", "RFC 7208 §11"}
-
-	txt, err := env.DNS.LookupTXT(ctx, env.Target)
-	if err != nil && !errors.Is(err, probe.ErrNXDOMAIN) {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "TXT lookup failed: " + err.Error(),
-			Remediation: spfRemediation(env.Target),
-			RFCRefs:     refs,
-		}}
+	res := report.Result{
+		ID: "email.spf.record", Category: category, Title: "SPF record present and well-formed",
+		RFCRefs: []string{"RFC 7208 §3", "RFC 7208 §4.6.4", "RFC 7208 §11"},
+	}
+	txt, err := lookupTXT(ctx, env, env.Target)
+	if err != nil {
+		return []report.Result{checkutil.Inconclusive(res, err)}
 	}
 
 	var spfRecords []string
@@ -168,99 +211,64 @@ func runSPF(ctx context.Context, env *probe.Env) []report.Result {
 			spfRecords = append(spfRecords, t)
 		}
 	}
-
-	switch len(spfRecords) {
-	case 0:
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "no v=spf1 TXT record at apex",
-			Remediation: spfRemediation(env.Target),
-			RFCRefs:     refs,
-		}}
-	case 1:
-		// fall through
-	default:
+	if len(spfRecords) == 0 {
+		return []report.Result{spfFail(res, env.Target, "no v=spf1 TXT record at apex")}
+	}
+	if len(spfRecords) > 1 {
 		// RFC 7208 §3.2: more than one SPF record yields permerror.
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    fmt.Sprintf("multiple v=spf1 records (%d) — permerror", len(spfRecords)),
-			Remediation: spfRemediation(env.Target),
-			RFCRefs:     append(refs, "RFC 7208 §3.2"),
-		}}
+		res.RFCRefs = append(res.RFCRefs, "RFC 7208 §3.2")
+		return []report.Result{spfFail(res, env.Target,
+			fmt.Sprintf("multiple v=spf1 records (%d) — permerror", len(spfRecords)))}
 	}
 
 	parsed, err := ParseSPF(spfRecords[0])
 	if err != nil {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "parse error: " + err.Error(),
-			Remediation: spfRemediation(env.Target),
-			RFCRefs:     refs,
-		}}
+		return []report.Result{spfFail(res, env.Target, "parse error: "+err.Error())}
 	}
-
 	env.CachePut(probe.CacheKeySPF, parsed)
+	return []report.Result{gradeSPF(res, env.Target, parsed)}
+}
 
+// gradeSPF grades domain's parsed SPF record into res.
+func gradeSPF(res report.Result, domain string, parsed *SPF) report.Result {
 	if lookups := parsed.CountDNSLookups(); lookups > 10 {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    fmt.Sprintf("DNS-lookup terms = %d (limit 10): %s", lookups, parsed.Raw),
-			Remediation: spfRemediation(env.Target),
-			RFCRefs:     refs,
-		}}
+		return spfFail(res, domain,
+			fmt.Sprintf("DNS-lookup terms = %d (limit 10): %s", lookups, parsed.Raw))
 	}
-
+	if m, ok := parsed.openRange(); ok {
+		res.RFCRefs = append(res.RFCRefs, "RFC 7208 §5.6")
+		return spfFail(res, domain, m.Qualifier+m.Name+":"+m.Value+
+			" permits anyone to send, like +all: "+parsed.Raw)
+	}
 	switch parsed.AllQualifier {
 	case "-":
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:   report.Pass,
-			Evidence: parsed.Raw,
-			RFCRefs:  refs,
-		}}
+		res.Status, res.Evidence = report.Pass, parsed.Raw
 	case "~":
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:   report.Warn,
-			Evidence: "softfail (~all); prefer -all once monitoring is clean: " + parsed.Raw,
-			RFCRefs:  refs,
-		}}
+		res.Status = report.Warn
+		res.Evidence = "softfail (~all); prefer -all once monitoring is clean: " + parsed.Raw
 	case "?":
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:   report.Warn,
-			Evidence: "neutral (?all) provides no enforcement: " + parsed.Raw,
-			RFCRefs:  refs,
-		}}
+		res.Status = report.Warn
+		res.Evidence = "neutral (?all) provides no enforcement: " + parsed.Raw
 	case "+":
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "+all permits anyone to send: " + parsed.Raw,
-			Remediation: spfRemediation(env.Target),
-			RFCRefs:     append(refs, "RFC 7208 §11.4"),
-		}}
+		res.RFCRefs = append(res.RFCRefs, "RFC 7208 §11.4")
+		return spfFail(res, domain, "+all permits anyone to send: "+parsed.Raw)
 	default:
-		// Implicit ?all (no terminating all).
+		// No "all": the redirect decides, else an implicit ?all.
 		if parsed.HasRedirect {
-			return []report.Result{{
-				ID: id, Category: category, Title: title,
-				Status:   report.Pass,
-				Evidence: "redirect=" + parsed.Redirect + ": " + parsed.Raw,
-				RFCRefs:  refs,
-			}}
+			res.Status, res.Evidence = report.Pass, "redirect="+parsed.Redirect+": "+parsed.Raw
+		} else {
+			res.Status = report.Warn
+			res.Evidence = "no terminating all mechanism (implicit ?all): " + parsed.Raw
 		}
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:   report.Warn,
-			Evidence: "no terminating all mechanism (implicit ?all): " + parsed.Raw,
-			RFCRefs:  refs,
-		}}
 	}
+	return res
+}
+
+func spfFail(res report.Result, domain, evidence string) report.Result {
+	res.Status = report.Fail
+	res.Evidence = evidence
+	res.Remediation = spfRemediation(domain)
+	return res
 }
 
 func spfRemediation(domain string) string {

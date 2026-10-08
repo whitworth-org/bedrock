@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
@@ -55,7 +56,7 @@ func ParseSTSPolicy(body string) (*STSPolicy, error) {
 		}
 		colon := strings.IndexByte(line, ':')
 		if colon < 0 {
-			return nil, fmt.Errorf("malformed line %q", line)
+			return nil, fmt.Errorf("malformed line %q", report.ClipValue(line))
 		}
 		// Lower-case the key so the dispatch is case-insensitive. Keeping
 		// the original case available via line[:colon] would be fine too
@@ -82,7 +83,7 @@ func ParseSTSPolicy(body string) (*STSPolicy, error) {
 			sawMaxAge = true
 			n, err := strconv.Atoi(value)
 			if err != nil {
-				return nil, fmt.Errorf("invalid max_age %q", value)
+				return nil, fmt.Errorf("invalid max_age %q", report.ClipValue(value))
 			}
 			out.MaxAge = n
 		case "mx":
@@ -96,12 +97,12 @@ func ParseSTSPolicy(body string) (*STSPolicy, error) {
 		}
 	}
 	if out.Version != "STSv1" {
-		return nil, fmt.Errorf("unexpected version %q", out.Version)
+		return nil, fmt.Errorf("unexpected version %q", report.ClipValue(out.Version))
 	}
 	switch out.Mode {
 	case "enforce", "testing", "none":
 	default:
-		return nil, fmt.Errorf("invalid mode %q", out.Mode)
+		return nil, fmt.Errorf("invalid mode %q", report.ClipValue(out.Mode))
 	}
 	return out, nil
 }
@@ -122,23 +123,21 @@ func extractSTSID(raw string) string {
 }
 
 func runMTASTSTXT(ctx context.Context, env *probe.Env) []report.Result {
-	ctx, cancel := env.WithTimeout(ctx)
-	defer cancel()
-
 	const id = "email.mtasts.txt"
 	const title = "MTA-STS TXT record present and well-formed"
 	refs := []string{"RFC 8461 §3.1"}
 
+	base := report.Result{ID: id, Category: category, Title: title, RFCRefs: refs}
+	if publishesNullMX(ctx, env) {
+		return []report.Result{nullMXNotApplicable(base)}
+	}
+	ctx, cancel := env.WithTimeout(ctx)
+	defer cancel()
+
 	name := "_mta-sts." + env.Target
-	txt, err := env.DNS.LookupTXT(ctx, name)
-	if err != nil && !errors.Is(err, probe.ErrNXDOMAIN) {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "TXT lookup failed: " + err.Error(),
-			Remediation: mtastsTXTRemediation(env.Target),
-			RFCRefs:     refs,
-		}}
+	txt, err := lookupTXT(ctx, env, name)
+	if err != nil {
+		return []report.Result{checkutil.Inconclusive(base, err)}
 	}
 
 	var records []string
@@ -188,90 +187,94 @@ func runMTASTSTXT(ctx context.Context, env *probe.Env) []report.Result {
 }
 
 func runMTASTSPolicy(ctx context.Context, env *probe.Env) []report.Result {
-	const id = "email.mtasts.policy"
-	const title = "MTA-STS policy file fetched and well-formed"
-	refs := []string{"RFC 8461 §3.2"}
-
+	res := report.Result{
+		ID: "email.mtasts.policy", Category: category,
+		Title: "MTA-STS policy file fetched and well-formed", RFCRefs: []string{"RFC 8461 §3.2"},
+	}
 	if !env.Active {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:   report.NotApplicable,
-			Evidence: "skipped: --no-active",
-			RFCRefs:  refs,
-		}}
+		res.Status, res.Evidence = report.NotApplicable, "skipped: --no-active"
+		return []report.Result{res}
+	}
+	if publishesNullMX(ctx, env) {
+		return []report.Result{nullMXNotApplicable(res)}
 	}
 
 	ctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
 
-	url := "https://mta-sts." + env.Target + "/.well-known/mta-sts.txt"
 	// RFC 8461 §3.3: the policy fetch MUST use a valid TLS chain and MUST
 	// NOT follow redirects. GetStrict enforces both.
-	resp, err := env.HTTP.GetStrict(ctx, url)
+	resp, err := env.HTTP.GetStrict(ctx, mtastsPolicyURL(env.Target))
+	return []report.Result{gradeSTSPolicy(ctx, res, env.Target, resp, err)}
+}
+
+func mtastsPolicyURL(domain string) string {
+	return "https://mta-sts." + domain + "/.well-known/mta-sts.txt"
+}
+
+// gradeSTSPolicy grades the fetch of domain's policy file into res. A fetch
+// that could not complete is inconclusive. Any other fetch error, such as a
+// certificate that does not verify, fails, as do a status other than 200,
+// including a redirect, and a policy that does not parse (RFC 8461 §3.3).
+func gradeSTSPolicy(
+	ctx context.Context, res report.Result, domain string, resp *probe.Response, err error,
+) report.Result {
+	url := mtastsPolicyURL(domain)
 	if err != nil {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "GET " + url + " failed: " + err.Error(),
-			Remediation: mtastsPolicyRemediation(env.Target),
-			RFCRefs:     refs,
-		}}
+		if checkutil.Incomplete(ctx, err) {
+			return checkutil.Inconclusive(res, err)
+		}
+		return stsPolicyFail(res, domain, "GET "+url+" failed: "+err.Error())
 	}
 	if resp.Status != 200 {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    fmt.Sprintf("GET %s returned HTTP %d", url, resp.Status),
-			Remediation: mtastsPolicyRemediation(env.Target),
-			RFCRefs:     refs,
-		}}
+		return stsPolicyFail(res, domain, fmt.Sprintf("GET %s returned HTTP %d", url, resp.Status))
 	}
 
 	parsed, err := ParseSTSPolicy(string(resp.Body))
 	if err != nil {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "policy parse error: " + err.Error(),
-			Remediation: mtastsPolicyRemediation(env.Target),
-			RFCRefs:     refs,
-		}}
+		return stsPolicyFail(res, domain, "policy parse error: "+err.Error())
 	}
 
 	switch parsed.Mode {
 	case "enforce":
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:   report.Pass,
-			Evidence: fmt.Sprintf("mode=enforce max_age=%d mx=%v", parsed.MaxAge, parsed.MX),
-			RFCRefs:  refs,
-		}}
+		res.Status = report.Pass
+		res.Evidence = fmt.Sprintf("mode=enforce max_age=%d mx=%v", parsed.MaxAge, parsed.MX)
 	case "testing":
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:   report.Warn,
-			Evidence: fmt.Sprintf("mode=testing — promote to enforce when monitoring is clean (max_age=%d mx=%v)", parsed.MaxAge, parsed.MX),
-			RFCRefs:  refs,
-		}}
+		res.Status = report.Warn
+		res.Evidence = fmt.Sprintf("mode=testing — promote to enforce when monitoring is clean "+
+			"(max_age=%d mx=%v)", parsed.MaxAge, parsed.MX)
 	default: // "none"
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "mode=none disables enforcement",
-			Remediation: mtastsPolicyRemediation(env.Target),
-			RFCRefs:     refs,
-		}}
+		return stsPolicyFail(res, domain, "mode=none disables enforcement")
 	}
+	return res
 }
 
+func stsPolicyFail(res report.Result, domain, evidence string) report.Result {
+	res.Status = report.Fail
+	res.Evidence = evidence
+	res.Remediation = mtastsPolicyRemediation(domain)
+	return res
+}
+
+// nullMXNotApplicable reworks res for a domain that publishes null MX: it
+// accepts no mail (RFC 7505), so no inbound transport policy applies.
+func nullMXNotApplicable(res report.Result) report.Result {
+	res.Status = report.NotApplicable
+	res.Evidence = "domain publishes null MX (RFC 7505)"
+	return res
+}
+
+// mtastsTXTRemediation leaves the id as a placeholder: senders refetch the
+// policy only when the id changes (RFC 8461 §3.1), so a fixed one is wrong.
 func mtastsTXTRemediation(domain string) string {
-	return fmt.Sprintf(`_mta-sts.%s. IN TXT "v=STSv1; id=20260416000000Z"`, domain)
+	return fmt.Sprintf(`_mta-sts.%s. IN TXT "v=STSv1; id=<YYYYMMDDhhmmssZ>"`,
+		report.InlineValue(domain))
 }
 
 func mtastsPolicyRemediation(domain string) string {
 	return fmt.Sprintf(
 		"https://mta-sts.%s/.well-known/mta-sts.txt :\n"+
 			"version: STSv1\nmode: enforce\nmx: <your-mx-host>\nmax_age: 604800",
-		domain,
+		report.InlineValue(domain),
 	)
 }
