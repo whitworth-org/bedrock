@@ -21,7 +21,7 @@ go install github.com/whitworth-org/bedrock@latest
 Or pin a specific release:
 
 ```bash
-go install github.com/whitworth-org/bedrock@v1.2.3
+go install github.com/whitworth-org/bedrock@v1.3.0
 ```
 
 The binary is placed in `$GOBIN` (or `$GOPATH/bin`, which defaults to `~/go/bin` when `GOPATH` is unset). Make sure that directory is on your `PATH`:
@@ -387,7 +387,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with: { go-version: '1.27.1' }
-      - run: go install github.com/whitworth-org/bedrock@v1.2.3
+      - run: go install github.com/whitworth-org/bedrock@v1.3.0
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: baseline.json
