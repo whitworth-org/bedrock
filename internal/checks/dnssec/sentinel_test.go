@@ -1579,22 +1579,28 @@ func TestRunSentinelCancelled(t *testing.T) {
 	}
 }
 
-// TestRunSentinelCancelledAfterRootFetch sends no sentinel query once the
-// caller has cancelled, even though the root DNSKEY answer already arrived.
-func TestRunSentinelCancelledAfterRootFetch(t *testing.T) {
+// TestRunSentinelCancelledDuringRootFetch stops waiting for the root DNSKEY
+// answer once the caller cancels: the check reports at once that it was
+// skipped, naming the cancellation, and sends nothing more.
+func TestRunSentinelCancelledDuringRootFetch(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	primary := trusting(syntheticRoot(t, nil, 20326), 20326, 38696)
-	primary.onRootKeys = cancel
+	primary := &fakeResolver{silent: true, onRootKeys: cancel}
 	env, specs := newSentinelEnv(t, 2*time.Second, primary)
 
+	start := time.Now()
 	r := runSentinelOnce(t, ctx, env)
+	elapsed := time.Since(start)
 
-	prefix := expand(rootPreRoll+"; {0} undetermined (", specs)
-	if r.Status != report.Info || !strings.HasPrefix(r.Evidence, prefix) ||
-		!strings.Contains(r.Evidence, "cancel") {
-		t.Errorf("got %s %q, want INFO with evidence starting %q and naming the cancellation",
-			r.Status, r.Evidence, prefix)
+	prefix := expand("no resolver returned a usable root DNSKEY RRset: {0}: ", specs)
+	if r.Status != report.Info || r.Title != titleSentinelSkipped ||
+		!strings.HasPrefix(r.Evidence, prefix) || !strings.Contains(r.Evidence, "cancel") {
+		t.Errorf("got %s %q %q, want a skipped INFO naming the cancellation", r.Status, r.Title,
+			r.Evidence)
+	}
+	if elapsed >= time.Second {
+		t.Errorf("check took %v; it should end at the cancel, not at the 2s query timeout",
+			elapsed)
 	}
 	if got := primary.queries(); !slices.Equal(got, []string{". DNSKEY +do"}) {
 		t.Errorf("queries after cancellation = %q, want only the root DNSKEY query", got)
