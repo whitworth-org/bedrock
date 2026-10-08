@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -327,6 +328,28 @@ func TestGetDoesNotRetryRefusedConnection(t *testing.T) {
 	}
 	if n := dials.Load(); n != 1 {
 		t.Errorf("Get dialed a refusing port %d times, want 1", n)
+	}
+}
+
+// TestGetDoesNotRetryHandshakeTimeout: a handshake that timed out is not a
+// TLS failure, so Get dials once even though ctx is still live. The 100 ms
+// handshake timeout expires well before the 300 ms client budget, and ctx
+// never does.
+func TestGetDoesNotRetryHandshakeTimeout(t *testing.T) {
+	t.Setenv(allowPrivateResolverEnv, "1")
+	port := listenLoopback(t)
+	var dials atomic.Int32
+	ctx := httptrace.WithClientTrace(context.Background(), &httptrace.ClientTrace{
+		ConnectStart: func(string, string) { dials.Add(1) },
+	})
+
+	_, err := NewHTTP(100*time.Millisecond).Get(ctx, "https://127.0.0.1:"+port)
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Errorf("Get against a server that never answers returned %v, want a timeout", err)
+	}
+	if n := dials.Load(); n != 1 {
+		t.Errorf("Get dialed %d times after its handshake timed out, want 1", n)
 	}
 }
 

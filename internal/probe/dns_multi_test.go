@@ -279,21 +279,28 @@ func replyTruncated(w mdns.ResponseWriter, req *mdns.Msg) {
 }
 
 // listenUDPAndTCP binds a loopback UDP socket and a TCP listener on the same
-// port, as a resolver that moves truncated answers to TCP needs.
+// port, as a resolver that moves truncated answers to TCP needs. TCP picks
+// the port because Windows reserves TCP port ranges (netsh int ipv4 show
+// excludedportrange protocol=tcp) that its UDP port picker does not avoid,
+// so a port picked for UDP can be refused to TCP. The port TCP picks can
+// still be in use for UDP, so another is tried.
 func listenUDPAndTCP(t *testing.T) (net.PacketConn, net.Listener) {
 	t.Helper()
-	for range 5 {
-		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	const tries = 50
+	var udpErr error
+	for range tries {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
-			t.Fatalf("listen udp: %v", err)
+			t.Fatalf("listen tcp: %v", err)
 		}
-		l, err := net.Listen("tcp", pc.LocalAddr().String())
+		pc, err := net.ListenPacket("udp", l.Addr().String())
 		if err == nil {
 			return pc, l
 		}
-		_ = pc.Close()
+		udpErr = err
+		_ = l.Close()
 	}
-	t.Fatal("no loopback port was free for both UDP and TCP")
+	t.Fatalf("no loopback port was free for both UDP and TCP in %d tries: %v", tries, udpErr)
 	return nil, nil
 }
 

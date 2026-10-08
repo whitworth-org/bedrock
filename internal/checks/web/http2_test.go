@@ -145,16 +145,12 @@ func TestHTTP2_ProbeOutcomes(t *testing.T) {
 func TestHTTP2_CancelReturnsPromptly(t *testing.T) {
 	env := activeLoopbackEnv(t)
 	env.Timeout = 5 * time.Second
-	addr, _ := tarpitListener(t)
-	setPort(t, &http2Port, portOf(addr))
+	port, hello := helloTarpit(t, 1)
+	setPort(t, &http2Port, port)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(100*time.Millisecond, cancel)
-	start := time.Now()
+	ctx, assertPrompt := cancelOnHello(t, hello)
 	r := runHTTP2(ctx, env)[0]
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Errorf("returned %v after the cancel, want promptly", elapsed)
-	}
+	assertPrompt()
 	assertInconclusive(t, r, "context canceled")
 }
 

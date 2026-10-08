@@ -283,19 +283,17 @@ func TestECCurves_ProbeOutcomes(t *testing.T) {
 
 // TestECCurves_CancelReturnsPromptly: cancelling the scan interrupts
 // handshakes in flight instead of waiting out the per-operation timeout.
+// The cancel waits for every curve's ClientHello, since the evidence names
+// the first curve's error.
 func TestECCurves_CancelReturnsPromptly(t *testing.T) {
 	env := activeLoopbackEnv(t)
 	env.Timeout = 5 * time.Second
-	addr, _ := tarpitListener(t)
-	setPort(t, &ecCurvePort, portOf(addr))
+	port, hello := helloTarpit(t, len(probeCurves))
+	setPort(t, &ecCurvePort, port)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(100*time.Millisecond, cancel)
-	start := time.Now()
+	ctx, assertPrompt := cancelOnHello(t, hello)
 	r := runECCurves(ctx, env)[0]
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Errorf("returned %v after the cancel, want promptly", elapsed)
-	}
+	assertPrompt()
 	assertInconclusive(t, r, "context canceled")
 }
 
