@@ -45,8 +45,12 @@ type cannedZone struct {
 func (z cannedZone) ServeDNS(w mdns.ResponseWriter, req *mdns.Msg) {
 	q := req.Question[0]
 	name := strings.ToLower(strings.TrimSuffix(q.Name, "."))
-	defer z.stats.begin(name, q.Qtype)()
+	// The query stops counting as in flight before its reply is written:
+	// the client can send its next query as soon as the reply arrives,
+	// before this handler returns.
+	end := z.stats.begin(name, q.Qtype)
 	time.Sleep(z.delay)
+	end()
 
 	resp := new(mdns.Msg)
 	resp.SetReply(req)
