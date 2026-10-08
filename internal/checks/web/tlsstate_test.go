@@ -236,11 +236,58 @@ func TestHostTLS_RejectedHandshakeIsNotRetried(t *testing.T) {
 func TestHostTLS_CancelReturnsPromptly(t *testing.T) {
 	env := tlsTestEnv(t)
 	env.Timeout = 5 * time.Second
-	port, hello := helloTarpit(t)
+	port, hello := helloTarpit(t, 1)
 	setPort(t, &tlsStatePort, port)
 
+	ctx, assertPrompt := cancelOnHello(t, hello)
+	got := runTLSConsumers(ctx, env)
+	assertPrompt()
+	if len(got) != len(tlsConsumerIDs) {
+		t.Errorf("got results %v, want exactly %v", got, tlsConsumerIDs)
+	}
+	for _, id := range tlsConsumerIDs {
+		assertInconclusive(t, got[id], "context canceled")
+	}
+}
+
+// helloTarpit accepts connections on 127.0.0.1 and never answers them;
+// hello is closed once n of them have sent their first bytes, their
+// ClientHellos.
+func helloTarpit(t *testing.T, n int) (port string, hello <-chan struct{}) {
+	t.Helper()
+	ln := listenLoopback(t)
+	arrived := make(chan struct{})
+	var waiting atomic.Int64
+	waiting.Store(int64(n))
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				if _, err := conn.Read(make([]byte, 1)); err == nil && waiting.Add(-1) == 0 {
+					close(arrived)
+				}
+				_, _ = io.Copy(io.Discard, conn) // until the prober hangs up
+			}()
+		}
+	}()
+	return portOf(ln.Addr()), arrived
+}
+
+// cancelOnHello returns a context that is cancelled once hello is closed,
+// so the cancel lands mid-handshake however long the dials take; a cancel
+// during a dial reports "operation was canceled" instead. Call assertPrompt
+// once the probe returns: it checks that the cancel happened and that the
+// probe returned within two seconds of it.
+func cancelOnHello(
+	t *testing.T, hello <-chan struct{},
+) (ctx context.Context, assertPrompt func()) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	cancelled := make(chan time.Time, 1)
 	go func() {
 		select {
@@ -250,41 +297,17 @@ func TestHostTLS_CancelReturnsPromptly(t *testing.T) {
 		case <-ctx.Done():
 		}
 	}()
-	got := runTLSConsumers(ctx, env)
-	select {
-	case at := <-cancelled:
-		if elapsed := time.Since(at); elapsed > 2*time.Second {
-			t.Errorf("returned %v after the cancel, want promptly", elapsed)
+	return ctx, func() {
+		t.Helper()
+		select {
+		case at := <-cancelled:
+			if elapsed := time.Since(at); elapsed > 2*time.Second {
+				t.Errorf("returned %v after the cancel, want promptly", elapsed)
+			}
+		default:
+			t.Error("the probe returned before every ClientHello arrived")
 		}
-	default:
-		t.Fatal("the shared handshake never sent its ClientHello")
 	}
-	if len(got) != len(tlsConsumerIDs) {
-		t.Errorf("got results %v, want exactly %v", got, tlsConsumerIDs)
-	}
-	for _, id := range tlsConsumerIDs {
-		assertInconclusive(t, got[id], "context canceled")
-	}
-}
-
-// helloTarpit accepts one connection on 127.0.0.1 and never answers it;
-// hello is closed once the client's first bytes, its ClientHello, arrive.
-func helloTarpit(t *testing.T) (port string, hello <-chan struct{}) {
-	t.Helper()
-	ln := listenLoopback(t)
-	arrived := make(chan struct{})
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		if _, err := conn.Read(make([]byte, 1)); err == nil {
-			close(arrived)
-		}
-		_, _ = io.Copy(io.Discard, conn) // until the prober hangs up
-	}()
-	return portOf(ln.Addr()), arrived
 }
 
 // TestHostTLS_ProducerPanicked: when the check that ran the handshake

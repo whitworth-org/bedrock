@@ -387,17 +387,32 @@ func TestTLSReachResult_DialsThroughDenylist(t *testing.T) {
 }
 
 // TestTLSReachResult_HonoursCancel: cancelling the scan interrupts a
-// handshake in flight instead of waiting out the timeout.
+// handshake in flight instead of waiting out the timeout. The cancel waits
+// for the ClientHello so that it lands mid-handshake however long the dial
+// takes; a cancel during the dial reports "operation was canceled" instead.
 func TestTLSReachResult_HonoursCancel(t *testing.T) {
 	t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "1")
-	addr, _ := reachTarpit(t)
+	addr, hello := helloTarpit(t)
 	setReachPort(t, addr)
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(100*time.Millisecond, cancel)
-	start := time.Now()
+	defer cancel()
+	cancelled := make(chan time.Time, 1)
+	go func() {
+		select {
+		case <-hello:
+			cancelled <- time.Now()
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	r := tlsReachResult(ctx, "127.0.0.1", 5*time.Second)
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Errorf("returned %v after the cancel, want promptly", elapsed)
+	select {
+	case at := <-cancelled:
+		if elapsed := time.Since(at); elapsed > 2*time.Second {
+			t.Errorf("returned %v after the cancel, want promptly", elapsed)
+		}
+	default:
+		t.Error("the probe returned before its ClientHello arrived")
 	}
 	if r.Status != report.Warn || !strings.Contains(r.Evidence, "context canceled") {
 		t.Errorf("got %s %q, want WARN naming the cancellation", r.Status, r.Evidence)
@@ -472,6 +487,30 @@ func reachTarpit(t *testing.T) (net.Addr, *atomic.Int32) {
 		}
 	}()
 	return ln.Addr(), accepted
+}
+
+// helloTarpit accepts one connection on 127.0.0.1 and never answers it;
+// hello is closed once the client's first bytes, its ClientHello, arrive.
+func helloTarpit(t *testing.T) (net.Addr, <-chan struct{}) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen on loopback: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	hello := make(chan struct{})
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, err := conn.Read(make([]byte, 1)); err == nil {
+			close(hello)
+		}
+		_, _ = io.Copy(io.Discard, conn) // until the prober hangs up
+	}()
+	return ln.Addr(), hello
 }
 
 // setReachPort points tlsReachResult at addr's port for the rest of the test.

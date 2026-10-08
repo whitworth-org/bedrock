@@ -139,7 +139,8 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 // (see checkRedirect). When a TLS handshake fails (an untrusted or
 // mismatched certificate, or a server limited to TLS 1.0/1.1) and ctx is
 // still live, Get retries once with verification disabled so the caller can
-// inspect what the server served. Any other failure is returned as is.
+// inspect what the server served. A handshake that timed out is not retried,
+// and any other failure is returned as is.
 //
 // IMPORTANT: a response from that retry has Verified false and a nil Body.
 // Callers that care about the body or its authenticity must use GetStrict,
@@ -149,11 +150,16 @@ func (h *HTTP) Get(ctx context.Context, target string) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The transport reports handshakes from its own dial goroutine.
+	// The transport reports handshakes from its own dial goroutine, which
+	// ignores ctx's deadline: a server that never answers ends the handshake
+	// at TLSHandshakeTimeout, possibly before ctx expires. A timeout says
+	// nothing about the server's TLS, so it does not earn the retry.
 	var handshakeFailed atomic.Bool
 	traced := httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
-			if err != nil {
+			var netErr net.Error
+			timedOut := errors.As(err, &netErr) && netErr.Timeout()
+			if err != nil && !timedOut {
 				handshakeFailed.Store(true)
 			}
 		},
