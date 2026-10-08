@@ -3,174 +3,156 @@ package bimi
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"strings"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
+	"github.com/whitworth-org/bedrock/internal/checks/email"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
-
-// dmarcView is the minimal projection of the email package's DMARC struct
-// the BIMI Gmail-gate consumes. We read the value back from env.cache via
-// reflection rather than importing email/* directly — sibling check
-// packages don't compile lock-step during parallel development, and the
-// reflection-based read keeps this check buildable in isolation.
-type dmarcView struct {
-	Policy   string // "p" tag: none | quarantine | reject
-	Pct      int
-	Adkim    string // "s" or "r"
-	Aspf     string // "s" or "r"
-	TestMode string // "t" tag: y | n (RFC 9989 §4.7)
-	Raw      string
-}
 
 type gmailGateCheck struct{}
 
 func (gmailGateCheck) ID() string       { return "bimi.gmail.dmarc" }
 func (gmailGateCheck) Category() string { return category }
 
-func (gmailGateCheck) Run(_ context.Context, env *probe.Env) []report.Result {
-	const id = "bimi.gmail.dmarc"
-	const title = "BIMI Gmail gate: DMARC quarantine|reject enforced, strict alignment"
-	refs := []string{"Gmail BIMI requirements", "RFC 9989 §4.7"}
-
-	v, ok := env.CacheGet(probe.CacheKeyDMARC)
-	if !ok {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Info,
-			Evidence:    "DMARC not parsed (no entry at " + probe.CacheKeyDMARC + ")",
-			Remediation: dmarcRemediation(env.Target),
-			RFCRefs:     refs,
-		}}
+// Run grades the DMARC prerequisites for showing a BIMI logo (Gmail's
+// requirements and BIMI Group draft §7.1): the record that supplies the
+// Author Domain's policy and the Organizational Domain's record are at
+// enforcement, publish no sp=none, apply to every message and are not in
+// test mode. Strict alignment is a recommendation in the evidence only.
+func (gmailGateCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
+	res := report.Result{
+		ID: "bimi.gmail.dmarc", Category: category,
+		Title:   "BIMI Gmail gate: DMARC quarantine|reject enforced",
+		RFCRefs: []string{"Gmail BIMI requirements", "BIMI Group draft §7.1", "RFC 9989 §4.7"},
 	}
-	if v == nil {
-		// Email check ran but found no DMARC; still a Fail for Gmail BIMI.
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "no DMARC record at _dmarc." + env.Target,
-			Remediation: dmarcRemediation(env.Target),
-			RFCRefs:     refs,
-		}}
+	if ensureRecord(ctx, env) == nil {
+		res.Status = report.NotApplicable
+		res.Evidence = "no parsed BIMI record (TXT check did not produce one)"
+		return []report.Result{res}
 	}
-	dv, err := readDMARC(v)
-	if err != nil {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:   report.Info,
-			Evidence: "DMARC cache value not introspectable: " + err.Error(),
-			RFCRefs:  refs,
-		}}
+	// An incomplete walk may have missed a record the gate depends on.
+	walk := email.EnsureDMARCWalk(ctx, env)
+	if err := walk.Incomplete(); err != nil {
+		return []report.Result{checkutil.Inconclusive(res, err)}
 	}
-
-	results := gateFailures(dv, env.Target, id, title, refs)
-	if len(results) == 0 {
-		results = append(results, report.Result{
-			ID: id, Category: category, Title: title,
-			Status:   report.Pass,
-			Evidence: fmt.Sprintf("p=%s adkim=%s aspf=%s t=%s", dv.Policy, dv.Adkim, dv.Aspf, testModeOrN(dv.TestMode)),
-			RFCRefs:  refs,
-		})
+	if walk.Policy == nil {
+		res.Status = report.Fail
+		res.Evidence = "no DMARC record at _dmarc." + env.Target + " or any tree-walk ancestor"
+		res.Remediation = dmarcRemediation(env.Target, "quarantine")
+		return []report.Result{res}
 	}
-	return results
+	return []report.Result{gradeGate(res, walk)}
 }
 
-// gateFailures evaluates each Gmail BIMI requirement against the DMARC view
-// and returns one Fail per unmet gate (empty when all pass).
-func gateFailures(dv dmarcView, target, id, title string, refs []string) []report.Result {
-	fail := func(evidence string) report.Result {
-		return report.Result{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    evidence,
-			Remediation: dmarcRemediation(target),
-			RFCRefs:     refs,
+// gateRecord is a DMARC record the gate grades and the domain publishing it.
+type gateRecord struct {
+	domain string
+	rec    *email.DMARC
+}
+
+// gradeGate grades the records of walk, which found a policy, and lists
+// every unmet gate in one result.
+func gradeGate(res report.Result, walk *email.DMARCWalk) report.Result {
+	records := gateRecords(walk)
+	var unmet, fixes []string
+	for _, r := range records {
+		if gaps := unmetGates(r); len(gaps) > 0 {
+			unmet = append(unmet, gaps...)
+			fixes = append(fixes, dmarcRemediation(r.domain, enforcedPolicy(r.rec)))
 		}
 	}
-
-	var results []report.Result
-	policy := strings.ToLower(strings.TrimSpace(dv.Policy))
-	if policy != "quarantine" && policy != "reject" {
-		results = append(results, fail(fmt.Sprintf("DMARC p=%q (need quarantine or reject)", dv.Policy)))
+	advice := alignmentAdvice(walk.Policy)
+	if len(unmet) == 0 {
+		res.Status = report.Pass
+		res.Evidence = joinEvidence(gateSummary(walk, records), advice)
+		return res
 	}
-	if dv.Pct != 100 {
-		results = append(results, fail(fmt.Sprintf(
-			"DMARC pct=%d — pct is retired in RFC 9989, but legacy receivers still sample at "+
-				"pct<100, undercutting the full enforcement Gmail requires; remove the tag", dv.Pct)))
-	}
-	if strings.EqualFold(strings.TrimSpace(dv.TestMode), "y") {
-		results = append(results, fail(
-			"DMARC t=y — RFC 9989 test mode steps the effective policy down one level "+
-				"(reject→quarantine→none), undercutting the enforcement Gmail requires; set t=n or "+
-				"remove the tag"))
-	}
-	if !strings.EqualFold(strings.TrimSpace(dv.Adkim), "s") {
-		results = append(results, fail(fmt.Sprintf("DMARC adkim=%q (need s for strict DKIM alignment)", dv.Adkim)))
-	}
-	if !strings.EqualFold(strings.TrimSpace(dv.Aspf), "s") {
-		results = append(results, fail(fmt.Sprintf("DMARC aspf=%q (need s for strict SPF alignment)", dv.Aspf)))
-	}
-	return results
+	res.Status = report.Fail
+	res.Evidence = joinEvidence(strings.Join(unmet, "; "), advice)
+	res.Remediation = strings.Join(fixes, "\n")
+	return res
 }
 
-// testModeOrN renders an absent t= tag as its RFC 9989 default.
-func testModeOrN(t string) string {
-	if strings.TrimSpace(t) == "" {
-		return "n"
+// gateRecords returns the records BIMI requires at enforcement: the one
+// that supplies the Author Domain's policy and, when that is a different
+// record, the Organizational Domain's.
+func gateRecords(walk *email.DMARCWalk) []gateRecord {
+	records := []gateRecord{{walk.PolicyDomain, walk.Policy}}
+	if walk.OrgDomain == walk.PolicyDomain {
+		return records
 	}
-	return t
-}
-
-// readDMARC pulls the fields the gate cares about out of any value shaped
-// like the email package's *DMARC. Accepts pointer-or-value, ignores
-// missing fields, treats Pct == 0 (zero value) as "100" only if there is no
-// Pct field present at all (defensive).
-func readDMARC(v any) (dmarcView, error) {
-	rv := reflect.ValueOf(v)
-	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
-		if rv.IsNil() {
-			return dmarcView{}, fmt.Errorf("nil DMARC value")
+	for _, s := range walk.Steps {
+		if s.Domain == walk.OrgDomain && s.Record != nil {
+			return append(records, gateRecord{s.Domain, s.Record})
 		}
-		rv = rv.Elem()
 	}
-	if rv.Kind() != reflect.Struct {
-		return dmarcView{}, fmt.Errorf("expected struct, got %s", rv.Kind())
-	}
-	out := dmarcView{}
-	if f := rv.FieldByName("Policy"); f.IsValid() && f.Kind() == reflect.String {
-		out.Policy = f.String()
-	}
-	if f := rv.FieldByName("Adkim"); f.IsValid() && f.Kind() == reflect.String {
-		out.Adkim = f.String()
-	}
-	if f := rv.FieldByName("Aspf"); f.IsValid() && f.Kind() == reflect.String {
-		out.Aspf = f.String()
-	}
-	if f := rv.FieldByName("TestMode"); f.IsValid() && f.Kind() == reflect.String {
-		out.TestMode = f.String()
-	}
-	if f := rv.FieldByName("Raw"); f.IsValid() && f.Kind() == reflect.String {
-		out.Raw = f.String()
-	}
-	if f := rv.FieldByName("Pct"); f.IsValid() {
-		switch f.Kind() {
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			out.Pct = int(f.Int())
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			out.Pct = int(f.Uint())
-		}
-	} else {
-		// No Pct field at all: assume the DMARC default of 100 so the pct
-		// gate never fires on a struct that never carried the tag.
-		out.Pct = 100
-	}
-	return out, nil
+	return records
 }
 
-func dmarcRemediation(domain string) string {
-	return fmt.Sprintf(
-		`_dmarc.%s. IN TXT "v=DMARC1; p=quarantine; rua=mailto:dmarc@%s; adkim=s; aspf=s"`,
-		domain, domain,
-	)
+// unmetGates lists the gates r fails. The effective policy needs no gate of
+// its own: it is p= of the Author Domain's record or sp= of an inherited
+// one, and sp= falls back to p= when it is not published.
+func unmetGates(r gateRecord) []string {
+	at := " at _dmarc." + r.domain
+	var unmet []string
+	if r.rec.Policy != "quarantine" && r.rec.Policy != "reject" {
+		unmet = append(unmet, "p="+r.rec.Policy+at+" (need quarantine or reject)")
+	}
+	if _, published := r.rec.Tags["sp"]; published && r.rec.SubdomainPolicy == "none" {
+		unmet = append(unmet, "sp=none"+at+" (BIMI requires subdomains at enforcement too)")
+	}
+	if r.rec.Pct != 100 {
+		unmet = append(unmet, fmt.Sprintf("pct=%d%s (retired in RFC 9989, but legacy "+
+			"receivers still sample below 100, short of the full enforcement Gmail "+
+			"requires: remove the tag)", r.rec.Pct, at))
+	}
+	if r.rec.TestMode == "y" {
+		unmet = append(unmet, "t=y"+at+" (RFC 9989 test mode steps the policy down one "+
+			"level, short of the enforcement Gmail requires: set t=n or remove the tag)")
+	}
+	return unmet
+}
+
+// gateSummary describes the records that met every gate.
+func gateSummary(walk *email.DMARCWalk, records []gateRecord) string {
+	parts := []string{"effective policy " + walk.EffectivePolicy() + " for " + walk.Author}
+	for _, r := range records {
+		parts = append(parts, fmt.Sprintf("_dmarc.%s p=%s sp=%s t=%s",
+			r.domain, r.rec.Policy, r.rec.SubdomainPolicy, r.rec.TestMode))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// alignmentAdvice recommends strict alignment when rec relaxes either mode.
+// Neither Gmail nor the BIMI draft requires it, so it is never a gate.
+func alignmentAdvice(rec *email.DMARC) string {
+	if rec.Adkim == "s" && rec.Aspf == "s" {
+		return ""
+	}
+	return fmt.Sprintf("recommended, not required: strict alignment adkim=s aspf=s "+
+		"(published: adkim=%s aspf=%s)", rec.Adkim, rec.Aspf)
+}
+
+// joinEvidence appends advice, when there is any, to evidence.
+func joinEvidence(evidence, advice string) string {
+	if advice == "" {
+		return evidence
+	}
+	return evidence + "; " + advice
+}
+
+// enforcedPolicy returns the policy a fix for rec publishes: reject when
+// rec already rejects, so the fix never weakens it, else quarantine.
+func enforcedPolicy(rec *email.DMARC) string {
+	if rec.Policy == "reject" {
+		return "reject"
+	}
+	return "quarantine"
+}
+
+func dmarcRemediation(domain, policy string) string {
+	return fmt.Sprintf(`_dmarc.%s. IN TXT "v=DMARC1; p=%s; rua=mailto:dmarc@%s"`,
+		domain, policy, domain)
 }

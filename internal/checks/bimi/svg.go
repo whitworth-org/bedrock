@@ -1,6 +1,7 @@
 package bimi
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/xml"
@@ -9,18 +10,16 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// Cache keys for the SVG body and its SHA-256 digest. The VMC check needs
-// the digest to look it up in the LogotypeData extension; sharing the value
-// avoids a second HTTPS GET.
-const (
-	cacheKeyBIMISVGBytes  = "bimi.svg.bytes"
-	cacheKeyBIMISVGSHA256 = "bimi.svg.sha256"
-)
+// Cache key of the l= logo fetch (*outcome[[]byte]), which ensureSVG alone
+// stores.
+const cacheKeyBIMISVG = "bimi.svg"
 
 // Resource-exhaustion guards for SVG parsing. A legitimate BIMI logo is
 // small (a few KB) and simple (a few hundred tokens, shallow nesting). These
@@ -95,103 +94,84 @@ func (svgFetchCheck) ID() string       { return "bimi.svg.fetch" }
 func (svgFetchCheck) Category() string { return category }
 
 func (svgFetchCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
-	const id = "bimi.svg.fetch"
-	const title = "BIMI SVG fetched over HTTPS as image/svg+xml"
-	refs := []string{"BIMI Group draft §4.4", "BIMI SVG Tiny PS Profile"}
+	return ensureSVG(ctx, env).results(svgFetchBase())
+}
 
-	rec, ok := getRecord(env)
-	if !ok {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:   report.NotApplicable,
-			Evidence: "no parsed BIMI record (TXT check did not produce one)",
-			RFCRefs:  refs,
-		}}
+func svgFetchBase() report.Result {
+	return report.Result{
+		ID: "bimi.svg.fetch", Category: category,
+		Title:   "BIMI SVG fetched over HTTPS as image/svg+xml",
+		RFCRefs: []string{"BIMI Group draft §4.4", "BIMI SVG Tiny PS Profile"},
 	}
-	if !env.Active {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:   report.NotApplicable,
-			Evidence: "skipped: --no-active",
-			RFCRefs:  refs,
-		}}
+}
+
+// ensureSVG fetches the l= logo at most once per scan however many checks
+// ask (see probe.Shared) and returns the bimi.svg.fetch outcome, whose
+// product is the body only when the fetch passed.
+func ensureSVG(ctx context.Context, env *probe.Env) *outcome[[]byte] {
+	return probe.Shared(env, cacheKeyBIMISVG, func() *outcome[[]byte] { return fetchSVG(ctx, env) })
+}
+
+// fetchSVG fetches the logo the BIMI record names. It refuses an l= URL
+// that bimi.txt rejects before connecting, and it caches nothing that did
+// not arrive whole as image/svg+xml over verified HTTPS: the profile,
+// aspect and logotype checks parse and hash what it returns.
+func fetchSVG(ctx context.Context, env *probe.Env) *outcome[[]byte] {
+	res := svgFetchBase()
+	rec := ensureRecord(ctx, env)
+	if skip := svgSkipReason(rec, env.Active); skip != "" {
+		res.Status = report.NotApplicable
+		res.Evidence = skip
+		return &outcome[[]byte]{result: res}
 	}
-	if rec.L == "" {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:   report.NotApplicable,
-			Evidence: "no l= URL in BIMI record",
-			RFCRefs:  refs,
-		}}
-	}
+	res.Status = report.Fail
+	res.Remediation = svgFetchRemediation()
 
 	ctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
-
-	resp, err := env.HTTP.Get(ctx, rec.L)
+	resp, err := getVerified(ctx, env, rec.L)
 	if err != nil {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "GET " + rec.L + " failed: " + err.Error(),
-			Remediation: svgFetchRemediation(),
-			RFCRefs:     refs,
-		}}
+		return &outcome[[]byte]{result: fetchFailed(ctx, res, rec.L, err)}
 	}
-	if resp.Status != 200 {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    fmt.Sprintf("GET %s returned HTTP %d", rec.L, resp.Status),
-			Remediation: svgFetchRemediation(),
-			RFCRefs:     refs,
-		}}
+	ct := resp.Headers.Get("Content-Type")
+	if mediaType(ct) != "image/svg+xml" {
+		res.Evidence = fmt.Sprintf("Content-Type=%q (want image/svg+xml)", report.ClipValue(ct))
+		return &outcome[[]byte]{result: res}
 	}
+	sum := sha256.Sum256(resp.Body)
+	res.Status = report.Pass
+	res.Evidence = fmt.Sprintf("HTTP 200 %s, %d bytes, sha256=%x",
+		mediaType(ct), len(resp.Body), sum[:8])
+	res.Remediation = ""
+	return &outcome[[]byte]{result: res, product: resp.Body}
+}
 
-	ct := strings.ToLower(strings.TrimSpace(resp.Headers.Get("Content-Type")))
-	// Strip charset / boundary parameters.
+// svgSkipReason returns why the logo in rec is not fetched, or "" when it
+// is. An l= URL that bimi.txt rejects is N/A here so that one problem
+// counts as one FAIL.
+func svgSkipReason(rec *Record, active bool) string {
+	switch {
+	case rec == nil:
+		return "no parsed BIMI record (TXT check did not produce one)"
+	case !active:
+		return "skipped: --no-active"
+	case rec.L == "":
+		return "no l= URL in BIMI record"
+	}
+	if err := httpsURL(rec.L); err != nil {
+		return "l= URL not fetched: " + err.Error() + " (see bimi.txt)"
+	}
+	return ""
+}
+
+// mediaType returns the lower-cased media type of a Content-Type value,
+// without its parameters.
+func mediaType(contentType string) string {
+	ct := strings.ToLower(strings.TrimSpace(contentType))
 	if i := strings.IndexByte(ct, ';'); i >= 0 {
 		ct = strings.TrimSpace(ct[:i])
 	}
-	// Return early on Content-Type mismatch without caching anything — if
-	// the server is serving the wrong media type we do NOT want downstream
-	// profile/aspect/logotype checks to run over what might be HTML or
-	// arbitrary bytes. Downstream checks keying off the cache will correctly
-	// degrade to N/A.
-	if ct != "image/svg+xml" {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    fmt.Sprintf("Content-Type=%q (want image/svg+xml)", resp.Headers.Get("Content-Type")),
-			Remediation: svgFetchRemediation(),
-			RFCRefs:     refs,
-		}}
-	}
-
-	// Oversize body guard — 1 MiB is already ~30× any plausible BIMI logo.
-	// We refuse to cache or validate past this point so the parser is not
-	// fed an arbitrarily large buffer.
-	if len(resp.Body) > maxSVGBytes {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    fmt.Sprintf("SVG body %d bytes exceeds cap %d", len(resp.Body), maxSVGBytes),
-			Remediation: svgFetchRemediation(),
-			RFCRefs:     refs,
-		}}
-	}
-
-	// Cache the bytes + digest for the VMC check (logotype hash match).
-	sum := sha256.Sum256(resp.Body)
-	env.CachePut(cacheKeyBIMISVGBytes, resp.Body)
-	env.CachePut(cacheKeyBIMISVGSHA256, sum[:])
-
-	return []report.Result{{
-		ID: id, Category: category, Title: title,
-		Status:   report.Pass,
-		Evidence: fmt.Sprintf("HTTP 200 %s, %d bytes, sha256=%x", ct, len(resp.Body), sum[:8]),
-		RFCRefs:  refs,
-	}}
+	return ct
 }
 
 type svgProfileCheck struct{}
@@ -200,38 +180,35 @@ func (svgProfileCheck) ID() string       { return "bimi.svg.profile" }
 func (svgProfileCheck) Category() string { return category }
 
 func (svgProfileCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
-	const id = "bimi.svg.profile"
-	const title = "BIMI SVG conforms to SVG Tiny PS profile"
-	refs := []string{"BIMI SVG Tiny PS Profile §3"}
-
+	res := report.Result{
+		ID: "bimi.svg.profile", Category: category,
+		Title:   "BIMI SVG conforms to SVG Tiny PS profile",
+		RFCRefs: []string{"BIMI SVG Tiny PS Profile §3"},
+	}
 	if !env.Active {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status: report.NotApplicable, Evidence: "skipped: --no-active",
-			RFCRefs: refs,
-		}}
+		res.Status, res.Evidence = report.NotApplicable, "skipped: --no-active"
+		return []report.Result{res}
 	}
-	body, ok := getSVGBytes(env)
-	if !ok {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status: report.NotApplicable, Evidence: "no SVG body cached (fetch did not succeed)",
-			RFCRefs: refs,
-		}}
+	body := ensureSVG(ctx, env).value()
+	if body == nil {
+		res.Status = report.NotApplicable
+		res.Evidence = "no SVG body cached (fetch did not succeed)"
+		return []report.Result{res}
 	}
-
 	vr := ValidateTinyPS(body)
-	results := []report.Result{}
-	if vr.fatalError != "" {
-		results = append(results, makeFailResult(id, title, vr.fatalError, svgProfileRemediation(), refs))
+	if vr.undecodable != nil {
+		return []report.Result{checkutil.Inconclusive(res, vr.undecodable)}
 	}
-	for _, p := range vr.profileFails {
-		results = append(results, makeFailResult(id, title, p, svgProfileRemediation(), refs))
+	if vr.ok() {
+		res.Status = report.Pass
+		res.Evidence = "SVG Tiny PS allowlist satisfied; " +
+			"no scripts, event handlers, or external refs"
+		return []report.Result{res}
 	}
-	if len(results) == 0 {
-		results = append(results, vr.passResult(id, title, refs))
-	}
-	return results
+	res.Status = report.Fail
+	res.Evidence = vr.evidence()
+	res.Remediation = svgProfileRemediation()
+	return []report.Result{res}
 }
 
 type svgAspectCheck struct{}
@@ -240,92 +217,113 @@ func (svgAspectCheck) ID() string       { return "bimi.svg.aspect" }
 func (svgAspectCheck) Category() string { return category }
 
 func (svgAspectCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
-	const id = "bimi.svg.aspect"
-	const title = "BIMI SVG viewBox is square (1:1)"
-	refs := []string{"BIMI Group draft §4.4 (square logo requirement)"}
-
+	res := report.Result{
+		ID: "bimi.svg.aspect", Category: category,
+		Title:   "BIMI SVG viewBox is square (1:1)",
+		RFCRefs: []string{"BIMI Group draft §4.4 (square logo requirement)"},
+	}
 	if !env.Active {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status: report.NotApplicable, Evidence: "skipped: --no-active",
-			RFCRefs: refs,
-		}}
+		res.Status, res.Evidence = report.NotApplicable, "skipped: --no-active"
+		return []report.Result{res}
 	}
-	body, ok := getSVGBytes(env)
-	if !ok {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status: report.NotApplicable, Evidence: "no SVG body cached (fetch did not succeed)",
-			RFCRefs: refs,
-		}}
+	body := ensureSVG(ctx, env).value()
+	if body == nil {
+		res.Status = report.NotApplicable
+		res.Evidence = "no SVG body cached (fetch did not succeed)"
+		return []report.Result{res}
 	}
-
 	w, h, raw, err := extractViewBox(body)
-	if err != nil {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    err.Error(),
-			Remediation: svgProfileRemediation(),
-			RFCRefs:     refs,
-		}}
+	var encErr *encodingError
+	switch {
+	case errors.As(err, &encErr):
+		return []report.Result{checkutil.Inconclusive(res, encErr)}
+	case err != nil:
+		res.Status, res.Evidence = report.Fail, err.Error()
+	case w != h:
+		res.Status = report.Fail
+		res.Evidence = fmt.Sprintf("viewBox=%q has %g:%g aspect (want 1:1)",
+			report.ClipValue(raw), w, h)
+	default:
+		res.Status, res.Evidence = report.Pass, fmt.Sprintf("viewBox=%q", report.ClipValue(raw))
+		return []report.Result{res}
 	}
-	if w != h {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    fmt.Sprintf("viewBox=%q has %g:%g aspect (want 1:1)", raw, w, h),
-			Remediation: svgProfileRemediation(),
-			RFCRefs:     refs,
-		}}
-	}
-	return []report.Result{{
-		ID: id, Category: category, Title: title,
-		Status:   report.Pass,
-		Evidence: fmt.Sprintf("viewBox=%q", raw),
-		RFCRefs:  refs,
-	}}
+	res.Remediation = svgProfileRemediation()
+	return []report.Result{res}
 }
 
-// validationReport collects multiple findings without aborting on the first.
+// validationReport collects Tiny PS violations without aborting on the
+// first. It keeps checkutil.MaxListed of them, since a hostile logo can
+// repeat one bad attribute thousands of times in a single element, which
+// the token cap does not bound. Every value it quotes from the document is
+// clipped.
 type validationReport struct {
-	fatalError   string   // e.g. XML parse failure or wrong root element
-	profileFails []string // e.g. found <script>, found event handler "onclick"
+	fatalError   string         // e.g. XML parse failure or wrong root element
+	profileFails []string       // the first checkutil.MaxListed violations
+	unlisted     int            // violations found beyond profileFails
+	undecodable  *encodingError // set when the declared encoding stopped the walk
 }
 
-// makeFailResult is a thin helper so each finding becomes its own Result.
-func makeFailResult(id, title, evidence, remediation string, refs []string) report.Result {
-	return report.Result{
-		ID: id, Category: category, Title: title,
-		Status:      report.Fail,
-		Evidence:    evidence,
-		Remediation: remediation,
-		RFCRefs:     refs,
+// addFail records one violation, formatting it only while fewer than
+// checkutil.MaxListed are listed and counting it otherwise.
+func (r *validationReport) addFail(format string, args ...any) {
+	if len(r.profileFails) == checkutil.MaxListed {
+		r.unlisted++
+		return
 	}
+	r.profileFails = append(r.profileFails, fmt.Sprintf(format, args...))
 }
 
-func (r validationReport) passResult(id, title string, refs []string) report.Result {
-	return report.Result{
-		ID: id, Category: category, Title: title,
-		Status:   report.Pass,
-		Evidence: "SVG Tiny PS allowlist satisfied; no scripts, event handlers, or external refs",
-		RFCRefs:  refs,
+// ok reports whether the document passed: decoded, with no fatal error and
+// no violation.
+func (r validationReport) ok() bool {
+	return r.undecodable == nil && r.fatalError == "" && len(r.profileFails) == 0
+}
+
+// setDecodeError records why the decoder stopped. A declared encoding the
+// validator cannot read leaves the logo's conformance unknown, unless a
+// violation was already found.
+func (r *validationReport) setDecodeError(err error) {
+	var encErr *encodingError
+	if errors.As(err, &encErr) && len(r.profileFails) == 0 {
+		r.undecodable = encErr
+		return
 	}
+	r.fatalError = "XML parse error: " + report.ClipValue(err.Error())
+}
+
+// evidence lists the fatal error, then each listed violation, then how many
+// more were found.
+func (r validationReport) evidence() string {
+	items := r.profileFails
+	if r.fatalError != "" {
+		items = append([]string{r.fatalError}, items...)
+	}
+	out := strings.Join(items, "; ")
+	if r.unlisted > 0 {
+		out += fmt.Sprintf("; and %d more", r.unlisted)
+	}
+	return out
 }
 
 // urlBearingAttrs lists the attributes whose values may carry a URL. Beyond
-// plain href, SVG paints and filter references can also smuggle external
-// resources via url(…) (e.g. fill="url(http://evil/x)"); BIMI Tiny PS forbids
-// external fetches, so every one of these is scanned for dangerous schemes.
+// plain href, SVG paints, markers, cursors and filter references can also
+// smuggle external resources via url(…) (e.g. fill="url(http://evil/x)");
+// BIMI Tiny PS forbids external fetches, so every one of these is scanned
+// for dangerous schemes.
 var urlBearingAttrs = map[string]struct{}{
-	"href":      {},
-	"fill":      {},
-	"stroke":    {},
-	"filter":    {},
-	"mask":      {},
-	"clip-path": {},
-	"style":     {},
-	"begin":     {},
+	"href":          {},
+	"fill":          {},
+	"stroke":        {},
+	"filter":        {},
+	"mask":          {},
+	"clip-path":     {},
+	"style":         {},
+	"begin":         {},
+	"marker-start":  {},
+	"marker-mid":    {},
+	"marker-end":    {},
+	"cursor":        {},
+	"color-profile": {},
 }
 
 // dangerousAttrValueSubstrings is the set of case-insensitive substrings we
@@ -346,8 +344,9 @@ var dangerousAttrValueSubstrings = []string{
 }
 
 // ValidateTinyPS walks the SVG document and reports every Tiny PS violation
-// it finds. Returns a fatal error message when the SVG cannot even be
-// parsed, exceeds a resource cap, or doesn't have <svg> at the root.
+// it finds, listing at most checkutil.MaxListed of them. Returns a fatal
+// error message when the SVG cannot even be parsed, exceeds a resource cap,
+// or doesn't have <svg> at the root.
 //
 // The parser fails closed on:
 //   - xml.Directive   — DOCTYPE/ENTITY/NOTATION (billion-laughs, DTD injection)
@@ -361,8 +360,7 @@ func ValidateTinyPS(body []byte) validationReport {
 		v.fatalError = fmt.Sprintf("SVG body %d bytes exceeds cap %d", len(body), maxSVGBytes)
 		return v
 	}
-	dec := xml.NewDecoder(strings.NewReader(string(body)))
-	dec.Strict = true
+	dec := newSVGDecoder(body)
 
 	rootSeen := false
 	var depth, tokenCount int
@@ -386,7 +384,7 @@ func ValidateTinyPS(body []byte) validationReport {
 			break
 		}
 		if err != nil {
-			v.fatalError = "XML parse error: " + err.Error()
+			v.setDecodeError(err)
 			return v
 		}
 		switch t := tok.(type) {
@@ -395,7 +393,7 @@ func ValidateTinyPS(body []byte) validationReport {
 			// injection vectors. BIMI Tiny PS has no legitimate use for them;
 			// reject as a profile failure rather than aborting, so the
 			// operator sees the full list of issues.
-			v.profileFails = append(v.profileFails, "XML directive (DOCTYPE/ENTITY) is not allowed in SVG Tiny PS")
+			v.addFail("XML directive (DOCTYPE/ENTITY) is not allowed in SVG Tiny PS")
 		case xml.ProcInst:
 			// Processing instructions are rejected, with one exception: the
 			// XML declaration <?xml version="…"?>. Go's decoder surfaces
@@ -404,7 +402,8 @@ func ValidateTinyPS(body []byte) validationReport {
 			if strings.EqualFold(t.Target, "xml") {
 				break
 			}
-			v.profileFails = append(v.profileFails, fmt.Sprintf("XML processing instruction <?%s ...?> is not allowed", t.Target))
+			v.addFail("XML processing instruction <?%s ...?> is not allowed",
+				report.ClipValue(t.Target))
 		case xml.StartElement:
 			depth++
 			if depth > maxSVGDepth {
@@ -412,6 +411,7 @@ func ValidateTinyPS(body []byte) validationReport {
 				return v
 			}
 			name := strings.ToLower(t.Name.Local)
+			elem := report.ClipValue(t.Name.Local)
 			elemStack = append(elemStack, name)
 			if name == "style" {
 				inStyle = true
@@ -420,46 +420,14 @@ func ValidateTinyPS(body []byte) validationReport {
 			if !rootSeen {
 				rootSeen = true
 				if name != "svg" {
-					v.fatalError = fmt.Sprintf("root element is <%s>, expected <svg>", t.Name.Local)
+					v.fatalError = fmt.Sprintf("root element is <%s>, expected <svg>", elem)
 					return v
 				}
 				if reason := checkRootSVG(t); reason != "" {
-					v.profileFails = append(v.profileFails, reason)
+					v.addFail("%s", reason)
 				}
 			}
-			// Disallowed-element check (script, image, a, animate*, foreignObject).
-			if reason, bad := disallowedSVGElements[name]; bad {
-				v.profileFails = append(v.profileFails, fmt.Sprintf("disallowed element <%s> (%s)", t.Name.Local, reason))
-			} else if _, ok := allowedSVGElements[name]; !ok {
-				v.profileFails = append(v.profileFails, fmt.Sprintf("element <%s> not in Tiny PS allowlist", t.Name.Local))
-			}
-			// Per-element attribute audit.
-			for _, a := range t.Attr {
-				attr := strings.ToLower(a.Name.Local)
-				if strings.HasPrefix(attr, "on") {
-					v.profileFails = append(v.profileFails, fmt.Sprintf("event-handler attribute %s on <%s>", a.Name.Local, t.Name.Local))
-					continue
-				}
-				// href / xlink:href / any *:href variant — classic external ref vector.
-				isHrefLike := attr == "href" ||
-					(strings.EqualFold(a.Name.Space, "http://www.w3.org/1999/xlink") && attr == "href")
-				if isHrefLike {
-					if isExternalRef(a.Value) {
-						v.profileFails = append(v.profileFails, fmt.Sprintf("external href on <%s>: %q", t.Name.Local, a.Value))
-					}
-				}
-				// URL-bearing attributes (fill, stroke, filter, mask, clip-path,
-				// style, begin, any href-like) get their value scanned for
-				// the dangerous-substring list. This catches fill="url(http://…)"
-				// or style="background:url(data:…)" payloads.
-				if _, urlBearing := urlBearingAttrs[attr]; urlBearing || isHrefLike {
-					if reason := scanDangerousAttrValue(a.Value); reason != "" {
-						v.profileFails = append(v.profileFails,
-							fmt.Sprintf("attribute %s on <%s> contains %s: %q",
-								a.Name.Local, t.Name.Local, reason, a.Value))
-					}
-				}
-			}
+			v.auditElement(name, elem, t.Attr)
 		case xml.EndElement:
 			depth--
 			if len(elemStack) > 0 {
@@ -470,7 +438,7 @@ func ValidateTinyPS(body []byte) validationReport {
 					// the same dangerous-substring scanner so chunk-split
 					// payloads cannot hide. styleBuf is already lower-cased.
 					if reason := scanDangerousStyleBody(styleBuf.String()); reason != "" {
-						v.profileFails = append(v.profileFails, fmt.Sprintf("<style> contains %s", reason))
+						v.addFail("<style> contains %s", reason)
 					}
 					styleBuf.Reset()
 					inStyle = false
@@ -487,6 +455,41 @@ func ValidateTinyPS(body []byte) validationReport {
 		v.fatalError = "no XML elements found"
 	}
 	return v
+}
+
+// auditElement records the violations of one element: a disallowed or
+// unlisted name, then each attribute's. name is lower-cased; elem is the
+// clipped original spelling quoted in evidence.
+func (r *validationReport) auditElement(name, elem string, attrs []xml.Attr) {
+	if reason, bad := disallowedSVGElements[name]; bad {
+		r.addFail("disallowed element <%s> (%s)", elem, reason)
+	} else if _, ok := allowedSVGElements[name]; !ok {
+		r.addFail("element <%s> not in Tiny PS allowlist", elem)
+	}
+	for _, a := range attrs {
+		r.auditAttr(elem, a)
+	}
+}
+
+// auditAttr records the violations of one attribute on <elem>: an event
+// handler, an external href (in any namespace, xlink:href included), or a
+// dangerous token in a URL-bearing value such as fill="url(http://…)".
+func (r *validationReport) auditAttr(elem string, a xml.Attr) {
+	attr := strings.ToLower(a.Name.Local)
+	if strings.HasPrefix(attr, "on") {
+		r.addFail("event-handler attribute %s on <%s>", report.ClipValue(a.Name.Local), elem)
+		return
+	}
+	if attr == "href" && isExternalRef(a.Value) {
+		r.addFail("external href on <%s>: %q", elem, report.ClipValue(a.Value))
+	}
+	if _, urlBearing := urlBearingAttrs[attr]; !urlBearing {
+		return
+	}
+	if reason := scanDangerousAttrValue(a.Value); reason != "" {
+		r.addFail("attribute %s on <%s> contains %s: %q",
+			report.ClipValue(a.Name.Local), elem, reason, report.ClipValue(a.Value))
+	}
 }
 
 // scanDangerousAttrValue returns a short description of the first
@@ -603,7 +606,8 @@ func checkRootSVG(t xml.StartElement) string {
 			if strings.EqualFold(a.Value, "tiny-ps") {
 				return ""
 			}
-			return fmt.Sprintf("root <svg> baseProfile=%q (want \"tiny-ps\")", a.Value)
+			return fmt.Sprintf("root <svg> baseProfile=%q (want \"tiny-ps\")",
+				report.ClipValue(a.Value))
 		}
 	}
 	return `root <svg> missing baseProfile="tiny-ps"`
@@ -623,41 +627,92 @@ func isExternalRef(v string) bool {
 // extractViewBox finds the root <svg viewBox="x y w h"> attribute and returns
 // (w, h, raw). Returns an error when the viewBox is missing or malformed.
 func extractViewBox(body []byte) (float64, float64, string, error) {
-	dec := xml.NewDecoder(strings.NewReader(string(body)))
+	dec := newSVGDecoder(body)
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
 			return 0, 0, "", errors.New("no <svg> element found")
 		}
 		if err != nil {
-			return 0, 0, "", fmt.Errorf("XML parse: %w", err)
+			return 0, 0, "", xmlParseError(err)
 		}
 		se, ok := tok.(xml.StartElement)
 		if !ok {
 			continue
 		}
 		if !strings.EqualFold(se.Name.Local, "svg") {
-			return 0, 0, "", fmt.Errorf("first element is <%s>, expected <svg>", se.Name.Local)
+			return 0, 0, "", fmt.Errorf("first element is <%s>, expected <svg>",
+				report.ClipValue(se.Name.Local))
 		}
 		for _, a := range se.Attr {
 			if strings.EqualFold(a.Name.Local, "viewBox") {
 				parts := strings.Fields(strings.ReplaceAll(a.Value, ",", " "))
+				shown := report.ClipValue(a.Value)
 				if len(parts) != 4 {
-					return 0, 0, a.Value, fmt.Errorf("viewBox=%q does not have 4 components", a.Value)
+					return 0, 0, a.Value, fmt.Errorf("viewBox=%q does not have 4 components", shown)
 				}
 				w, errW := strconv.ParseFloat(parts[2], 64)
 				h, errH := strconv.ParseFloat(parts[3], 64)
 				if errW != nil || errH != nil {
-					return 0, 0, a.Value, fmt.Errorf("viewBox=%q components not numeric", a.Value)
+					return 0, 0, a.Value, fmt.Errorf("viewBox=%q components not numeric", shown)
 				}
 				if w <= 0 || h <= 0 {
-					return 0, 0, a.Value, fmt.Errorf("viewBox=%q has non-positive dimensions", a.Value)
+					return 0, 0, a.Value,
+						fmt.Errorf("viewBox=%q has non-positive dimensions", shown)
 				}
 				return w, h, a.Value, nil
 			}
 		}
 		return 0, 0, "", errors.New("<svg> has no viewBox attribute")
 	}
+}
+
+// xmlParseError is extractViewBox's error when decoding stops early: an
+// unsupported declared encoding as is, any other error clipped.
+func xmlParseError(err error) error {
+	var encErr *encodingError
+	if errors.As(err, &encErr) {
+		return encErr
+	}
+	return errors.New("XML parse: " + report.ClipValue(err.Error()))
+}
+
+// newSVGDecoder returns a strict decoder for body that also reads the
+// encodings svgCharsetReader supports.
+func newSVGDecoder(body []byte) *xml.Decoder {
+	dec := xml.NewDecoder(bytes.NewReader(body))
+	dec.CharsetReader = svgCharsetReader
+	return dec
+}
+
+// encodingError reports an XML declaration naming an encoding the validator
+// cannot read, which leaves the logo's conformance unknown rather than wrong.
+type encodingError struct{ label string }
+
+func (e *encodingError) Error() string {
+	return fmt.Sprintf("unsupported SVG encoding %q "+
+		"(bedrock reads UTF-8, US-ASCII and ISO-8859-1)", report.ClipValue(e.label))
+}
+
+// svgCharsetReader is the decoder's CharsetReader, which encoding/xml calls
+// for any declared encoding other than "utf-8". ISO-8859-1 maps each byte to
+// the code point of the same value; US-ASCII is read as that superset.
+func svgCharsetReader(label string, input io.Reader) (io.Reader, error) {
+	switch strings.ToLower(label) {
+	case "utf8":
+		return input, nil
+	case "us-ascii", "ascii", "iso-8859-1", "iso8859-1", "iso_8859-1", "latin1", "l1":
+		raw, err := io.ReadAll(input)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]byte, 0, len(raw))
+		for _, b := range raw {
+			out = utf8.AppendRune(out, rune(b))
+		}
+		return bytes.NewReader(out), nil
+	}
+	return nil, &encodingError{label: label}
 }
 
 func svgFetchRemediation() string {
@@ -672,24 +727,4 @@ func svgProfileRemediation() string {
 # - Set baseProfile="tiny-ps" on the root <svg>
 # - Ensure 1:1 viewBox aspect ratio
 # - Avoid external <image>, <use>, <a> hrefs (intra-doc # references only)`
-}
-
-// getRecord pulls the parsed BIMI record from the cache.
-func getRecord(env *probe.Env) (*Record, bool) {
-	v, ok := env.CacheGet(cacheKeyBIMIRecord)
-	if !ok {
-		return nil, false
-	}
-	r, ok := v.(*Record)
-	return r, ok
-}
-
-// getSVGBytes pulls the cached SVG body from the cache.
-func getSVGBytes(env *probe.Env) ([]byte, bool) {
-	v, ok := env.CacheGet(cacheKeyBIMISVGBytes)
-	if !ok {
-		return nil, false
-	}
-	b, ok := v.([]byte)
-	return b, ok
 }

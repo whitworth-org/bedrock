@@ -2,7 +2,6 @@ package email
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -142,8 +141,8 @@ func gatherRBLTargets(ctx context.Context, env *probe.Env) (ipv4s []string, ipv6
 		}
 	}
 
-	// MX hosts: prefer the cached MX list to avoid duplicate work.
-	mxs := mxFromCacheOrLookup(ctx, env)
+	// MX hosts' A/AAAA.
+	mxs, _ := targetMX(ctx, env)
 	for _, mx := range mxs {
 		if mx.Host == "" || mx.Host == "." { // null MX or empty
 			continue
@@ -163,23 +162,6 @@ func gatherRBLTargets(ctx context.Context, env *probe.Env) (ipv4s []string, ipv6
 	sort.Strings(v4)
 	desc := fmt.Sprintf("apex %s + %d MX host(s)", env.Target, len(mxs))
 	return v4, v6, desc
-}
-
-// mxFromCacheOrLookup reads probe.CacheKeyMX (populated by the null-MX
-// check) and falls back to a fresh MX lookup if the cache is empty or the
-// stored type does not match. Errors yield an empty slice so callers can
-// proceed with the apex-only IP list.
-func mxFromCacheOrLookup(ctx context.Context, env *probe.Env) []probe.MX {
-	if v, ok := env.CacheGet(probe.CacheKeyMX); ok {
-		if mxs, ok := v.([]probe.MX); ok {
-			return mxs
-		}
-	}
-	mxs, err := env.DNS.LookupMX(ctx, env.Target)
-	if err != nil && !errors.Is(err, probe.ErrNXDOMAIN) {
-		return nil
-	}
-	return mxs
 }
 
 // rblListing captures one (IP, zone) hit and the optional reason TXT.

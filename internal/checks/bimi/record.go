@@ -7,64 +7,74 @@ import (
 	"net"
 	"net/url"
 	"strings"
-	"sync"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// recordOnces holds a sync.Once per Env so the BIMI TXT lookup runs exactly
-// once per scan even when the parallel registry fires record / svg / vmc /
-// gmail checks concurrently. Pre-A1 the registry serialised these and the
-// recordCheck always populated the cache first; post-A1 the prelude wrapper
-// in bimi.go calls ensureRecord up-front for every downstream check.
-var (
-	recordOnceMu sync.Mutex
-	recordOnces  = map[*probe.Env]*sync.Once{}
-)
+// ensureRecord returns the BIMI record that bimi.txt graded, or nil when
+// the lookup failed or found no parsable v=BIMI1 record; bimi.txt reports
+// why.
+func ensureRecord(ctx context.Context, env *probe.Env) *Record {
+	return ensureRecordLookup(ctx, env).value()
+}
 
-// ensureRecord performs the BIMI TXT lookup for env.Target exactly once and
-// stores the parsed Record (or nothing, on failure) in env's cache under
-// cacheKeyBIMIRecord. It does NOT produce or alter Result entries — it is a
-// silent priming primitive. recordCheck.Run runs the same query on its own
-// because it must report the structured Pass/Fail for the TXT record itself.
-func ensureRecord(ctx context.Context, env *probe.Env) {
-	if env == nil {
-		return
-	}
-	if _, ok := env.CacheGet(cacheKeyBIMIRecord); ok {
-		return
-	}
-	recordOnceMu.Lock()
-	o, ok := recordOnces[env]
-	if !ok {
-		o = &sync.Once{}
-		recordOnces[env] = o
-	}
-	recordOnceMu.Unlock()
-	o.Do(func() {
-		// Reuse the same per-call timeout shape recordCheck uses. We
-		// silently swallow errors here — recordCheck.Run will report
-		// them through its own result.
-		cctx, cancel := env.WithTimeout(ctx)
-		defer cancel()
-		name := "default._bimi." + env.Target
-		txt, err := env.DNS.LookupTXT(cctx, name)
-		if err != nil {
-			return
-		}
-		for _, t := range txt {
-			if !hasBIMIPrefix(strings.TrimSpace(t)) {
-				continue
-			}
-			parsed, err := ParseRecord(t)
-			if err != nil {
-				return
-			}
-			env.CachePut(cacheKeyBIMIRecord, parsed)
-			return
-		}
+// ensureRecordLookup looks up and grades the default._bimi TXT record at
+// most once per scan however many checks ask (see probe.Shared), so bimi.txt
+// and the checks that use the record see the same answer. Its product is
+// the first v=BIMI1 record when that parses, whatever bimi.txt makes of it.
+func ensureRecordLookup(ctx context.Context, env *probe.Env) *outcome[*Record] {
+	return probe.Shared(env, cacheKeyBIMIRecord, func() *outcome[*Record] {
+		return lookupRecord(ctx, env)
 	})
+}
+
+// lookupRecord looks up the TXT record set at default._bimi.<target> and
+// grades it. A lookup error other than NXDOMAIN leaves the record unknown,
+// so it is Inconclusive.
+func lookupRecord(ctx context.Context, env *probe.Env) *outcome[*Record] {
+	ctx, cancel := env.WithTimeout(ctx)
+	defer cancel()
+	res := recordBase()
+	name := "default._bimi." + env.Target
+	txt, err := env.DNS.LookupTXT(ctx, name)
+	if err != nil && !errors.Is(err, probe.ErrNXDOMAIN) {
+		return &outcome[*Record]{result: checkutil.Inconclusive(res, err)}
+	}
+	evidence, usable := gradeRecordTXT(name, txt, err)
+	res.Evidence = evidence
+	if usable {
+		res.Status = report.Pass
+	} else {
+		res.Status = report.Fail
+		res.Remediation = bimiTXTRemediation(env.Target)
+	}
+	return &outcome[*Record]{result: res, product: firstRecord(txt)}
+}
+
+// firstRecord parses the first v=BIMI1 string in txt, or returns nil.
+func firstRecord(txt []string) *Record {
+	records := bimiRecords(txt)
+	if len(records) == 0 {
+		return nil
+	}
+	parsed, err := ParseRecord(records[0])
+	if err != nil {
+		return nil
+	}
+	return parsed
+}
+
+// bimiRecords returns the TXT strings that start with v=BIMI1.
+func bimiRecords(txt []string) []string {
+	var out []string
+	for _, t := range txt {
+		if hasBIMIPrefix(strings.TrimSpace(t)) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // Record is a parsed BIMI assertion record. Tag syntax mirrors DMARC: a
@@ -162,9 +172,9 @@ func httpsURL(s string) error {
 	return nil
 }
 
-// Cache key for the parsed BIMI record. Used by the SVG and VMC checks so
-// they don't re-query DNS or re-parse the record.
-const cacheKeyBIMIRecord = "bimi.record.parsed"
+// Cache key of the default._bimi lookup (*outcome[*Record]), which
+// ensureRecordLookup alone stores.
+const cacheKeyBIMIRecord = "bimi.record"
 
 type recordCheck struct{}
 
@@ -172,109 +182,50 @@ func (recordCheck) ID() string       { return "bimi.txt" }
 func (recordCheck) Category() string { return category }
 
 func (recordCheck) Run(ctx context.Context, env *probe.Env) []report.Result {
-	ctx, cancel := env.WithTimeout(ctx)
-	defer cancel()
+	return ensureRecordLookup(ctx, env).results(recordBase())
+}
 
-	const id = "bimi.txt"
-	const title = "BIMI assertion record (default._bimi)"
-	refs := []string{"BIMI Group draft §4", "Gmail BIMI requirements"}
+func recordBase() report.Result {
+	return report.Result{
+		ID: "bimi.txt", Category: category,
+		Title:   "BIMI assertion record (default._bimi)",
+		RFCRefs: []string{"BIMI Group draft §4", "Gmail BIMI requirements"},
+	}
+}
 
-	name := "default._bimi." + env.Target
-	txt, err := env.DNS.LookupTXT(ctx, name)
+// gradeRecordTXT grades the TXT strings at name, where lookupErr is nil or
+// NXDOMAIN. It returns the evidence and whether the record is usable: the
+// record itself when it is, otherwise every problem found, l= and a=
+// alike.
+func gradeRecordTXT(name string, txt []string, lookupErr error) (string, bool) {
+	if lookupErr != nil {
+		return "no TXT record at " + name, false
+	}
+	records := bimiRecords(txt)
+	switch {
+	case len(records) == 0:
+		return "no v=BIMI1 record at " + name, false
+	case len(records) > 1:
+		return fmt.Sprintf("multiple v=BIMI1 records (%d) at %s", len(records), name), false
+	}
+	parsed, err := ParseRecord(records[0])
 	if err != nil {
-		if errors.Is(err, probe.ErrNXDOMAIN) {
-			return []report.Result{{
-				ID: id, Category: category, Title: title,
-				Status:      report.Fail,
-				Evidence:    "no TXT record at " + name,
-				Remediation: bimiTXTRemediation(env.Target),
-				RFCRefs:     refs,
-			}}
-		}
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "TXT lookup failed: " + err.Error(),
-			Remediation: bimiTXTRemediation(env.Target),
-			RFCRefs:     refs,
-		}}
+		return "parse error: " + err.Error(), false
 	}
-
-	var bimiRecords []string
-	for _, t := range txt {
-		if hasBIMIPrefix(strings.TrimSpace(t)) {
-			bimiRecords = append(bimiRecords, t)
-		}
-	}
-
-	switch len(bimiRecords) {
-	case 0:
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "no v=BIMI1 record at " + name,
-			Remediation: bimiTXTRemediation(env.Target),
-			RFCRefs:     refs,
-		}}
-	case 1:
-		// fall through
-	default:
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    fmt.Sprintf("multiple v=BIMI1 records (%d) at %s", len(bimiRecords), name),
-			Remediation: bimiTXTRemediation(env.Target),
-			RFCRefs:     refs,
-		}}
-	}
-
-	parsed, err := ParseRecord(bimiRecords[0])
-	if err != nil {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "parse error: " + err.Error(),
-			Remediation: bimiTXTRemediation(env.Target),
-			RFCRefs:     refs,
-		}}
-	}
-	env.CachePut(cacheKeyBIMIRecord, parsed)
-
-	var results []report.Result
-
-	// l= URL must be present and HTTPS (BIMI Group draft §4.4).
+	var problems []string
+	// l= must be present and HTTPS (BIMI Group draft §4.4).
 	if err := httpsURL(parsed.L); err != nil {
-		results = append(results, report.Result{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "l= tag invalid: " + err.Error(),
-			Remediation: bimiTXTRemediation(env.Target),
-			RFCRefs:     refs,
-		})
+		problems = append(problems, "l= tag invalid: "+err.Error())
 	}
-
-	// a= URL is required for Gmail. The BIMI draft makes it optional but
-	// Gmail will not display the indicator without a valid VMC, so we
-	// treat it as a hard requirement.
+	// The draft makes a= optional, but Gmail shows no indicator without a
+	// valid VMC, so it is required here.
 	if err := httpsURL(parsed.A); err != nil {
-		results = append(results, report.Result{
-			ID: id, Category: category, Title: title,
-			Status:      report.Fail,
-			Evidence:    "a= tag invalid (Gmail requires VMC): " + err.Error(),
-			Remediation: bimiTXTRemediation(env.Target),
-			RFCRefs:     refs,
-		})
+		problems = append(problems, "a= tag invalid (Gmail requires VMC): "+err.Error())
 	}
-
-	if len(results) == 0 {
-		results = append(results, report.Result{
-			ID: id, Category: category, Title: title,
-			Status:   report.Pass,
-			Evidence: parsed.Raw,
-			RFCRefs:  refs,
-		})
+	if len(problems) > 0 {
+		return strings.Join(problems, "; "), false
 	}
-	return results
+	return parsed.Raw, true
 }
 
 func hasBIMIPrefix(s string) bool {

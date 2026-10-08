@@ -32,7 +32,7 @@ func runDKIM2Readiness(ctx context.Context, env *probe.Env) []report.Result {
 		return []report.Result{{
 			ID: id, Category: category, Title: title,
 			Status:   report.NotApplicable,
-			Evidence: "no DKIM keys discoverable on common selectors; see email.dkim.selector.none",
+			Evidence: "no DKIM keys discoverable on common selectors; see " + sweep.noKeyResultID(),
 			RFCRefs:  refs,
 		}}
 	}

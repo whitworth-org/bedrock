@@ -3,6 +3,7 @@ package email
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -233,5 +234,24 @@ func TestRunDMARCNonExistentPolicy(t *testing.T) {
 				t.Errorf("unexpected remediation: %q", r.Remediation)
 			}
 		})
+	}
+}
+
+// TestRunDMARC_AuthorLookupFailures: a failed lookup at the author domain's
+// _dmarc name leaves the check inconclusive even though an ancestor
+// publishes a record, because the author's own record would override it.
+func TestRunDMARC_AuthorLookupFailures(t *testing.T) {
+	zone := cannedZone{txt: map[string][]string{"_dmarc.example.com": {"v=DMARC1; p=reject"}}}
+	assertTXTLookupFailuresInconclusive(t, runDMARC, "mail.example.com", "_dmarc.mail.example.com",
+		zone)
+}
+
+// TestRunDMARC_NXDOMAINIsNoRecord: NXDOMAIN at every name on the tree walk
+// means no record applies, which FAILs.
+func TestRunDMARC_NXDOMAINIsNoRecord(t *testing.T) {
+	res := runDMARC(context.Background(), newCannedEnv(t, "example.com", cannedZone{}))
+	if len(res) != 1 || res[0].Status != report.Fail || res[0].Remediation == "" ||
+		!strings.Contains(res[0].Evidence, "no v=DMARC1 record at _dmarc.example.com") {
+		t.Fatalf("got %+v, want one FAIL naming the missing record, with a remediation", res)
 	}
 }

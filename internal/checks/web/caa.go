@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
@@ -23,13 +24,10 @@ func runCAA(ctx context.Context, env *probe.Env) []report.Result {
 
 	records, err := env.DNS.LookupCAA(cctx, env.Target)
 	if err != nil && !errors.Is(err, probe.ErrNXDOMAIN) {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:      report.Warn,
-			Evidence:    "CAA lookup failed: " + err.Error(),
-			Remediation: caaRemediation(env.Target),
-			RFCRefs:     refs,
-		}}
+		res := report.Result{ID: id, Category: category, Title: title, RFCRefs: refs}
+		return []report.Result{
+			checkutil.Inconclusive(res, fmt.Errorf("CAA lookup for %s: %w", env.Target, err)),
+		}
 	}
 	if len(records) == 0 {
 		return []report.Result{{

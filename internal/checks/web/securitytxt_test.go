@@ -1,9 +1,17 @@
 package web
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/whitworth-org/bedrock/internal/probe"
+	"github.com/whitworth-org/bedrock/internal/report"
 )
 
 var secTxtNow = time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
@@ -288,5 +296,70 @@ func TestRemediationExpiresInsideHorizon(t *testing.T) {
 	if len(viol) > 0 || len(warn) > 0 {
 		t.Errorf("remediation Expires %q trips the check itself: violations=%v warnings=%v",
 			exp, viol, warn)
+	}
+}
+
+// TestSecurityTxt_UnverifiedChain: behind a self-signed certificate a 404 is
+// still an absent file and a 200 is a file served over an unverifiable
+// chain. Neither probes the legacy path: on the same host, it cannot be
+// fetched over verified HTTPS either.
+func TestSecurityTxt_UnverifiedChain(t *testing.T) {
+	cases := []struct {
+		name     string
+		status   int
+		want     report.Status
+		evidence string
+	}{
+		{"404", http.StatusNotFound, report.Warn,
+			"/.well-known/security.txt (HTTP 404; the TLS chain also failed verification)"},
+		{"200", http.StatusOK, report.Fail,
+			"/.well-known/security.txt is served with an unverifiable TLS chain"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var paths []string
+			srv := startTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				paths = append(paths, r.URL.Path)
+				mu.Unlock()
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, "Contact: mailto:security@example.com\n")
+			}), nil, false)
+			t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "1")
+			env := probe.NewEnv(srv.Listener.Addr().String(), time.Second, true, "")
+
+			r := runSecurityTxt(context.Background(), env)[0]
+			if r.Status != tc.want || !strings.Contains(r.Evidence, tc.evidence) {
+				t.Errorf("got %s %q, want %s containing %q",
+					r.Status, r.Evidence, tc.want, tc.evidence)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if slices.Contains(paths, "/security.txt") {
+				t.Errorf("requested %q, want the legacy path left alone", paths)
+			}
+		})
+	}
+}
+
+// TestSecurityTxt_FetchIncomplete: a well-known fetch that could not
+// complete is inconclusive, not an absent file, and the legacy path is not
+// fetched, which would only spend a second timeout on the same host.
+func TestSecurityTxt_FetchIncomplete(t *testing.T) {
+	addr, accepted := tarpitListener(t)
+	t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "1")
+	env := probe.NewEnv(addr.String(), 300*time.Millisecond, true, "")
+
+	results := runSecurityTxt(context.Background(), env)
+
+	want := `could not determine: Get "https://` + addr.String() + `/.well-known/security.txt"`
+	if len(results) != 1 || results[0].Status != wantInconclusive ||
+		!strings.HasPrefix(results[0].Evidence, want) || results[0].Remediation != "" {
+		t.Errorf("got %+v, want one inconclusive result starting %q", results, want)
+	}
+	if n := accepted.Load(); n != 1 {
+		t.Errorf("accepted %d connections, want 1: the legacy path was fetched", n)
 	}
 }

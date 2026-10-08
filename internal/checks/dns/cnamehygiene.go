@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
@@ -23,14 +24,13 @@ func runCNAMEApex(ctx context.Context, env *probe.Env) []report.Result {
 
 	target, err := env.DNS.LookupCNAME(ctx, env.Target)
 	if err != nil && !errors.Is(err, probe.ErrNXDOMAIN) {
-		return []report.Result{{
-			ID:       "dns.cname.apex",
-			Category: category,
-			Title:    "CNAME at apex",
-			Status:   report.Warn,
-			Evidence: "lookup error: " + err.Error(),
-			RFCRefs:  []string{"RFC 1912 §2.4", "RFC 2181 §10.3"},
-		}}
+		res := report.Result{
+			ID: "dns.cname.apex", Category: category, Title: "CNAME at apex",
+			RFCRefs: []string{"RFC 1912 §2.4", "RFC 2181 §10.3"},
+		}
+		return []report.Result{
+			checkutil.Inconclusive(res, fmt.Errorf("CNAME lookup for %s: %w", env.Target, err)),
+		}
 	}
 	if target == "" {
 		return []report.Result{{
@@ -42,19 +42,26 @@ func runCNAMEApex(ctx context.Context, env *probe.Env) []report.Result {
 		}}
 	}
 	return []report.Result{{
-		ID:       "dns.cname.apex",
-		Category: category,
-		Title:    "CNAME present at zone apex (forbidden)",
-		Status:   report.Fail,
-		Evidence: env.Target + " IN CNAME " + target,
-		Remediation: fmt.Sprintf(`# Replace the apex CNAME with concrete RRsets (or use ALIAS/ANAME at the provider).
-# Delete:
-%s. IN CNAME %s.
-# Publish A/AAAA (and re-add MX/NS/SOA as needed):
-%s. IN A    <ipv4-of-%s>
-%s. IN AAAA <ipv6-of-%s>`, env.Target, target, env.Target, target, env.Target, target),
-		RFCRefs: []string{"RFC 1912 §2.4", "RFC 2181 §10.3"},
+		ID:          "dns.cname.apex",
+		Category:    category,
+		Title:       "CNAME present at zone apex (forbidden)",
+		Status:      report.Fail,
+		Evidence:    env.Target + " IN CNAME " + target,
+		Remediation: apexCNAMERemediation(env.Target, target),
+		RFCRefs:     []string{"RFC 1912 §2.4", "RFC 2181 §10.3"},
 	}}
+}
+
+// apexCNAMERemediation is a zone-file snippet, so its comments use ';'.
+func apexCNAMERemediation(apex, target string) string {
+	return fmt.Sprintf(
+		"; Replace the apex CNAME with concrete RRsets (or use ALIAS/ANAME at the provider).\n"+
+			"; Delete:\n"+
+			"%[1]s. IN CNAME %[2]s.\n"+
+			"; Publish A/AAAA (and re-add MX/NS/SOA as needed):\n"+
+			"%[1]s. IN A    <ipv4-of-%[2]s>\n"+
+			"%[1]s. IN AAAA <ipv6-of-%[2]s>",
+		report.InlineValue(apex), report.InlineValue(target))
 }
 
 // runCNAMEChain walks the CNAME chain starting at www.<target>, the most
@@ -70,27 +77,13 @@ func runCNAMEChain(ctx context.Context, env *probe.Env) []report.Result {
 		// Mid-flight ctx gate so a cancelled scan stops chasing the
 		// chain instead of issuing one more doomed lookup per hop.
 		if err := ctx.Err(); err != nil {
-			return []report.Result{{
-				ID:       "dns.cname.chain",
-				Category: category,
-				Title:    "CNAME chain length (www host)",
-				Status:   report.Warn,
-				Evidence: "context cancelled at " + cur + ": " + err.Error(),
-				RFCRefs:  []string{"RFC 1912 §2.4"},
-			}}
+			return cnameChainInconclusive(cur, err)
 		}
 		c, cancel := env.WithTimeout(ctx)
 		next, err := env.DNS.LookupCNAME(c, cur)
 		cancel()
 		if err != nil && !errors.Is(err, probe.ErrNXDOMAIN) {
-			return []report.Result{{
-				ID:       "dns.cname.chain",
-				Category: category,
-				Title:    "CNAME chain length (www host)",
-				Status:   report.Warn,
-				Evidence: "lookup error at " + cur + ": " + err.Error(),
-				RFCRefs:  []string{"RFC 1912 §2.4"},
-			}}
+			return cnameChainInconclusive(cur, err)
 		}
 		if next == "" {
 			break
@@ -141,4 +134,16 @@ func runCNAMEChain(ctx context.Context, env *probe.Env) []report.Result {
 		Evidence: strings.Join(chain, " -> "),
 		RFCRefs:  []string{"RFC 1912 §2.4"},
 	}}
+}
+
+// cnameChainInconclusive reports a chain walk that stopped at name before it
+// reached the end of the chain.
+func cnameChainInconclusive(name string, err error) []report.Result {
+	res := report.Result{
+		ID: "dns.cname.chain", Category: category, Title: "CNAME chain length (www host)",
+		RFCRefs: []string{"RFC 1912 §2.4"},
+	}
+	return []report.Result{
+		checkutil.Inconclusive(res, fmt.Errorf("CNAME lookup for %s: %w", name, err)),
+	}
 }

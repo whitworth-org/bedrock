@@ -2,9 +2,11 @@ package dns
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
@@ -25,10 +27,19 @@ const (
 // recommendations in RFC 1912 §2.2 / RFC 2308 §5. The SOA MNAME / NS-set
 // consistency check is folded in here because we already have the SOA.
 func runZoneSOA(ctx context.Context, env *probe.Env) []report.Result {
-	ctx, cancel := env.WithTimeout(ctx)
-	defer cancel()
-
-	soa, err := env.DNS.LookupSOA(ctx, env.Target)
+	soa, err := lookupZoneSOA(ctx, env)
+	var alias *probe.AliasError
+	if errors.As(err, &alias) {
+		return zoneAliasResults(alias)
+	}
+	if err != nil && !errors.Is(err, probe.ErrNXDOMAIN) {
+		return []report.Result{checkutil.Inconclusive(report.Result{
+			ID:       "dns.zone.soa",
+			Category: category,
+			Title:    "SOA record",
+			RFCRefs:  []string{"RFC 1035 §3.3.13", "RFC 1912 §2.2", "RFC 2308 §5"},
+		}, fmt.Errorf("SOA lookup for %s: %w", env.Target, err))}
+	}
 	if err != nil {
 		return []report.Result{{
 			ID:          "dns.zone.soa",
@@ -61,10 +72,54 @@ func runZoneSOA(ctx context.Context, env *probe.Env) []report.Result {
 
 	// MNAME / NS-set consistency: the SOA MNAME ("primary master") should
 	// itself appear in the apex NS RRset OR be intentionally hidden. We only
-	// Warn when it's missing — hidden primaries are a legitimate setup.
-	nsList, _ := env.DNS.LookupNS(ctx, env.Target)
+	// Warn when it's missing — hidden primaries are a legitimate setup. The
+	// NS checks report a failed NS lookup, so its error is not repeated here.
+	nsList, _ := nameserverList(ctx, env)
 	results = append(results, soaMNAMEvsNS(env.Target, soa, nsList))
 	return results
+}
+
+// lookupZoneSOA looks up the target's SOA. A resolver that flattens CNAME
+// chains leaves the alias out of the SOA reply, so when no SOA answers for
+// the target it also asks for a CNAME, each lookup with its own timeout.
+func lookupZoneSOA(ctx context.Context, env *probe.Env) (*probe.SOA, error) {
+	c, cancel := env.WithTimeout(ctx)
+	soa, err := env.DNS.LookupSOA(c, env.Target)
+	cancel()
+	if soa != nil || err != nil {
+		return soa, err
+	}
+	c, cancel = env.WithTimeout(ctx)
+	defer cancel()
+	target, err := env.DNS.LookupCNAME(c, env.Target)
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("CNAME lookup: %w", err)
+	case target != "":
+		return nil, &probe.AliasError{Name: env.Target, Target: target}
+	}
+	return nil, nil
+}
+
+// zoneAliasResults reports a target that is an alias, and so not a zone
+// apex: it has no SOA of its own to grade, which is correct, not a fault.
+func zoneAliasResults(alias *probe.AliasError) []report.Result {
+	evidence := alias.Error() + ", not a zone apex"
+	return []report.Result{{
+		ID:       "dns.zone.soa",
+		Category: category,
+		Title:    "SOA record",
+		Status:   report.NotApplicable,
+		Evidence: evidence,
+		RFCRefs:  []string{"RFC 1034 §3.6.2", "RFC 1035 §3.3.13"},
+	}, {
+		ID:       "dns.zone.mname",
+		Category: category,
+		Title:    "SOA MNAME appears in apex NS RRset",
+		Status:   report.NotApplicable,
+		Evidence: evidence,
+		RFCRefs:  []string{"RFC 1034 §3.6.2", "RFC 1996"},
+	}}
 }
 
 func soaTimers(target string, soa *probe.SOA) report.Result {
@@ -148,14 +203,14 @@ func soaMNAMEvsNS(target string, soa *probe.SOA, nsList []string) report.Result 
 	}
 }
 
+// soaRemediationExample keeps the SOA record on one line, because a
+// continuation line would start with whitespace. The serial is a
+// placeholder: a fixed date could be lower than the zone's live serial.
 func soaRemediationExample(target string) string {
-	return fmt.Sprintf(`%s. IN SOA ns1.%s. hostmaster.%s. (
-    2026041601   ; serial
-    7200         ; refresh (2h)
-    3600         ; retry   (1h)
-    1209600      ; expire  (2w)
-    3600         ; minimum (1h, RFC 2308 negative cache)
-)`, target, target, target)
+	return fmt.Sprintf("; serial <YYYYMMDDnn>, refresh 2h, retry 1h, expire 2w, "+
+		"minimum 1h (RFC 2308 negative cache)\n"+
+		"%[1]s. IN SOA ns1.%[1]s. hostmaster.%[1]s. <YYYYMMDDnn> 7200 3600 1209600 3600",
+		report.InlineValue(target))
 }
 
 // runZoneMX verifies the apex either has an MX (RFC 1912 §2.5) or publishes
@@ -167,14 +222,7 @@ func runZoneMX(ctx context.Context, env *probe.Env) []report.Result {
 
 	mx, err := env.DNS.LookupMX(ctx, env.Target)
 	if err != nil {
-		return []report.Result{{
-			ID:       "dns.zone.mx",
-			Category: category,
-			Title:    "Apex MX records",
-			Status:   report.Warn,
-			Evidence: "lookup error: " + err.Error(),
-			RFCRefs:  []string{"RFC 1912 §2.5", "RFC 7505"},
-		}}
+		return []report.Result{zoneMXLookupFailed(env.Target, err)}
 	}
 	if len(mx) == 0 {
 		return []report.Result{{
@@ -210,4 +258,21 @@ func runZoneMX(ctx context.Context, env *probe.Env) []report.Result {
 		Evidence: strings.Join(hosts, "; "),
 		RFCRefs:  []string{"RFC 1912 §2.5"},
 	}}
+}
+
+// zoneMXLookupFailed grades a failed apex MX lookup: NXDOMAIN says the name
+// does not exist, so it stays a WARN; any other failure is inconclusive.
+func zoneMXLookupFailed(target string, err error) report.Result {
+	res := report.Result{
+		ID:       "dns.zone.mx",
+		Category: category,
+		Title:    "Apex MX records",
+		RFCRefs:  []string{"RFC 1912 §2.5", "RFC 7505"},
+	}
+	if !errors.Is(err, probe.ErrNXDOMAIN) {
+		return checkutil.Inconclusive(res, fmt.Errorf("MX lookup for %s: %w", target, err))
+	}
+	res.Status = report.Warn
+	res.Evidence = "lookup error: " + err.Error()
+	return res
 }

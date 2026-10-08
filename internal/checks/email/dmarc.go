@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
@@ -280,11 +281,12 @@ func dmarcRecordRefs() []string {
 }
 
 func runDMARC(ctx context.Context, env *probe.Env) []report.Result {
-	walk := ensureDMARCWalk(ctx, env)
-	if walk == nil || len(walk.Steps) == 0 {
-		return dmarcRecordFail(env, "DMARC tree walk could not run (no DNS queries executed)")
+	walk := EnsureDMARCWalk(ctx, env)
+	if walk == nil || len(walk.Steps) == 0 || walk.Steps[0].Outcome == walkError {
+		// The author domain's own record, if any, would override every
+		// record above it, so no inherited record settles the verdict.
+		return dmarcRecordInconclusive(walk.Incomplete())
 	}
-
 	author := walk.Steps[0]
 	if ev, bad := dmarcAuthorProblem(author); bad {
 		return dmarcRecordFail(env, ev)
@@ -295,10 +297,23 @@ func runDMARC(ctx context.Context, env *probe.Env) []report.Result {
 	if walk.Policy != nil {
 		return dmarcInheritedResult(env, walk)
 	}
+	if err := walk.Incomplete(); err != nil {
+		return dmarcRecordInconclusive(err)
+	}
 	return dmarcRecordFail(env, fmt.Sprintf(
 		"no v=DMARC1 record at _dmarc.%s or any tree-walk ancestor (RFC 9989 §4.8, %d of %d queries)",
 		env.Target, walk.Queries, maxWalkQueries,
 	))
+}
+
+// dmarcRecordInconclusive is the email.dmarc.record result when err keeps
+// the walk from settling which record, if any, applies.
+func dmarcRecordInconclusive(err error) []report.Result {
+	res := report.Result{
+		ID: dmarcRecordID, Category: category, Title: dmarcRecordTitle,
+		RFCRefs: dmarcRecordRefs(),
+	}
+	return []report.Result{checkutil.Inconclusive(res, err)}
 }
 
 func dmarcRecordFail(env *probe.Env, evidence string) []report.Result {
@@ -316,8 +331,6 @@ func dmarcRecordFail(env *probe.Env, evidence string) []report.Result {
 // walk.
 func dmarcAuthorProblem(step DMARCWalkStep) (string, bool) {
 	switch step.Outcome {
-	case walkError:
-		return "TXT lookup failed: " + step.Detail, true
 	case walkMultiple:
 		return fmt.Sprintf("multiple v=DMARC1 records (%s) at %s", step.Detail, step.QueryName), true
 	case walkMalformed:
@@ -418,7 +431,7 @@ func dmarcRemediation(domain string) string {
 // tree walk (see treewalk.go). It is a silent priming primitive: it returns
 // no Result and swallows lookup/parse errors because runDMARC reports those
 // through its own structured result. A pre-seeded cache short-circuits the
-// walk so hermetic consumers (tests, other packages) stay network-free.
+// walk so hermetic tests stay network-free.
 func ensureDMARC(ctx context.Context, env *probe.Env) {
 	if env == nil {
 		return
@@ -426,14 +439,8 @@ func ensureDMARC(ctx context.Context, env *probe.Env) {
 	if _, ok := env.CacheGet(probe.CacheKeyDMARC); ok {
 		return
 	}
-	ensureDMARCWalk(ctx, env)
+	EnsureDMARCWalk(ctx, env)
 }
-
-// EnsureDMARC primes probe.CacheKeyDMARC with the parsed DMARC record for
-// env.Target exactly once per scan. It exists so consumers in other packages
-// — specifically the BIMI Gmail gate — can read the DMARC verdict race-free
-// regardless of check scheduling, without importing this package's parser.
-func EnsureDMARC(ctx context.Context, env *probe.Env) { ensureDMARC(ctx, env) }
 
 // runDMARCNonExistentPolicy evaluates the RFC 9989 §4.7 `np` tag — the policy
 // a Domain Owner applies to mail from *non-existent* subdomains of the
@@ -453,12 +460,9 @@ func runDMARCNonExistentPolicy(ctx context.Context, env *probe.Env) []report.Res
 
 	cached, ok := env.CacheGet(probe.CacheKeyDMARC)
 	if !ok || cached == nil {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:   report.NotApplicable,
-			Evidence: "no DMARC record to evaluate np against (see email.dmarc.record)",
-			RFCRefs:  refs,
-		}}
+		res := report.Result{ID: id, Category: category, Title: title, RFCRefs: refs}
+		return []report.Result{noPolicyResult(EnsureDMARCWalk(ctx, env), res,
+			"no DMARC record to evaluate np against (see email.dmarc.record)")}
 	}
 	parsed, ok := cached.(*DMARC)
 	if !ok || parsed == nil {

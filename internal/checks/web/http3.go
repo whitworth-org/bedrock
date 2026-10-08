@@ -41,12 +41,15 @@ func runHTTP3(ctx context.Context, env *probe.Env) []report.Result {
 	}
 
 	// Signal 1: Alt-Svc on the cached HTTPS root response.
-	altSvc := false
-	var altSvcHeader string
-	if resp := getHTTPSRoot(ctx, env); resp != nil {
-		altSvcHeader = resp.Headers.Get("Alt-Svc")
-		altSvc = altSvcAdvertisesH3(altSvcHeader)
+	altSvcHeader, fetchNote, unverified := rootAltSvc(ctx, env)
+	if unverified {
+		return []report.Result{chainInvalid(report.Result{
+			ID: "web.http3", Category: category,
+			Title:   "HTTP/3 (QUIC) supported",
+			RFCRefs: http3RFCs,
+		})}
 	}
+	altSvc := altSvcAdvertisesH3(altSvcHeader)
 
 	// Signal 2: Best-effort QUIC dial. Errors here are common (UDP/443 blocked,
 	// no h3 listener, firewall) and intentionally non-fatal — we only care if
@@ -64,23 +67,39 @@ func runHTTP3(ctx context.Context, env *probe.Env) []report.Result {
 		r.Status = report.Pass
 		r.Evidence = "HTTP/3 GET succeeded over QUIC against https://" + env.Target + "/"
 		if altSvc {
-			r.Evidence += "; Alt-Svc: " + altSvcHeader
+			r.Evidence += "; Alt-Svc: " + report.ClipValue(altSvcHeader)
 		}
 	case altSvc:
 		r.Status = report.Pass
-		r.Evidence = "Alt-Svc advertises h3 (" + altSvcHeader + "); QUIC dial did not succeed"
+		r.Evidence = "Alt-Svc advertises h3 (" + report.ClipValue(altSvcHeader) +
+			"); QUIC dial did not succeed"
 		if quicErr != nil {
 			r.Evidence += " (" + quicErr.Error() + ")"
 		}
 	default:
 		r.Status = report.Info
-		r.Evidence = "no Alt-Svc h3 advertisement and QUIC dial did not succeed"
+		r.Evidence = "no Alt-Svc h3 advertisement" + fetchNote + " and QUIC dial did not succeed"
 		if quicErr != nil {
 			r.Evidence += " (" + quicErr.Error() + ")"
 		}
 		r.Remediation = http3Remediation()
 	}
 	return []report.Result{r}
+}
+
+// rootAltSvc returns the Alt-Svc header of the HTTPS root response. When the
+// root could not be fetched, note names the error for the evidence. When the
+// response came over an unverified chain, unverified is true and no header
+// is returned: it is unauthenticated, so it cannot count as a signal.
+func rootAltSvc(ctx context.Context, env *probe.Env) (header, note string, unverified bool) {
+	resp, err := getHTTPSRoot(ctx, env)
+	switch {
+	case err != nil:
+		return "", " (could not fetch https://" + env.Target + "/: " + err.Error() + ")", false
+	case !resp.Verified:
+		return "", "", true
+	}
+	return resp.Headers.Get("Alt-Svc"), "", false
 }
 
 // altSvcAdvertisesH3 reports whether an Alt-Svc header value advertises an
@@ -124,20 +143,38 @@ func altSvcAdvertisesH3(header string) bool {
 // dial/handshake/transport failure returns (false, err) — callers treat err as
 // diagnostic, not fatal, since blocked UDP is a normal failure mode.
 func dialHTTP3(ctx context.Context, env *probe.Env) (bool, error) {
-	tr := &http3.Transport{
-		TLSClientConfig: &tls.Config{
-			MinVersion: tls.VersionTLS12,
-		},
-	}
+	tr := newHTTP3Transport()
 	// Always release the underlying UDP socket so we don't leak sockets across
 	// multi-host runs.
 	defer func() { _ = tr.Close() }()
 
 	gctx, cancel := env.WithTimeout(ctx)
 	defer cancel()
+	return getHTTP3(gctx, tr, "https://"+env.Target+"/")
+}
 
-	client := &http.Client{Transport: tr}
-	req, err := http.NewRequestWithContext(gctx, http.MethodGet, "https://"+env.Target+"/", nil)
+// newHTTP3Transport returns the HTTP/3 transport for one probe. Its dials go
+// through probe.DialQUIC, which applies the SSRF denylist that quic-go's own
+// resolver and dialer skip.
+//
+//nolint:forbidigo // the Dial hook is probe.DialQUIC, which applies the SSRF denylist
+func newHTTP3Transport() *http3.Transport {
+	return &http3.Transport{
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
+		Dial:                   probe.DialQUIC,
+		MaxResponseHeaderBytes: probe.MaxResponseHeaderBytes,
+	}
+}
+
+// getHTTP3 sends one GET for target through rt and reports whether any
+// response came back. A redirect is not followed: the first response already
+// proves HTTP/3 works, and following its Location would dial hosts the
+// operator never targeted.
+func getHTTP3(ctx context.Context, rt http.RoundTripper, target string) (bool, error) {
+	client := probe.NoRedirectClient(rt)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return false, err
 	}

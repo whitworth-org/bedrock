@@ -3,10 +3,17 @@ package registry
 import (
 	"context"
 	"fmt"
+	"net"
+	"reflect"
+	"slices"
 	"sort"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	mdns "github.com/miekg/dns"
 
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
@@ -81,7 +88,7 @@ func TestRunOrdersByCategoryThenID(t *testing.T) {
 	Register(mk("email", "email.a"))
 	Register(mk("dns", "dns.a"))
 
-	out := Run(context.Background(), nil)
+	out := Run(context.Background(), nil, Options{})
 	if len(out) != 3 {
 		t.Fatalf("want 3 results, got %d (%+v)", len(out), out)
 	}
@@ -105,14 +112,14 @@ func TestRunRecoversFromPanic(t *testing.T) {
 	Register(good)
 	Register(boom)
 
-	out := Run(context.Background(), nil)
-	// good must survive; boom must be converted to a registry.panic Fail.
+	out := Run(context.Background(), nil, Options{})
+	// good must survive; boom must be converted to a registry.panic.boom Fail.
 	var foundGood, foundPanic bool
 	for _, r := range out {
 		if r.ID == "good" && r.Status == report.Pass {
 			foundGood = true
 		}
-		if r.ID == "registry.panic" && r.Category == "cat2" && r.Status == report.Fail {
+		if r.ID == "registry.panic.boom" && r.Category == "cat2" && r.Status == report.Fail {
 			foundPanic = true
 		}
 	}
@@ -120,13 +127,13 @@ func TestRunRecoversFromPanic(t *testing.T) {
 		t.Fatalf("expected 'good' result to survive panic in other category: %+v", out)
 	}
 	if !foundPanic {
-		t.Fatalf("panic should be converted to registry.panic Fail: %+v", out)
+		t.Fatalf("panic should be converted to registry.panic.boom Fail: %+v", out)
 	}
 }
 
 func TestRunEmptyRegistry(t *testing.T) {
 	defer withEmptyRegistry(t)()
-	out := Run(context.Background(), nil)
+	out := Run(context.Background(), nil, Options{})
 	if len(out) != 0 {
 		t.Fatalf("empty registry should produce no results, got %+v", out)
 	}
@@ -161,7 +168,7 @@ func TestRunParallelManyChecks(t *testing.T) {
 		Register(c)
 	}
 
-	out := Run(context.Background(), nil)
+	out := Run(context.Background(), nil, Options{})
 	if got, want := len(out), cats*perCat; got != want {
 		t.Fatalf("result count = %d, want %d", got, want)
 	}
@@ -193,13 +200,13 @@ func TestRunPanicIsolatedToOneCheck(t *testing.T) {
 	Register(good)
 	Register(boom)
 
-	out := Run(context.Background(), nil)
+	out := Run(context.Background(), nil, Options{})
 	var foundGood, foundPanic bool
 	for _, r := range out {
 		if r.ID == "ok" && r.Status == report.Pass {
 			foundGood = true
 		}
-		if r.ID == "registry.panic" && r.Category == "shared" && r.Status == report.Fail {
+		if r.ID == "registry.panic.boom" && r.Category == "shared" && r.Status == report.Fail {
 			foundPanic = true
 		}
 	}
@@ -207,7 +214,252 @@ func TestRunPanicIsolatedToOneCheck(t *testing.T) {
 		t.Fatalf("sibling check 'ok' must survive panic in same category: %+v", out)
 	}
 	if !foundPanic {
-		t.Fatalf("panic must surface as registry.panic Fail: %+v", out)
+		t.Fatalf("panic must surface as registry.panic.boom Fail: %+v", out)
+	}
+}
+
+func noResults(context.Context, *probe.Env) []report.Result { return nil }
+
+// TestRegisterRejectsDuplicateID pins that registering a second check under
+// an ID already registered panics, naming the ID, and leaves the registry
+// as it was.
+func TestRegisterRejectsDuplicateID(t *testing.T) {
+	defer withEmptyRegistry(t)()
+
+	Register(stubCheck{id: "dup", cat: "x", run: noResults})
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("registering a duplicate check ID did not panic")
+		}
+		if msg := fmt.Sprint(r); !strings.Contains(msg, `"dup"`) {
+			t.Errorf("panic %q does not name the duplicate ID", msg)
+		}
+		if n := len(All()); n != 1 {
+			t.Errorf("registry holds %d checks after the rejected duplicate, want 1", n)
+		}
+	}()
+	Register(stubCheck{id: "dup", cat: "y", run: noResults})
+}
+
+// TestRunGivesEachPanicItsOwnID pins that two checks panicking in one
+// category yield one FAIL each, under an ID that names the check, so a
+// baseline holding one panic cannot hide the other.
+func TestRunGivesEachPanicItsOwnID(t *testing.T) {
+	defer withEmptyRegistry(t)()
+
+	boom := func(context.Context, *probe.Env) []report.Result { panic("kaboom") }
+	for _, id := range []string{"web.b", "web.a"} {
+		Register(stubCheck{id: id, cat: "WWW", run: boom})
+	}
+	out := Run(context.Background(), nil, Options{})
+	var ids []string
+	for _, r := range out {
+		if r.Status != report.Fail || r.Category != "WWW" {
+			t.Errorf("panic result %+v: want a WWW FAIL", r)
+		}
+		ids = append(ids, r.ID)
+	}
+	if want := []string{"registry.panic.web.a", "registry.panic.web.b"}; !slices.Equal(ids, want) {
+		t.Fatalf("result IDs = %v, want %v", ids, want)
+	}
+}
+
+// TestRunSkipsCategoriesKeepRejects pins that Run never calls the checks of
+// a category Keep rejects, and runs every check of the others.
+func TestRunSkipsCategoriesKeepRejects(t *testing.T) {
+	defer withEmptyRegistry(t)()
+
+	var mu sync.Mutex
+	ran := map[string]int{}
+	for _, cat := range []string{"DNS", "WWW", "Email"} {
+		for i := range 3 {
+			id := fmt.Sprintf("%s.%d", strings.ToLower(cat), i)
+			run := func(context.Context, *probe.Env) []report.Result {
+				mu.Lock()
+				ran[cat]++
+				mu.Unlock()
+				return []report.Result{{ID: id, Category: cat, Status: report.Pass}}
+			}
+			Register(stubCheck{id: id, cat: cat, run: run})
+		}
+	}
+
+	notWWW := func(cat string) bool { return cat != "WWW" }
+	out := Run(context.Background(), nil, Options{Keep: notWWW})
+	if want := map[string]int{"DNS": 3, "Email": 3}; !reflect.DeepEqual(ran, want) {
+		t.Errorf("checks run per category = %v, want %v", ran, want)
+	}
+	for _, r := range out {
+		if r.Category == "WWW" {
+			t.Errorf("result %q from a category Keep rejected", r.ID)
+		}
+	}
+	if len(out) != 6 {
+		t.Errorf("got %d results, want 6: %+v", len(out), out)
+	}
+}
+
+// TestRunBreaksIDTiesByTitleThenEvidence pins the order of results sharing
+// a category and ID: by title, then evidence, whatever order the checks
+// returned them in.
+func TestRunBreaksIDTiesByTitleThenEvidence(t *testing.T) {
+	defer withEmptyRegistry(t)()
+
+	tie := func(title, evidence string) report.Result {
+		return report.Result{ID: "dns.x", Category: "DNS", Title: title, Evidence: evidence}
+	}
+	run := func(context.Context, *probe.Env) []report.Result {
+		return []report.Result{tie("b", "1"), tie("a", "2"), tie("a", "1")}
+	}
+	Register(stubCheck{id: "dns.x", cat: "DNS", run: run})
+	out := Run(context.Background(), nil, Options{})
+	want := []report.Result{tie("a", "1"), tie("a", "2"), tie("b", "1")}
+	if !reflect.DeepEqual(out, want) {
+		t.Fatalf("results = %+v\nwant %+v", out, want)
+	}
+}
+
+// blackHoleResolver returns the address of a loopback UDP socket that never
+// reads, so every query sent to it times out unanswered.
+func blackHoleResolver(t *testing.T) string {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+	return pc.LocalAddr().String()
+}
+
+// nxdomainResolver starts a loopback UDP resolver that answers every query
+// with NXDOMAIN and returns its address.
+func nxdomainResolver(t *testing.T) string {
+	t.Helper()
+	return rcodeResolver(t, mdns.RcodeNameError)
+}
+
+// rcodeResolver starts a loopback UDP resolver that replies to every query
+// with rcode and returns its address.
+func rcodeResolver(t *testing.T, rcode int) string {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	handler := mdns.HandlerFunc(func(w mdns.ResponseWriter, req *mdns.Msg) {
+		resp := new(mdns.Msg)
+		resp.SetRcode(req, rcode)
+		_ = w.WriteMsg(resp)
+	})
+	srv := &mdns.Server{PacketConn: pc, Handler: handler}
+	started := make(chan struct{})
+	srv.NotifyStartedFunc = func() { close(started) }
+	go func() { _ = srv.ActivateAndServe() }()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("fake DNS server did not start within 2s")
+	}
+	t.Cleanup(func() { _ = srv.Shutdown() })
+	return pc.LocalAddr().String()
+}
+
+// lookupCheck is a WWW check that sends one A query through env.DNS.
+var lookupCheck = stubCheck{id: "web.lookup", cat: "WWW",
+	run: func(ctx context.Context, env *probe.Env) []report.Result {
+		_, _ = env.DNS.LookupA(ctx, "www.example.test")
+		return nil
+	}}
+
+func findID(results []report.Result, id string) (report.Result, bool) {
+	i := slices.IndexFunc(results, func(r report.Result) bool { return r.ID == id })
+	if i < 0 {
+		return report.Result{}, false
+	}
+	return results[i], true
+}
+
+// TestRunReportsUnreachableResolver pins the run-level FAIL for a scan whose
+// DNS queries all went unanswered. It is reported in DNS even though Keep
+// rejects DNS, so --only and --exclude cannot hide a dead resolver.
+func TestRunReportsUnreachableResolver(t *testing.T) {
+	t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "1")
+	defer withEmptyRegistry(t)()
+	Register(lookupCheck)
+
+	env := probe.NewEnv("example.test", 100*time.Millisecond, false, blackHoleResolver(t))
+	notDNS := func(cat string) bool { return cat != "DNS" }
+	out := Run(context.Background(), env, Options{Keep: notDNS})
+	r, ok := findID(out, "dns.resolver.unreachable")
+	if !ok {
+		t.Fatalf("no dns.resolver.unreachable result: %+v", out)
+	}
+	if r.Category != "DNS" || r.Status != report.Fail || r.Remediation == "" {
+		t.Errorf("result = %+v, want a DNS FAIL with a remediation", r)
+	}
+	if want := "none of the 1 DNS queries"; !strings.Contains(r.Evidence, want) {
+		t.Errorf("evidence %q does not contain %q", r.Evidence, want)
+	}
+	if err := report.CheckRemediation(r.Remediation); err != nil {
+		t.Error(err)
+	}
+}
+
+// TestRunReportsResolverAnsweringOnlyErrors pins the run-level FAIL for a
+// resolver that replies to every query, but only with SERVFAIL or REFUSED,
+// as one that refuses this host does: it answers nothing either.
+func TestRunReportsResolverAnsweringOnlyErrors(t *testing.T) {
+	t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "1")
+	for _, rcode := range []int{mdns.RcodeServerFailure, mdns.RcodeRefused} {
+		t.Run(mdns.RcodeToString[rcode], func(t *testing.T) {
+			defer withEmptyRegistry(t)()
+			Register(lookupCheck)
+
+			env := probe.NewEnv("example.test", time.Second, false, rcodeResolver(t, rcode))
+			r, ok := findID(Run(context.Background(), env, Options{}), "dns.resolver.unreachable")
+			if !ok || r.Status != report.Fail {
+				t.Fatalf("dns.resolver.unreachable = %+v (found %v), want a FAIL", r, ok)
+			}
+			if want := "replied to 1 of the 1 DNS queries"; !strings.Contains(r.Evidence, want) {
+				t.Errorf("evidence %q does not contain %q", r.Evidence, want)
+			}
+		})
+	}
+}
+
+// TestRunOmitsUnreachableResolver pins that the run-level FAIL needs a scan
+// that sent DNS queries, had none answered and was not cancelled.
+func TestRunOmitsUnreachableResolver(t *testing.T) {
+	t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "1")
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	blackHole := blackHoleResolver(t)
+	cases := []struct {
+		name     string
+		ctx      context.Context
+		resolver string // "" leaves the Env without a DNS client
+		check    stubCheck
+	}{
+		{"query answered", context.Background(), nxdomainResolver(t), lookupCheck},
+		{"no query sent", context.Background(), blackHole,
+			stubCheck{id: "web.quiet", cat: "WWW", run: noResults}},
+		{"scan cancelled", cancelled, blackHole, lookupCheck},
+		{"no DNS client", context.Background(), "",
+			stubCheck{id: "web.quiet", cat: "WWW", run: noResults}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			defer withEmptyRegistry(t)()
+			Register(c.check)
+			env := &probe.Env{Target: "example.test"}
+			if c.resolver != "" {
+				env = probe.NewEnv("example.test", 100*time.Millisecond, false, c.resolver)
+			}
+			if r, ok := findID(Run(c.ctx, env, Options{}), "dns.resolver.unreachable"); ok {
+				t.Errorf("unexpected %+v", r)
+			}
+		})
 	}
 }
 
@@ -234,6 +486,6 @@ func BenchmarkRunCategoryParallel(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = Run(context.Background(), nil)
+		_ = Run(context.Background(), nil, Options{})
 	}
 }

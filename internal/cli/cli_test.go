@@ -172,25 +172,62 @@ func TestFilterApplyPassthrough(t *testing.T) {
 	}
 }
 
-func TestFilterApplyOnly(t *testing.T) {
-	input := []report.Result{
-		{ID: "a", Category: "dns", Status: report.Pass},
-		{ID: "b", Category: "email", Status: report.Fail},
+func TestFilterKeepCategory(t *testing.T) {
+	cases := []struct {
+		name     string
+		f        Filter
+		category string
+		want     bool
+	}{
+		{"no filter", Filter{}, "WWW", true},
+		{"only matches ignoring case and space",
+			Filter{Only: []string{" dns ", "email"}}, "DNS", true},
+		{"only leaves out the rest", Filter{Only: []string{"DNS"}}, "Email", false},
+		{"exclude matches ignoring case", Filter{Exclude: []string{"www"}}, "WWW", false},
+		{"exclude keeps the rest", Filter{Exclude: []string{"WWW"}}, "DNSSEC", true},
+		{"exclude beats only",
+			Filter{Only: []string{"Email"}, Exclude: []string{"EMAIL"}}, "Email", false},
 	}
-	got := Filter{Only: []string{"DNS"}}.Apply(input)
-	if len(got) != 1 || got[0].ID != "a" {
-		t.Fatalf("Only filter case-insensitive failed: %+v", got)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.f.KeepCategory(c.category); got != c.want {
+				t.Errorf("%+v.KeepCategory(%q) = %v, want %v", c.f, c.category, got, c.want)
+			}
+		})
 	}
 }
 
-func TestFilterApplyExclude(t *testing.T) {
+// TestFilterApplyLeavesCategoriesToTheScan pins that Apply keeps a result
+// whatever its category: Only and Exclude choose the categories the scan
+// runs, and a run-level result such as dns.resolver.unreachable must reach
+// the report under --only and --exclude.
+func TestFilterApplyLeavesCategoriesToTheScan(t *testing.T) {
 	input := []report.Result{
-		{ID: "a", Category: "dns", Status: report.Pass},
-		{ID: "b", Category: "email", Status: report.Fail},
+		{ID: "dns.resolver.unreachable", Category: "DNS", Status: report.Fail},
+		{ID: "email.spf.record", Category: "Email", Status: report.Pass},
 	}
-	got := Filter{Exclude: []string{"email"}}.Apply(input)
-	if len(got) != 1 || got[0].ID != "a" {
-		t.Fatalf("Exclude filter failed: %+v", got)
+	f := Filter{
+		Only: []string{"Email"}, Exclude: []string{"DNS"},
+		MinSeverity: report.Pass, SeveritySet: true,
+	}
+	if got := f.Apply(input); !reflect.DeepEqual(got, input) {
+		t.Fatalf("Apply dropped results by category: got %+v, want %+v", got, input)
+	}
+}
+
+// TestFilterApplyIDsKeepsRunLevelResults pins that --ids cannot hide a dead
+// resolver or a panicked check: either alone decides the exit code.
+func TestFilterApplyIDsKeepsRunLevelResults(t *testing.T) {
+	input := []report.Result{
+		{ID: "dns.resolver.unreachable", Category: "DNS", Status: report.Fail},
+		{ID: "email.spf.record", Category: "Email", Status: report.Warn},
+		{ID: "registry.panic.web.hsts", Category: "WWW", Status: report.Fail},
+		{ID: "web.hsts", Category: "WWW", Status: report.Pass},
+	}
+	got := Filter{IDs: []string{"email.spf.record"}}.Apply(input)
+	want := []report.Result{input[0], input[1], input[2]}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Apply = %+v, want %+v", got, want)
 	}
 }
 

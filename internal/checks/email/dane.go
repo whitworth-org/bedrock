@@ -2,11 +2,11 @@ package email
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/miekg/dns"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
@@ -17,48 +17,36 @@ import (
 // prerequisite — so we require the resolver's AD bit on the TLSA answer in
 // addition to validating each record's usage/selector/matching-type fields.
 func runDANE(ctx context.Context, env *probe.Env) []report.Result {
-	ctx, cancel := env.WithTimeout(ctx)
-	defer cancel()
-
+	const title = "DANE TLSA records present per MX"
 	refs := []string{"RFC 7672 §2.2", "RFC 6698"}
 
-	mxs, err := env.DNS.LookupMX(ctx, env.Target)
-	if err != nil && !errors.Is(err, probe.ErrNXDOMAIN) {
-		return []report.Result{{
-			ID:       "email.dane",
-			Category: category,
-			Title:    "DANE TLSA records present per MX",
-			Status:   report.NotApplicable,
-			Evidence: "MX lookup failed: " + err.Error(),
-			RFCRefs:  refs,
-		}}
+	mxs, err := targetMX(ctx, env)
+	if err != nil {
+		res := report.Result{ID: "email.dane", Category: category, Title: title, RFCRefs: refs}
+		return []report.Result{checkutil.Inconclusive(res, err)}
 	}
-	if len(mxs) == 0 || isNullMX(mxs) {
+	hosts, skipped := mxHosts(mxs)
+	if len(hosts) == 0 {
 		return []report.Result{{
 			ID:       "email.dane",
 			Category: category,
-			Title:    "DANE TLSA records present per MX",
+			Title:    title,
 			Status:   report.NotApplicable,
 			Evidence: "no usable MX records — DANE not applicable",
 			RFCRefs:  refs,
 		}}
 	}
 
-	var results []report.Result
-	for _, mx := range mxs {
-		// Mid-flight ctx gate: stop probing further MX hosts once the
-		// scan is cancelled instead of issuing one TLSA query per host.
-		if err := ctx.Err(); err != nil {
-			break
-		}
-		results = append(results, probeDANE(ctx, env, mx.Host, refs))
+	results := probeMXHosts(ctx, hosts, func(ctx context.Context, host string) report.Result {
+		return probeDANE(ctx, env, host, refs)
+	})
+	if len(skipped) > 0 {
+		results = append(results, skippedMXResult("email.dane", title, skipped, refs))
 	}
 	return results
 }
 
 // tlsaRecord is a local view of the parsed RDATA we actually care about.
-// We decouple from probe.TLSA so a future signature-aware upstream lookup
-// can populate the same shape without the check layer changing.
 type tlsaRecord struct {
 	Usage        uint8
 	Selector     uint8
@@ -100,28 +88,18 @@ func validTLSA(r tlsaRecord) error {
 	return nil
 }
 
+// probeDANE grades the TLSA RRset of one MX host. A lookup that could not
+// complete is inconclusive: RFC 7672 §2.1.2 has a DANE client treat a
+// failed TLSA lookup as an unusable server, so it is not "not deployed".
 func probeDANE(ctx context.Context, env *probe.Env, mxHost string, refs []string) report.Result {
 	id := "email.dane." + mxHost
 	title := "DANE TLSA for " + mxHost
 	name := "_25._tcp." + mxHost
 
-	// Query with DO set so we can inspect the AD bit. RFC 7672 §2.2.1 makes
-	// DNSSEC validation a hard prerequisite for SMTP DANE: unsigned TLSA is
-	// not merely weak, it is spoofable.
-	resp, err := env.DNS.ExchangeWithDO(ctx, name, dns.TypeTLSA)
+	resp, err := lookupTLSA(ctx, env, name)
 	if err != nil {
-		return report.Result{
-			ID: id, Category: category, Title: title,
-			Status: report.NotApplicable, Evidence: "TLSA lookup error: " + err.Error(),
-			RFCRefs: refs,
-		}
-	}
-	if resp == nil {
-		return report.Result{
-			ID: id, Category: category, Title: title,
-			Status: report.NotApplicable, Evidence: "no TLSA response at " + name,
-			RFCRefs: refs,
-		}
+		res := report.Result{ID: id, Category: category, Title: title, RFCRefs: refs}
+		return tlsaLookupFailed(ctx, res, name, err)
 	}
 	if resp.Rcode == dns.RcodeNameError {
 		return report.Result{
@@ -212,7 +190,32 @@ func probeDANE(ctx context.Context, env *probe.Env, mxHost string, refs []string
 	}
 }
 
-// isNullMX reports whether the slice is the RFC 7505 single-record null MX.
-func isNullMX(mxs []probe.MX) bool {
-	return len(mxs) == 1 && mxs[0].Preference == 0 && (mxs[0].Host == "" || mxs[0].Host == ".")
+// lookupTLSA queries the TLSA RRset at name with DO set, so the reply
+// carries the AD bit: RFC 7672 §2.2.1 makes DNSSEC validation a hard
+// prerequisite for SMTP DANE, as unsigned TLSA is spoofable. The DNS client
+// gives the lookup its own --timeout. A reply with an rcode other than
+// NOERROR or NXDOMAIN, such as SERVFAIL, comes back as a *probe.RcodeError;
+// a lookup cut short by the end of the scan returns ctx's error.
+func lookupTLSA(ctx context.Context, env *probe.Env, name string) (*dns.Msg, error) {
+	resp, err := env.DNS.ExchangeWithDO(ctx, name, dns.TypeTLSA)
+	switch {
+	case err != nil && ctx.Err() != nil:
+		return nil, ctx.Err()
+	case err != nil:
+		return nil, err
+	case resp.Rcode != dns.RcodeSuccess && resp.Rcode != dns.RcodeNameError:
+		return nil, &probe.RcodeError{Rcode: resp.Rcode}
+	}
+	return resp, nil
+}
+
+// tlsaLookupFailed grades res for a TLSA lookup at name that returned err.
+func tlsaLookupFailed(
+	ctx context.Context, res report.Result, name string, err error,
+) report.Result {
+	if checkutil.Incomplete(ctx, err) {
+		return checkutil.Inconclusive(res, fmt.Errorf("TLSA lookup for %s: %w", name, err))
+	}
+	res.Status, res.Evidence = report.NotApplicable, "TLSA lookup error: "+err.Error()
+	return res
 }

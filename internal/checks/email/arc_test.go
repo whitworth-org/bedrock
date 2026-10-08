@@ -1,6 +1,7 @@
 package email
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -8,67 +9,100 @@ import (
 	"github.com/whitworth-org/bedrock/internal/report"
 )
 
-// TestARCDMARCResultFromCache exercises arcDMARCResult's DMARC-cache reading
-// path. The check must NEVER return Fail (ARC is an enhancement, not a
-// baseline requirement) — every case here must be Info.
+// arcOwnWalk is a seeded tree walk whose effective record, with the given p=
+// and sp=, is the author's own.
+func arcOwnWalk(p, sp string) *DMARCWalk {
+	return &DMARCWalk{Author: "example.test", PolicyDomain: "example.test",
+		Policy: &DMARC{Policy: p, SubdomainPolicy: sp}}
+}
+
+// arcInheritedWalk is a seeded tree walk for news.example.test whose effective
+// record, with the given p= and sp=, is inherited from example.test.
+func arcInheritedWalk(p, sp string) *DMARCWalk {
+	return &DMARCWalk{Author: "news.example.test", PolicyDomain: "example.test",
+		Policy: &DMARC{Policy: p, SubdomainPolicy: sp}}
+}
+
+// TestARCDMARCResultFromCache exercises arcDMARCResult against a seeded tree
+// walk, so no DNS query runs. The check must NEVER return Fail (ARC is an
+// enhancement, not a baseline requirement): it is Info, or inconclusive when
+// the walk may have missed the record.
 func TestARCDMARCResultFromCache(t *testing.T) {
 	cases := []struct {
 		name       string
-		seed       *DMARC // when nil, leave cache empty
-		notDMARC   bool   // when true, cache an unrelated value at the DMARC key
+		seed       any // stored under probe.CacheKeyDMARCWalk
 		wantStatus report.Status
 		// wantEvidenceContains is a substring the evidence must include so we
 		// know the right code path fired.
 		wantEvidenceContains string
 	}{
 		{
-			name:                 "cache empty",
-			seed:                 nil,
+			name: "walk found no record",
+			seed: &DMARCWalk{Author: "example.test", Steps: []DMARCWalkStep{
+				{QueryName: "_dmarc.example.test", Outcome: walkNXDomain},
+			}},
 			wantStatus:           report.Info,
 			wantEvidenceContains: "no DMARC record cached",
 		},
 		{
+			name: "walk lookup failed",
+			seed: &DMARCWalk{Author: "example.test", Steps: []DMARCWalkStep{
+				{QueryName: "_dmarc.example.test", Outcome: walkError, Detail: "timeout"},
+			}},
+			wantStatus: report.Warn,
+			wantEvidenceContains: "could not determine: " +
+				"TXT lookup for _dmarc.example.test: timeout",
+		},
+		{
 			name:                 "cache holds wrong type",
-			notDMARC:             true,
-			wantStatus:           report.Info,
-			wantEvidenceContains: "unrecognized shape",
+			seed:                 "not a *DMARCWalk",
+			wantStatus:           report.Warn,
+			wantEvidenceContains: "could not determine: " + errWalkPanicked.Error(),
 		},
 		{
 			name:                 "DMARC p=none",
-			seed:                 &DMARC{Raw: "v=DMARC1; p=none", Policy: "none", Pct: 100, Adkim: "r", Aspf: "r"},
+			seed:                 arcOwnWalk("none", "reject"),
 			wantStatus:           report.Info,
 			wantEvidenceContains: "current policy=none",
 		},
 		{
 			name:                 "DMARC policy missing string",
-			seed:                 &DMARC{Raw: "v=DMARC1", Policy: "", Pct: 100},
+			seed:                 arcOwnWalk("", ""),
 			wantStatus:           report.Info,
 			wantEvidenceContains: "current policy=none",
 		},
 		{
 			name:                 "DMARC p=quarantine",
-			seed:                 &DMARC{Raw: "v=DMARC1; p=quarantine", Policy: "quarantine", Pct: 100, Adkim: "r", Aspf: "r"},
+			seed:                 arcOwnWalk("quarantine", "none"),
 			wantStatus:           report.Info,
 			wantEvidenceContains: "DMARC enforced (p=quarantine)",
 		},
 		{
 			name:                 "DMARC p=reject",
-			seed:                 &DMARC{Raw: "v=DMARC1; p=reject", Policy: "reject", Pct: 100, Adkim: "s", Aspf: "s"},
+			seed:                 arcOwnWalk("reject", "none"),
 			wantStatus:           report.Info,
 			wantEvidenceContains: "DMARC enforced (p=reject)",
+		},
+		{
+			name:                 "inherited sp=quarantine",
+			seed:                 arcInheritedWalk("reject", "quarantine"),
+			wantStatus:           report.Info,
+			wantEvidenceContains: "enforced (sp=quarantine inherited from _dmarc.example.test)",
+		},
+		{
+			name:                 "inherited sp=none under p=reject",
+			seed:                 arcInheritedWalk("reject", "none"),
+			wantStatus:           report.Info,
+			wantEvidenceContains: "policy=none (sp=none inherited from _dmarc.example.test)",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := probe.NewEnv("example.test", time.Second, false, "")
-			if tc.seed != nil {
-				env.CachePut(probe.CacheKeyDMARC, tc.seed)
-			} else if tc.notDMARC {
-				env.CachePut(probe.CacheKeyDMARC, "not a *DMARC")
-			}
+			env.CachePut(probe.CacheKeyDMARCWalk, tc.seed)
 
-			got := arcDMARCResult(env)
+			got := arcDMARCResult(context.Background(), env)
 
 			if got.Status == report.Fail {
 				t.Fatalf("arcDMARCResult returned Fail; ARC check must never Fail. Got: %+v", got)
@@ -89,6 +123,46 @@ func TestARCDMARCResultFromCache(t *testing.T) {
 				t.Errorf("RFCRefs is empty; ARC check must cite RFC 8617")
 			}
 		})
+	}
+}
+
+// arcDMARCEvidence runs the whole ARC check and returns the email.arc.dmarc
+// evidence.
+func arcDMARCEvidence(t *testing.T, env *probe.Env) string {
+	t.Helper()
+	for _, r := range runARC(context.Background(), env) {
+		if r.ID == "email.arc.dmarc" {
+			return r.Evidence
+		}
+	}
+	t.Fatal("runARC returned no email.arc.dmarc result")
+	return ""
+}
+
+// TestARCDMARCRunsWalkWhenUnprimed runs ARC on a fresh Env, before any other
+// check has walked the DMARC tree: the verdict must not depend on which
+// check the registry schedules first.
+func TestARCDMARCRunsWalkWhenUnprimed(t *testing.T) {
+	env := newCannedEnv(t, "example.com", cannedZone{txt: map[string][]string{
+		"_dmarc.example.com": {"v=DMARC1; p=reject"},
+	}})
+	if ev := arcDMARCEvidence(t, env); !contains(ev, "DMARC enforced (p=reject)") {
+		t.Errorf("evidence = %q, want the published p=reject", ev)
+	}
+}
+
+// TestARCDMARCGradesInheritedSubdomainPolicy covers a subdomain with no record
+// of its own: the organizational domain's sp=none applies (RFC 9989), not its
+// p=reject.
+func TestARCDMARCGradesInheritedSubdomainPolicy(t *testing.T) {
+	env := newCannedEnv(t, "news.example.com", cannedZone{txt: map[string][]string{
+		"_dmarc.example.com": {"v=DMARC1; p=reject; sp=none; adkim=s; aspf=s"},
+	}})
+	runDMARC(context.Background(), env)
+
+	ev := arcDMARCEvidence(t, env)
+	if !contains(ev, "current policy=none (sp=none inherited from _dmarc.example.com)") {
+		t.Errorf("evidence = %q, want the inherited sp=none", ev)
 	}
 }
 

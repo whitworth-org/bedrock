@@ -22,19 +22,13 @@ func runDMARCRejectDKIM(ctx context.Context, env *probe.Env) []report.Result {
 	const title = "p=reject requires DKIM, not SPF alone (RFC 9989)"
 	refs := []string{"RFC 9989", "RFC 6376"}
 
-	walk := ensureDMARCWalk(ctx, env)
+	walk := EnsureDMARCWalk(ctx, env)
 	if walk == nil || walk.Policy == nil {
-		return []report.Result{{
-			ID: id, Category: category, Title: title,
-			Status:   report.NotApplicable,
-			Evidence: "no DMARC record; the requirement applies to p=reject publishers",
-			RFCRefs:  refs,
-		}}
+		res := report.Result{ID: id, Category: category, Title: title, RFCRefs: refs}
+		return []report.Result{noPolicyResult(walk, res,
+			"no DMARC record; the requirement applies to p=reject publishers")}
 	}
-	policy := walk.Policy.Policy
-	if walk.PolicyDomain != walk.Author {
-		policy = walk.Policy.SubdomainPolicy
-	}
+	policy := walk.EffectivePolicy()
 	if policy != "reject" {
 		return []report.Result{{
 			ID: id, Category: category, Title: title,
@@ -50,7 +44,7 @@ func runDMARCRejectDKIM(ctx context.Context, env *probe.Env) []report.Result {
 	}
 	var live []string
 	for _, p := range sweep.Found() {
-		if p.Key.P != "" {
+		if status, _ := gradeDKIMKey(p.Key); status != report.Fail {
 			live = append(live, p.Selector)
 		}
 	}
@@ -67,12 +61,12 @@ func runDMARCRejectDKIM(ctx context.Context, env *probe.Env) []report.Result {
 		ID: id, Category: category, Title: title,
 		Status: report.Warn,
 		Evidence: fmt.Sprintf(
-			"p=reject but no DKIM key discoverable across %d common selectors — RFC 9989: reject "+
-				"publishers MUST apply DKIM and MUST NOT rely on SPF alone, since only DKIM survives "+
-				"forwarding (probing is heuristic; a custom selector may exist)",
+			"p=reject but no usable DKIM key discoverable across %d common selectors — "+
+				"RFC 9989: reject publishers MUST apply DKIM and MUST NOT rely on SPF alone, "+
+				"since only DKIM survives forwarding (probing is heuristic; a custom selector "+
+				"may exist)",
 			len(sweep.Selectors)),
-		Remediation: fmt.Sprintf(
-			`<selector>._domainkey.%s. IN TXT "v=DKIM1; k=rsa; p=<base64-public-key>"`, env.Target),
-		RFCRefs: refs,
+		Remediation: dkimKeyRemediation("<selector>._domainkey." + env.Target),
+		RFCRefs:     refs,
 	}}
 }

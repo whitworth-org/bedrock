@@ -15,8 +15,8 @@ import (
 )
 
 // TestFingerprintHostsAt drives fingerprintHostsAt against an in-process TLS
-// server and confirms it produces JA3S + JA4S INFO results for the host. The
-// SafeDialContext blocks loopback by default; BEDROCK_ALLOW_PRIVATE_RESOLVER=1
+// server and confirms it produces JA3S + JA4S INFO results for the host.
+// probe.SafeDial blocks loopback by default; BEDROCK_ALLOW_PRIVATE_RESOLVER=1
 // (the same hermetic-test knob the resolver uses) opens 127.0.0.1.
 func TestFingerprintHostsAt(t *testing.T) {
 	t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "1")
@@ -60,6 +60,22 @@ func TestFingerprintHostsAt(t *testing.T) {
 	}
 }
 
+// TestFingerprintHostsAtRefusesLoopback: without the override, probe.SafeDial
+// refuses the loopback server, so the host yields no fingerprint.
+func TestFingerprintHostsAtRefusesLoopback(t *testing.T) {
+	t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "")
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(noBody))
+	defer srv.Close()
+
+	host, port := splitHostPort(t, srv.URL)
+	env := &probe.Env{Timeout: 5 * time.Second}
+
+	if out := fingerprintHostsAt(context.Background(), env, []string{host}, port); len(out) != 0 {
+		t.Errorf("fingerprinted a loopback host despite the SSRF denylist: %+v", out)
+	}
+}
+
 func TestFingerprintHostsEmptyInput(t *testing.T) {
 	t.Parallel()
 	got := fingerprintHosts(context.Background(),
@@ -72,7 +88,7 @@ func TestFingerprintHostsEmptyInput(t *testing.T) {
 func TestFingerprintHostsSilentOnDialFailure(t *testing.T) {
 	t.Parallel()
 	// 192.0.2.0/24 is RFC 5737 TEST-NET-1 — always unreachable, never
-	// blocked by SafeDialContext. Short timeout keeps the test fast.
+	// blocked by probe.SafeDial. Short timeout keeps the test fast.
 	got := fingerprintHosts(context.Background(),
 		&probe.Env{Timeout: 100 * time.Millisecond},
 		[]string{"192.0.2.1"})

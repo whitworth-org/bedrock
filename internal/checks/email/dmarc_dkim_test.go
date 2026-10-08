@@ -32,8 +32,14 @@ func rejectWalk(author, policyDomain string, p *DMARC) *DMARCWalk {
 
 func TestRunDMARCRejectDKIM(t *testing.T) {
 	liveSweep := &DKIMSweep{Probes: []DKIMProbe{
-		foundProbe("s1", &DKIMKey{Version: "DKIM1", KeyType: "rsa", P: "AAAA"}),
+		foundProbe("s1", &DKIMKey{Version: "DKIM1", KeyType: "ed25519", P: ed25519TestKey}),
 	}}
+	unusableSweep := &DKIMSweep{
+		Selectors: []string{"default"},
+		Probes: []DKIMProbe{
+			foundProbe("default", &DKIMKey{Version: "DKIM1", KeyType: "rsa", P: "AAAA"}),
+		},
+	}
 	emptySweep := &DKIMSweep{Selectors: []string{"default", "google"}}
 	revokedSweep := &DKIMSweep{
 		Selectors: []string{"default"},
@@ -90,6 +96,14 @@ func TestRunDMARCRejectDKIM(t *testing.T) {
 			wantStatus: report.Warn,
 			wantSub:    "MUST apply DKIM",
 		},
+		{
+			name: "reject with only a key verifiers cannot use",
+			walk: rejectWalk("example.com", "example.com",
+				&DMARC{Policy: "reject", SubdomainPolicy: "reject"}),
+			sweep:      unusableSweep,
+			wantStatus: report.Warn,
+			wantSub:    "no usable DKIM key discoverable across 1 common selectors",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -112,5 +126,18 @@ func TestRunDMARCRejectDKIM(t *testing.T) {
 				t.Error("reject_dkim must never Fail (heuristic probe)")
 			}
 		})
+	}
+}
+
+// TestRunDMARCRejectDKIMWildcard: the key a _domainkey wildcard gives every
+// selector is not a key discoverable on any of them.
+func TestRunDMARCRejectDKIMWildcard(t *testing.T) {
+	env := newCannedEnv(t, "example.com", cannedZone{txt: map[string][]string{
+		"_dmarc.example.com":       {"v=DMARC1; p=reject"},
+		"*._domainkey.example.com": {ed25519Record},
+	}})
+	res := runDMARCRejectDKIM(context.Background(), env)
+	if len(res) != 1 || res[0].Status != report.Warn || contains(res[0].Evidence, "default") {
+		t.Fatalf("results = %+v, want one WARN that lists no selector", res)
 	}
 }

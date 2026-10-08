@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/whitworth-org/bedrock/internal/checks/checkutil"
 	"github.com/whitworth-org/bedrock/internal/probe"
 	"github.com/whitworth-org/bedrock/internal/report"
 )
@@ -18,14 +19,13 @@ func runAAAAApex(ctx context.Context, env *probe.Env) []report.Result {
 
 	v6, err := env.DNS.LookupAAAA(ctx, env.Target)
 	if err != nil && !errors.Is(err, probe.ErrNXDOMAIN) {
-		return []report.Result{{
-			ID:       "dns.aaaa.apex",
-			Category: category,
-			Title:    "Apex AAAA",
-			Status:   report.Warn,
-			Evidence: "lookup error: " + err.Error(),
-			RFCRefs:  []string{"RFC 3596"},
-		}}
+		res := report.Result{
+			ID: "dns.aaaa.apex", Category: category, Title: "Apex AAAA",
+			RFCRefs: []string{"RFC 3596"},
+		}
+		return []report.Result{
+			checkutil.Inconclusive(res, fmt.Errorf("AAAA lookup for %s: %w", env.Target, err)),
+		}
 	}
 	if len(v6) == 0 {
 		return []report.Result{{
