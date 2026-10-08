@@ -191,7 +191,8 @@ func (d *DNS) ExchangeCheckingDisabled(
 // a DNS message back whatever its rcode, and how many of those answered:
 // NOERROR or NXDOMAIN. Queries sent with none answered mean no configured
 // resolver could serve the scan, whether it sent no reply or only SERVFAIL,
-// REFUSED and other errors.
+// REFUSED and other errors. A query cancelled before its reply is not
+// counted.
 func (d *DNS) Health() (sent, replied, answered int) {
 	return int(d.sent.Load()), int(d.replied.Load()), int(d.answered.Load())
 }
@@ -207,8 +208,10 @@ func (d *DNS) exchangePrimary(ctx context.Context, m *dns.Msg) (*dns.Msg, error)
 	if d.failover {
 		ups = d.upstreams
 	}
-	d.sent.Add(1)
 	resp, u, err := d.exchangeOn(ctx, m, ups)
+	if !errors.Is(err, context.Canceled) {
+		d.sent.Add(1) // a query the caller gave up on says nothing about the resolver
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", u.label, err)
 	}
@@ -355,7 +358,7 @@ func (d *DNS) exchangeOnce(ctx context.Context, m *dns.Msg, u upstream) (*dns.Ms
 	case protoDoH:
 		resp, err = dohExchange(ctx, d.httpClient, u.addr, m)
 	case protoDoT:
-		resp, _, err = d.dotClient.ExchangeContext(ctx, m, u.addr)
+		resp, err = exchangeConn(ctx, d.dotClient, m, u.addr)
 	default:
 		resp, err = d.exchangeUDP(ctx, m, u.addr)
 	}
@@ -369,15 +372,38 @@ func (d *DNS) exchangeOnce(ctx context.Context, m *dns.Msg, u upstream) (*dns.Ms
 // truncated or does not parse, as when a datagram larger than the
 // advertised buffer is cut short.
 func (d *DNS) exchangeUDP(ctx context.Context, m *dns.Msg, addr string) (*dns.Msg, error) {
-	resp, _, err := d.udpClient.ExchangeContext(ctx, m, addr)
+	resp, err := exchangeConn(ctx, d.udpClient, m, addr)
 	if err == nil && !resp.Truncated {
 		return resp, nil
 	}
 	var netErr net.Error
-	if errors.As(err, &netErr) {
-		return nil, err // no reply arrived
+	if errors.As(err, &netErr) || errors.Is(err, context.Canceled) {
+		return nil, err // no reply arrived, or the caller gave up
 	}
-	resp, _, err = d.tcpClient.ExchangeContext(ctx, m, addr)
+	return exchangeConn(ctx, d.tcpClient, m, addr)
+}
+
+// exchangeConn sends m to addr with c, as c.ExchangeContext does, but ends
+// the exchange as soon as ctx is cancelled and returns ctx's error. Once the
+// query is on the wire, miekg/dns stops waiting only at ctx's deadline, so a
+// cancellation closes the connection. An expired deadline still ends in the
+// connection's timeout error, which exchangeOn may retry.
+func exchangeConn(ctx context.Context, c *dns.Client, m *dns.Msg, addr string) (*dns.Msg, error) {
+	conn, err := c.DialContext(ctx, addr)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close() }()
+	stop := context.AfterFunc(ctx, func() {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			_ = conn.Close()
+		}
+	})
+	defer stop()
+	resp, _, err := c.ExchangeWithConnContext(ctx, m, conn)
+	if err != nil && errors.Is(ctx.Err(), context.Canceled) {
+		return nil, ctx.Err()
+	}
 	return resp, err
 }
 
