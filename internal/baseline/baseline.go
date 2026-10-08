@@ -50,9 +50,10 @@ func Load(path string) (*report.Report, error) {
 // loadBaseline is Load but returns the full baselineDoc so Diff can
 // consult the per-ID duplicate map. Exported API remains stable.
 func loadBaseline(path string) (*baselineDoc, error) {
+	// Errors from os.Open and Read are *PathError, which names the path.
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open baseline %s: %w", path, err)
+		return nil, fmt.Errorf("read baseline: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
@@ -61,7 +62,7 @@ func loadBaseline(path string) (*baselineDoc, error) {
 	limited := io.LimitReader(f, maxBaselineBytes+1)
 	data, err := io.ReadAll(limited)
 	if err != nil {
-		return nil, fmt.Errorf("read baseline %s: %w", path, err)
+		return nil, fmt.Errorf("read baseline: %w", err)
 	}
 	if len(data) > maxBaselineBytes {
 		return nil, fmt.Errorf("baseline %s exceeds %d bytes", path, maxBaselineBytes)

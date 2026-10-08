@@ -880,8 +880,8 @@ func columns(line string) int {
 }
 
 // TestHelpText checks that the help, flag defaults included, fits 80
-// columns and covers what it must: every category, the stdout rule and the
-// exit codes.
+// columns and covers what it must: every category, the stdout rule, the
+// exit codes and the rules a flag value must meet.
 func TestHelpText(t *testing.T) {
 	_, stdout, _ := runOn(t, pipe, pipe, nil, "--help")
 	for i, line := range strings.Split(stdout, "\n") {
@@ -891,7 +891,8 @@ func TestHelpText(t *testing.T) {
 	}
 	for _, want := range []string{"DNS, DNSSEC, Email (including BIMI) and WWW", "--subdomains",
 		"DNS, DNSSEC, Email, WWW, Subdomain", "A pipe, a file or --json gets the JSON report",
-		"\n  0  ", "\n  1  ", "\n  2  "} {
+		"\n  0  ", "\n  1  ", "\n  2  ", "timeout, greater than zero", "requires --baseline",
+		"dns.resolver.unreachable and registry.panic.* results"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("help text lacks %q", want)
 		}
@@ -955,18 +956,22 @@ func TestRunRejectsBadInputBeforeScanning(t *testing.T) {
 		help bool
 	}{
 		{"bad severity", scanArgs(spec, "--severity", "sever"), `invalid severity "sever"`, true},
-		{"missing baseline", scanArgs(spec, "--baseline", missing), "open baseline " + missing,
-			false},
-		{"missing config", scanArgs(spec, "--config", missing), "read config " + missing, false},
+		{"missing baseline", scanArgs(spec, "--baseline", missing),
+			"read baseline: open " + missing + ": ", false},
+		{"missing config", scanArgs(spec, "--config", missing),
+			"read config: open " + missing + ": ", false},
 		{"bad config severity", scanArgs(spec, "--config", badSeverity), `invalid severity "loud"`,
 			true},
-		{"every invalid flag value", scanArgs(spec, "--only", "Emial", "--timeout", "0"),
+		{"every invalid flag value",
+			scanArgs(spec, "--only", "Emial", "--severity", "sever", "--timeout", "0"),
 			`unknown category "Emial" (want one of: DNS, DNSSEC, Email, Subdomain, WWW); ` +
+				`invalid severity "sever" (want one of: info, pass, warn, fail); ` +
 				"invalid --timeout 0s", true},
 		{"--regression-only without --baseline", scanArgs(spec, "--regression-only"),
 			"--regression-only requires --baseline", true},
 		{"regression_only in the config without a baseline",
-			scanArgs(spec, "--config", regressionOnly), "--regression-only requires --baseline", true},
+			scanArgs(spec, "--config", regressionOnly), "--regression-only requires --baseline",
+			true},
 		{"invalid domain", []string{"--resolver", spec, "exa mple.org"},
 			`invalid domain "exa mple.org": idna: disallowed rune U+0020`, true},
 		{"domain with a control byte", []string{"--resolver", spec, "x\x1by.org"},
@@ -989,25 +994,44 @@ func TestRunRejectsBadInputBeforeScanning(t *testing.T) {
 	}
 }
 
-// TestRunRejectsPrivateResolversBeforeScanning checks that a rejected
-// --resolvers entry stops bedrock before any check runs, with an error that
-// leaves out the other entries: a DoH URL can hold a password or token.
-func TestRunRejectsPrivateResolversBeforeScanning(t *testing.T) {
+// TestRunRejectsBadResolversBeforeScanning checks that a rejected resolver
+// spec stops bedrock before any check runs, with an error that names the
+// flag and, for --resolvers, the entry's position, but repeats no entry: a
+// DoH URL can hold a password or token.
+func TestRunRejectsBadResolversBeforeScanning(t *testing.T) {
 	spec, queries := startScanFixture(t)
 	t.Setenv("BEDROCK_ALLOW_PRIVATE_RESOLVER", "")
 	//nolint:gosec // G101: fake credentials, which stderr must not repeat.
 	doh := "https://alice:s3cr3t@doh.example/dns-query?token=abc123"
-	args := scanArgs(spec, "--resolvers", doh+","+spec)
-	code, stdout, stderr := runOn(t, pipe, pipe, nil, args...)
-	if code != 2 || stdout != "" {
-		t.Errorf("exit code = %d, stdout = %q; want 2 and nothing", code, stdout)
+	badPort := strings.Replace(doh, "doh.example", "doh.example:bad", 1)
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"denylisted --resolvers entry", scanArgs(spec, "--resolvers", doh+","+spec),
+			"bedrock: invalid --resolvers entry 2: resolver 127.0.0.1 is loopback"},
+		{"unparsable --resolvers entry", scanArgs(spec, "--resolvers", doh+","+badPort),
+			`bedrock: invalid --resolvers entry 2: doh url: invalid port ":bad" after host`},
+		{"unparsable --resolver", []string{"--resolver", badPort, "test.invalid"},
+			`bedrock: invalid --resolver: doh url: invalid port ":bad" after host`},
 	}
-	assertOneLine(t, stderr, "resolver 127.0.0.1 is loopback")
-	if strings.Contains(stderr, "s3cr3t") || strings.Contains(stderr, "abc123") {
-		t.Errorf("stderr = %q repeats another entry's credentials", stderr)
-	}
-	if n := queries.Load(); n != 0 {
-		t.Errorf("the fake resolver answered %d queries: checks ran before the error", n)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, stdout, stderr := runOn(t, pipe, pipe, nil, tt.args...)
+			if code != 2 || stdout != "" {
+				t.Errorf("exit code = %d, stdout = %q; want 2 and nothing", code, stdout)
+			}
+			assertOneLine(t, stderr, tt.want)
+			for _, secret := range []string{"alice", "s3cr3t", "abc123"} {
+				if strings.Contains(stderr, secret) {
+					t.Errorf("stderr = %q repeats a DoH URL's credentials", stderr)
+				}
+			}
+			if n := queries.Load(); n != 0 {
+				t.Errorf("the fake resolver answered %d queries: checks ran before the error", n)
+			}
+		})
 	}
 }
 
