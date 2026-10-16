@@ -1,0 +1,8 @@
+# GitHub's Require lockfile policy enforces the commits recorded in actions.lock.
+# zizmor does not yet resolve GitHub Actions workflow lockfiles.
+rules:
+  unpinned-uses:
+    ignore:
+      - ci.yml
+      - release.yml
+      - zizmor.yml
