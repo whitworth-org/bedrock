@@ -1,6 +1,6 @@
 module github.com/whitworth-org/bedrock
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/miekg/dns v1.1.73
