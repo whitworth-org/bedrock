@@ -4,13 +4,13 @@ go 1.27.3
 
 require (
 	github.com/miekg/dns v1.1.73
-	github.com/quic-go/quic-go v0.64.0
-	golang.org/x/crypto v0.58.0
-	golang.org/x/net v0.61.0
+	github.com/quic-go/quic-go v0.65.0
+	golang.org/x/crypto v0.59.0
+	golang.org/x/net v0.62.0
 )
 
 require (
 	github.com/quic-go/qpack v0.6.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 )
